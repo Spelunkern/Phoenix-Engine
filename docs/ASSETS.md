@@ -29,18 +29,41 @@ Data/
   Character/
   Entity/
   Effect/
+  Monster/
+    mob.csv
+    monster.csv
+  Npc/
+    npc.csv
+    NpcQuest.csv
   Sound/
   Terrain/
   World/
+    svmap/{mapId}/
+      metadata.csv
+      monster_areas.csv
+      monster_spawns.csv
+      npcs.csv
+      npc_positions.csv
 ```
 
-Commonly consumed file types include:
+### File formats
 
-- World/map data: `.wld`, `.dg`, `.svmap`
+**Binary formats** (loaded as-is from the original client):
+
+- World/map data: `.wld`, `.dg`
 - Static and animated models: `.smod`, `.3dc`, `.vani`, `.mani`
-- Actor metadata: `.mon`, `.sdata`
-- Animation and textures: `.ani`, `.dds`, `.bmp`
-- Audio: `.ogg` files referenced by map sound/music zones
+- Animation: `.ani`
+- Textures: `.dds`, `.bmp`, `.tga`
+
+**CSV formats** (replacing legacy binary equivalents):
+
+- `mob.csv` / `npc.csv` — monster and NPC model definitions (replaces binary `.mon`)
+- `monster.csv` / `NpcQuest.csv` — server metadata (replaces binary `.sdata`)
+- `svmap/{mapId}/*.csv` — spawn maps and NPC placement (replaces binary `.svmap`)
+
+**Audio:**
+
+- `.ogg` (Vorbis) — WLD files reference `.wav` names but the engine resolves them to `.ogg` on disk
 
 The `.gitignore` intentionally excludes `Data/` at every repository depth. Keep this rule unless the project later gains a fully original asset pack that is safe to redistribute.
 

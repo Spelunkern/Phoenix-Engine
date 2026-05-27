@@ -46,6 +46,7 @@ Phoenix Engine does not assume deep technical knowledge from final users. Everyo
 - WLD/DG map loading with free-camera viewer mode and playable character mode.
 - Character appearance loading with race, armor, face, and hair selection.
 - NPC and monster loading from server/map data with nameplates, scale, idle/walk animation, and distance culling.
+- CSV-based data formats replacing legacy binary formats for monster definitions, NPC data, server metadata, and spawn maps (see [Data Formats](#data-formats)).
 - Map ambience support for music and sound zones with distance-based fade behavior (OGG Vorbis via miniaudio).
 - Async loading with a responsive loading screen during initialization and map changes.
 - Water surface rendering, underwater tinting, swimming, floating, and camera-driven movement.
@@ -209,6 +210,20 @@ See [docs/ASSETS.md](docs/ASSETS.md) for more details.
 - `P`: toggle playable mode.
 - `F`: toggle fog.
 - ImGui panel: map loading, distances, overlays, audio toggles, character selection, and weather/sky style.
+
+## Data Formats
+
+Phoenix Engine replaces several legacy binary formats with human-readable CSV files. This makes the data easier to inspect, edit, and version-control without specialized tooling.
+
+| Legacy Format | CSV Replacement | Content |
+|---------------|----------------|---------|
+| `.mon` (binary) | `mob.csv`, `npc.csv` | Monster and NPC model definitions: mesh/texture parts, animation slots, sounds, scale, height. |
+| `.sdata` (binary) | `monster.csv`, `NpcQuest.csv` | Server-side metadata: monster model IDs, sizes, display names; NPC quest references. |
+| `.svmap` (binary) | `svmap/{mapId}/` folder | Spawn and placement data split into `metadata.csv`, `monster_areas.csv`, `monster_spawns.csv`, `npcs.csv`, `npc_positions.csv`. |
+
+Audio references in WLD files (originally `.wav`) are resolved to `.ogg` (Vorbis) files on disk. Texture references (`.tga`, `.bmp`) are resolved to `.dds` when available.
+
+The engine still loads the original WLD, DG, 3DC, SMOD, VANI, MANI, and ANI binary formats for world geometry, models, and animations. Only the data tables above have been migrated to CSV.
 
 ## Open Source Notes
 
