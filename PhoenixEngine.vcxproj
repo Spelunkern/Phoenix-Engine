@@ -1,0 +1,130 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Project DefaultTargets="Build" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup Label="ProjectConfigurations">
+    <ProjectConfiguration Include="Debug|x64">
+      <Configuration>Debug</Configuration>
+      <Platform>x64</Platform>
+    </ProjectConfiguration>
+    <ProjectConfiguration Include="Release|x64">
+      <Configuration>Release</Configuration>
+      <Platform>x64</Platform>
+    </ProjectConfiguration>
+  </ItemGroup>
+  <PropertyGroup Label="Globals">
+    <VCProjectVersion>17.0</VCProjectVersion>
+    <Keyword>Win32Proj</Keyword>
+    <ProjectGuid>{A74F9B8B-1A7A-4F59-8F60-CA8D4F97C36C}</ProjectGuid>
+    <RootNamespace>PhoenixEngine</RootNamespace>
+    <WindowsTargetPlatformVersion>10.0</WindowsTargetPlatformVersion>
+  </PropertyGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.Default.props" />
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'" Label="Configuration">
+    <ConfigurationType>Application</ConfigurationType>
+    <UseDebugLibraries>true</UseDebugLibraries>
+    <PlatformToolset>v143</PlatformToolset>
+    <CharacterSet>Unicode</CharacterSet>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'" Label="Configuration">
+    <ConfigurationType>Application</ConfigurationType>
+    <UseDebugLibraries>false</UseDebugLibraries>
+    <PlatformToolset>v143</PlatformToolset>
+    <WholeProgramOptimization>true</WholeProgramOptimization>
+    <CharacterSet>Unicode</CharacterSet>
+  </PropertyGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.props" />
+  <PropertyGroup>
+    <OutDir>$(SolutionDir)bin\$(Platform)\$(Configuration)\</OutDir>
+    <IntDir>$(SolutionDir)obj\$(Platform)\$(Configuration)\$(ProjectName)\</IntDir>
+    <TargetName>PhoenixEngine</TargetName>
+    <ApplicationIcon>res\phoenix.ico</ApplicationIcon>
+  </PropertyGroup>
+  <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
+    <ClCompile>
+      <WarningLevel>Level4</WarningLevel>
+      <DisableSpecificWarnings>4505;%(DisableSpecificWarnings)</DisableSpecificWarnings>
+      <SDLCheck>true</SDLCheck>
+      <PreprocessorDefinitions>WIN32_LEAN_AND_MEAN;NOMINMAX;VK_USE_PLATFORM_WIN32_KHR;IMGUI_IMPL_VULKAN_USE_VOLK;_DEBUG;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <LanguageStandard>stdcpplatest</LanguageStandard>
+      <AdditionalIncludeDirectories>$(ProjectDir)src;$(ProjectDir)external\imgui;$(ProjectDir)external\imgui\backends;$(ProjectDir)external\volk;$(ProjectDir)external\Vulkan-Headers\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+    </ClCompile>
+    <Link>
+      <SubSystem>Windows</SubSystem>
+      <AdditionalDependencies>user32.lib;gdi32.lib;xaudio2.lib;%(AdditionalDependencies)</AdditionalDependencies>
+    </Link>
+  </ItemDefinitionGroup>
+  <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
+    <ClCompile>
+      <WarningLevel>Level4</WarningLevel>
+      <DisableSpecificWarnings>4505;%(DisableSpecificWarnings)</DisableSpecificWarnings>
+      <SDLCheck>true</SDLCheck>
+      <FunctionLevelLinking>true</FunctionLevelLinking>
+      <IntrinsicFunctions>true</IntrinsicFunctions>
+      <PreprocessorDefinitions>WIN32_LEAN_AND_MEAN;NOMINMAX;VK_USE_PLATFORM_WIN32_KHR;IMGUI_IMPL_VULKAN_USE_VOLK;NDEBUG;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <LanguageStandard>stdcpplatest</LanguageStandard>
+      <AdditionalIncludeDirectories>$(ProjectDir)src;$(ProjectDir)external\imgui;$(ProjectDir)external\imgui\backends;$(ProjectDir)external\volk;$(ProjectDir)external\Vulkan-Headers\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+    </ClCompile>
+    <Link>
+      <SubSystem>Windows</SubSystem>
+      <EnableCOMDATFolding>true</EnableCOMDATFolding>
+      <OptimizeReferences>true</OptimizeReferences>
+      <AdditionalDependencies>user32.lib;gdi32.lib;xaudio2.lib;%(AdditionalDependencies)</AdditionalDependencies>
+    </Link>
+  </ItemDefinitionGroup>
+  <ItemGroup>
+    <ClCompile Include="src\main.cpp" />
+    <ClCompile Include="src\audio\audio_system.cpp" />
+    <ClCompile Include="src\assets\data_index.cpp" />
+    <ClCompile Include="src\runtime\phoenix_runtime.cpp" />
+    <ClCompile Include="src\platform\win32_window.cpp" />
+    <ClCompile Include="src\renderer\dds_loader.cpp" />
+    <ClCompile Include="src\renderer\vulkan_renderer.cpp" />
+    <ClCompile Include="src\world\dg_loader.cpp" />
+    <ClCompile Include="src\world\smod_loader.cpp" />
+    <ClCompile Include="src\world\vani_loader.cpp" />
+    <ClCompile Include="src\world\mani_loader.cpp" />
+    <ClCompile Include="src\world\eft_loader.cpp" />
+    <ClCompile Include="src\world\wld_loader.cpp" />
+    <ClCompile Include="src\world\mon_loader.cpp" />
+    <ClCompile Include="src\world\sdata_loader.cpp" />
+    <ClCompile Include="src\world\svmap_loader.cpp" />
+    <ClCompile Include="src\world\actor_scene.cpp" />
+    <ClCompile Include="src\world\character_loader.cpp" />
+    <ClCompile Include="src\character\character_system.cpp" />
+    <ClCompile Include="external\volk\volk.c" />
+    <ClCompile Include="external\imgui\imgui.cpp" />
+    <ClCompile Include="external\imgui\imgui_draw.cpp" />
+    <ClCompile Include="external\imgui\imgui_tables.cpp" />
+    <ClCompile Include="external\imgui\imgui_widgets.cpp" />
+    <ClCompile Include="external\imgui\backends\imgui_impl_win32.cpp" />
+    <ClCompile Include="external\imgui\backends\imgui_impl_vulkan.cpp" />
+  </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="src\assets\data_index.h" />
+    <ClInclude Include="src\audio\audio_system.h" />
+    <ClInclude Include="src\runtime\phoenix_runtime.h" />
+    <ClInclude Include="src\platform\win32_window.h" />
+    <ClInclude Include="src\renderer\dds_loader.h" />
+    <ClInclude Include="src\renderer\vulkan_renderer.h" />
+    <ClInclude Include="src\world\dg_loader.h" />
+    <ClInclude Include="src\world\smod_loader.h" />
+    <ClInclude Include="src\world\vani_loader.h" />
+    <ClInclude Include="src\world\mani_loader.h" />
+    <ClInclude Include="src\world\eft_loader.h" />
+    <ClInclude Include="src\world\wld_loader.h" />
+    <ClInclude Include="src\world\mon_loader.h" />
+    <ClInclude Include="src\world\sdata_loader.h" />
+    <ClInclude Include="src\world\svmap_loader.h" />
+    <ClInclude Include="src\world\actor_scene.h" />
+    <ClInclude Include="src\world\character_loader.h" />
+    <ClInclude Include="src\character\character_system.h" />
+    <ClInclude Include="external\volk\volk.h" />
+    <ClInclude Include="external\imgui\imgui.h" />
+    <ClInclude Include="external\imgui\backends\imgui_impl_win32.h" />
+    <ClInclude Include="external\imgui\backends\imgui_impl_vulkan.h" />
+  </ItemGroup>
+  <ItemGroup>
+    <ResourceCompile Include="res\phoenix.rc" />
+  </ItemGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
+</Project>
+

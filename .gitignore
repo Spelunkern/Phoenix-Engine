@@ -1,0 +1,36 @@
+# Build output
+/bin/
+/obj/
+/x64/
+/Debug/
+/Release/
+/.vs/
+/.claude/
+
+# Local runtime data and extracted assets
+/Data/
+/**/Data/
+
+# Logs and local state
+*.log
+imgui.ini
+/diagnostics/
+*.user
+*.suo
+*.VC.db
+*.VC.opendb
+*.ipch
+*.pdb
+*.ilk
+
+# OS/editor noise
+Thumbs.db
+Desktop.ini
+*.tmp
+*.bak
+*.old
+*~
+
+# Keep runtime shader binaries, ignore stray SPIR-V elsewhere.
+*.spv
+!shaders/compiled/*.spv
