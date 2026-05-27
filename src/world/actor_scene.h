@@ -2,15 +2,42 @@
 
 #include "assets/data_index.h"
 #include "renderer/vulkan_renderer.h"
+#include "world/character_loader.h"
 
 #include <cstdint>
 #include <filesystem>
+#include <span>
 #include <string>
 #include <unordered_map>
 #include <vector>
 
 namespace phoenix::world
 {
+    struct ActorSourceVertex
+    {
+        float position[3]{};
+        float normal[3]{};
+        float weights[3]{};
+        std::uint8_t bones[3]{};
+        std::uint32_t meshBoneBase{};
+        std::uint32_t meshBoneCount{};
+        float outputScale{ 1.0f };
+    };
+
+    struct ActorSkinData
+    {
+        std::vector<ActorSourceVertex> sourceVertices;
+        std::vector<CharacterBone> meshBones;
+    };
+
+    struct ActorAnimationSet
+    {
+        CharacterAnimation breath;
+        CharacterAnimation idle;
+        CharacterAnimation walk;
+        CharacterAnimation run;
+    };
+
     struct ActorScene
     {
         struct Label
@@ -37,15 +64,15 @@ namespace phoenix::world
         {
             std::uint32_t firstVertex{};
             std::uint32_t vertexCount{};
-            std::vector<std::vector<phoenix::renderer::TerrainVertex>> frames;      // breath
-            std::vector<std::vector<phoenix::renderer::TerrainVertex>> idleFrames;   // idle gesture
-            std::vector<std::vector<phoenix::renderer::TerrainVertex>> walkFrames;   // walk cycle (mobs only)
-            std::vector<std::vector<phoenix::renderer::TerrainVertex>> runFrames;    // run cycle (mobs only)
+            std::vector<std::vector<phoenix::renderer::TerrainVertex>> frames; // world VANI only
+            ActorSkinData skinData;
+            ActorAnimationSet animations;
             float worldX{};
             float worldY{};
             float worldZ{};
             float boundingRadius{ 48.0f };
-            bool isMob{}; // true for monsters (they roam), false for NPCs (stationary)
+            bool isMob{};
+            bool hasActorSkin{};
         };
 
         std::vector<phoenix::renderer::TerrainVertex> vertices;
@@ -65,6 +92,12 @@ namespace phoenix::world
         std::uint32_t npcCount{};
         std::uint32_t monsterCount{};
     };
+
+    void skin_actor_vertices(
+        const ActorSkinData& skin,
+        std::span<phoenix::renderer::TerrainVertex> vertices,
+        const CharacterAnimation& animation,
+        float frame);
 
     ActorScene build_actor_scene(
         const std::filesystem::path& dataRoot,

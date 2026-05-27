@@ -8,8 +8,6 @@
 
 namespace phoenix::assets
 {
-    std::wstring widen_ascii(std::string_view value);
-    std::string narrow_ascii(std::wstring_view value);
     std::string lower_ascii(std::string value);
 
     struct DataIndex

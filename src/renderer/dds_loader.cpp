@@ -4,6 +4,7 @@
 #include <algorithm>
 #include <cstdio>
 #include <cstring>
+#include <fstream>
 
 namespace phoenix::renderer
 {
@@ -25,16 +26,14 @@ namespace phoenix::renderer
 
         std::vector<std::uint8_t> read_file_binary(const std::filesystem::path& path)
         {
-            FILE* f = _wfopen(path.c_str(), L"rb");
-            if (!f)
+            std::ifstream file(path, std::ios::binary | std::ios::ate);
+            if (!file)
                 return {};
-            _fseeki64(f, 0, SEEK_END);
-            const auto size = static_cast<std::size_t>(_ftelli64(f));
-            _fseeki64(f, 0, SEEK_SET);
+            const auto size = static_cast<std::size_t>(file.tellg());
+            file.seekg(0);
             std::vector<std::uint8_t> data(size);
-            if (fread(data.data(), 1, size, f) != size)
+            if (!file.read(reinterpret_cast<char*>(data.data()), static_cast<std::streamsize>(size)))
                 data.clear();
-            fclose(f);
             return data;
         }
 

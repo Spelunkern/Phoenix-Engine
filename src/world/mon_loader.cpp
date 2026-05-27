@@ -1,130 +1,168 @@
 #include "world/mon_loader.h"
 
-#include <algorithm>
-#include <bit>
+#include <cstdlib>
 #include <fstream>
-#include <iterator>
+#include <string>
+#include <string_view>
 
 namespace phoenix::world
 {
     namespace
     {
-        std::uint32_t read_u32(const std::vector<std::uint8_t>& data, std::size_t offset)
-        {
-            if (offset + 4 > data.size())
-                return 0;
-            return static_cast<std::uint32_t>(data[offset])
-                | (static_cast<std::uint32_t>(data[offset + 1]) << 8)
-                | (static_cast<std::uint32_t>(data[offset + 2]) << 16)
-                | (static_cast<std::uint32_t>(data[offset + 3]) << 24);
-        }
-
-        float read_f32(const std::vector<std::uint8_t>& data, std::size_t offset)
-        {
-            return std::bit_cast<float>(read_u32(data, offset));
-        }
-
-        bool read_sized_string(const std::vector<std::uint8_t>& data, std::size_t& offset, std::string& value)
-        {
-            if (offset + 4 > data.size())
-                return false;
-            const auto length = read_u32(data, offset);
-            offset += 4;
-            if (length > 512 || length > data.size() - offset)
-                return false;
-            value.assign(reinterpret_cast<const char*>(data.data() + offset), length);
-            offset += length;
-            return true;
-        }
-
         bool is_placeholder(const std::string& value)
         {
             return value.empty() || value == "LOAD" || value == "load";
+        }
+
+        std::string next_csv_field(const std::string& line, std::size_t& pos)
+        {
+            if (pos >= line.size())
+                return {};
+
+            if (line[pos] == '"')
+            {
+                ++pos;
+                std::string result;
+                while (pos < line.size())
+                {
+                    if (line[pos] == '"')
+                    {
+                        if (pos + 1 < line.size() && line[pos + 1] == '"')
+                        {
+                            result += '"';
+                            pos += 2;
+                        }
+                        else
+                        {
+                            ++pos; // closing quote
+                            if (pos < line.size() && line[pos] == ',')
+                                ++pos;
+                            return result;
+                        }
+                    }
+                    else
+                    {
+                        result += line[pos++];
+                    }
+                }
+                return result;
+            }
+
+            auto comma = line.find(',', pos);
+            if (comma == std::string::npos) comma = line.size();
+            auto token = line.substr(pos, comma - pos);
+            pos = comma < line.size() ? comma + 1 : line.size();
+            return token;
+        }
+
+        std::string extract_json_string_value(const std::string& json, std::size_t keyEnd)
+        {
+            // After the key name, find ":"value"
+            auto colon = json.find(':', keyEnd);
+            if (colon == std::string::npos) return {};
+            auto quote1 = json.find('"', colon + 1);
+            if (quote1 == std::string::npos) return {};
+            auto quote2 = json.find('"', quote1 + 1);
+            if (quote2 == std::string::npos) return {};
+            return json.substr(quote1 + 1, quote2 - quote1 - 1);
+        }
+
+        void parse_objects_json(const std::string& json, std::vector<MonsterPart>& parts)
+        {
+            std::size_t pos = 0;
+            while (pos < json.size())
+            {
+                auto meshKey = json.find("meshName", pos);
+                if (meshKey == std::string::npos) break;
+                auto meshValue = extract_json_string_value(json, meshKey + 8);
+
+                auto texKey = json.find("textureName", meshKey + 8);
+                if (texKey == std::string::npos) break;
+                auto texValue = extract_json_string_value(json, texKey + 11);
+
+                MonsterPart part{};
+                part.meshFileName = std::move(meshValue);
+                part.textureFileName = std::move(texValue);
+                if (!part.meshFileName.empty() && !part.textureFileName.empty())
+                    parts.push_back(std::move(part));
+
+                pos = texKey + 11;
+            }
         }
     }
 
     MonsterTable load_monster_table(const std::filesystem::path& path)
     {
         MonsterTable table{};
-        std::ifstream file(path, std::ios::binary);
+
+        std::ifstream file(path);
         if (!file)
             return table;
 
-        std::vector<std::uint8_t> data{
-            std::istreambuf_iterator<char>(file),
-            std::istreambuf_iterator<char>() };
+        std::string line;
+        std::getline(file, line); // skip header
+        // RecordIndex,Signature,Format,Name,Unknown,
+        // WalkAnimation(5),RunAnimation(6),JumpAttack1Animation(7),Attack2Animation(8),Attack3Animation(9),
+        // DeathAnimation(10),BreathAnimation(11),DamageAnimation(12),IdleAnimation(13),
+        // Attack1Wav(14),...DeathWav(17),...AttachEffect(22),
+        // ObjectsCount(23),Objects(24),Height(25),EffectsCount(26),Effects(27)
 
-        if (data.size() < 7 || data[0] != 'M' || data[1] != 'O' || (data[2] != '2' && data[2] != '4'))
-            return table;
-
-        const auto magicVersion = data[2];
-        table.declaredCount = read_u32(data, 3);
-        std::size_t offset = 7;
-        constexpr std::uint32_t kAnimationSlots = 9;
-        const std::uint32_t soundSlots = magicVersion == '4' ? 9u : 8u;
-
-        for (std::uint32_t index = 0; index < table.declaredCount && offset < data.size(); ++index)
+        while (std::getline(file, line))
         {
+            if (line.empty())
+                continue;
+
+            std::size_t pos = 0;
+            next_csv_field(line, pos); // RecordIndex
+            next_csv_field(line, pos); // Signature
+            next_csv_field(line, pos); // Format
+
             MonsterDefinition monster{};
-            if (!read_sized_string(data, offset, monster.name))
-                break;
+            monster.name = next_csv_field(line, pos); // Name
+            next_csv_field(line, pos); // Unknown
 
-            if (offset >= data.size())
-                return table;
-            ++offset; // Unknown byte.
-
-            for (std::uint32_t i = 0; i < kAnimationSlots; ++i)
+            // Animation slots 0-8:  Walk(0), Run(1), JumpAttack1(2), Attack2(3), Attack3(4),
+            //                       Death(5), Breath(6), Damage(7), Idle(8)
+            const std::string_view slotNames[] = {
+                "Walk", "Run", "JumpAttack1", "Attack2", "Attack3",
+                "Death", "Breath", "Damage", "Idle"
+            };
+            (void)slotNames;
+            for (int i = 0; i < 9; ++i)
             {
-                std::string animation;
-                if (!read_sized_string(data, offset, animation))
-                    return table;
-                monster.animationSlots[i] = animation;
-                if (!is_placeholder(animation))
-                    monster.animationFileNames.push_back(std::move(animation));
+                auto anim = next_csv_field(line, pos);
+                monster.animationSlots[i] = anim;
+                if (!is_placeholder(anim))
+                    monster.animationFileNames.push_back(std::move(anim));
             }
 
-            for (std::uint32_t i = 0; i < soundSlots; ++i)
+            // Sound files: Attack1Wav..DeathWav (4 sounds)
+            for (int i = 0; i < 4; ++i)
             {
-                std::string sound;
-                if (!read_sized_string(data, offset, sound))
-                    return table;
+                auto sound = next_csv_field(line, pos);
                 if (!is_placeholder(sound))
                     monster.soundFileNames.push_back(std::move(sound));
             }
 
-            if (offset + 4 > data.size())
-                break;
-            const auto partCount = std::min<std::uint32_t>(read_u32(data, offset), 64);
-            offset += 4;
-            monster.parts.reserve(partCount);
-            for (std::uint32_t i = 0; i < partCount; ++i)
-            {
-                MonsterPart part{};
-                if (!read_sized_string(data, offset, part.meshFileName)
-                    || !read_sized_string(data, offset, part.textureFileName))
-                    return table;
-                if (!part.meshFileName.empty() && !part.textureFileName.empty())
-                    monster.parts.push_back(std::move(part));
-            }
+            // Effects: Attack1Effect..AttachEffect (5 fields)
+            for (int i = 0; i < 5; ++i)
+                next_csv_field(line, pos);
 
-            if (offset + 4 <= data.size())
+            next_csv_field(line, pos); // ObjectsCount
+            auto objects = next_csv_field(line, pos); // Objects (JSON array)
+            parse_objects_json(objects, monster.parts);
+
+            auto heightStr = next_csv_field(line, pos); // Height
+            if (!heightStr.empty())
             {
-                monster.height = read_f32(data, offset);
+                monster.height = std::strtof(heightStr.c_str(), nullptr);
                 monster.scale = monster.height;
-                offset += 4;
-            }
-            if (offset + 4 <= data.size())
-            {
-                const auto effectCount = read_u32(data, offset);
-                offset += 4;
-                if (effectCount > 4096 || offset + static_cast<std::size_t>(effectCount) * 8u > data.size())
-                    return table;
-                offset += static_cast<std::size_t>(effectCount) * 8u;
             }
 
             table.monsters.push_back(std::move(monster));
         }
 
+        table.declaredCount = static_cast<std::uint32_t>(table.monsters.size());
         table.parsed = !table.monsters.empty();
         return table;
     }

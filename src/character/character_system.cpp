@@ -9,6 +9,7 @@
 #include <limits>
 #include <format>
 #include <map>
+#include <optional>
 #include <string_view>
 #include <unordered_map>
 
@@ -287,39 +288,57 @@ namespace phoenix::character
 
         // ---- Character loading helpers ----
 
-        std::vector<CharacterAnimationChoice> load_animation_choices(const std::filesystem::path& animationRoot, const std::wstring& prefix)
+        std::vector<CharacterAnimationChoice> load_animation_choices_from_csv(
+            const std::filesystem::path& csvPath,
+            const std::filesystem::path& animationRoot)
         {
             std::vector<CharacterAnimationChoice> animations;
-            if (!std::filesystem::exists(animationRoot))
+            std::ifstream file(csvPath);
+            if (!file)
                 return animations;
-
-            for (const auto& entry : std::filesystem::directory_iterator(animationRoot))
+            std::string line;
+            std::getline(file, line); // skip header
+            while (std::getline(file, line))
             {
-                if (!entry.is_regular_file())
+                if (line.empty())
                     continue;
-                auto ext = entry.path().extension().wstring();
-                std::transform(ext.begin(), ext.end(), ext.begin(), [](wchar_t c) { return static_cast<wchar_t>(std::towlower(c)); });
-                if (ext != L".ani")
+                // RecordIndex,Header,Name,Mode,Unknown,Float1,Float2,Float3,Float4
+                std::size_t pos = 0;
+                auto next = [&]() -> std::string {
+                    auto comma = line.find(',', pos);
+                    if (comma == std::string::npos) comma = line.size();
+                    auto token = line.substr(pos, comma - pos);
+                    pos = comma < line.size() ? comma + 1 : line.size();
+                    return token;
+                };
+                next(); // RecordIndex (unused — vector index matches)
+                next(); // Header (AL3)
+                auto aniFileName = next();
+                if (aniFileName.empty())
                     continue;
-                auto stem = entry.path().stem().wstring();
-                std::transform(stem.begin(), stem.end(), stem.begin(), [](wchar_t c) { return static_cast<wchar_t>(std::towlower(c)); });
-                if (!stem.starts_with(prefix))
+
+                auto aniPath = animationRoot / aniFileName;
+                if (!std::filesystem::exists(aniPath))
                     continue;
 
                 CharacterAnimationChoice choice{};
-                choice.path = entry.path();
-                choice.name.reserve(stem.size());
-                for (wchar_t c : stem)
-                    choice.name.push_back(static_cast<char>(c & 0x7F));
+                choice.path = aniPath;
+                auto stem = aniPath.stem().string();
+                std::transform(stem.begin(), stem.end(), stem.begin(),
+                    [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+                choice.name = std::move(stem);
                 choice.animation = world::load_character_ani(choice.path);
                 if (choice.animation.parsed)
                     animations.push_back(std::move(choice));
             }
-
-            std::sort(animations.begin(), animations.end(), [](const auto& a, const auto& b) {
-                return a.name < b.name;
-            });
             return animations;
+        }
+
+        std::vector<CharacterAnimationChoice> load_animation_choices(const std::filesystem::path& animationRoot, const std::string& prefix)
+        {
+            const auto csvName = prefix.substr(0, prefix.size() - (prefix.ends_with("_") ? 1 : 0)) + "_action.csv";
+            const auto csvPath = animationRoot.parent_path() / csvName;
+            return load_animation_choices_from_csv(csvPath, animationRoot);
         }
 
         std::size_t find_animation(const std::vector<CharacterAnimationChoice>& animations, const std::string& token, std::size_t fallback)
@@ -330,20 +349,6 @@ namespace phoenix::character
             if (it != animations.end())
                 return static_cast<std::size_t>(std::distance(animations.begin(), it));
             return animations.empty() ? 0u : std::min(fallback, animations.size() - 1u);
-        }
-
-        std::wstring widen_ascii(std::string_view value)
-        {
-            std::wstring result;
-            result.reserve(value.size());
-            for (const auto c : value)
-                result.push_back(static_cast<wchar_t>(static_cast<unsigned char>(c)));
-            return result;
-        }
-
-        std::wstring indexed_name(std::string_view prefix, std::string_view part, int index, std::wstring_view extension)
-        {
-            return std::format(L"{}_{}{:03d}{}", widen_ascii(prefix), widen_ascii(part), index, extension);
         }
 
         std::string lower_ascii(std::string value)
@@ -403,51 +408,97 @@ namespace phoenix::character
                 if (pos == std::string::npos || pos < 3)
                     return false;
                 const auto indexPos = pos + marker.size();
-                return startsWithDigits(indexPos) && stem.size() == indexPos + 3;
+                if (!startsWithDigits(indexPos))
+                    return false;
+                return stem.size() == indexPos + 3
+                    || (stem.size() == indexPos + 5
+                        && stem[indexPos + 3] == '_'
+                        && std::isdigit(static_cast<unsigned char>(stem[indexPos + 4])));
             };
             return checkBody("_face") || checkBody("_hair");
         }
 
-        std::filesystem::path resolve_part_texture(
-            const std::filesystem::path& textureRoot,
-            std::string_view prefix,
-            std::string_view part,
-            int index)
+        struct PartTableEntry
         {
-            std::vector<std::wstring> candidates;
-            const auto base = std::format(L"{}_{}{:03d}", widen_ascii(prefix), widen_ascii(part), index);
-            candidates.push_back(std::format(L"{}.dds", base));
-            candidates.push_back(std::format(L"{}1.dds", base));
-            candidates.push_back(std::format(L"{}2.dds", base));
-            candidates.push_back(std::format(L"co_{}.dds", base));
+            std::string meshName;
+            std::string textureName;
+            bool alphaCutout{};
+        };
 
-            for (const auto& candidate : candidates)
+        using PartTable = std::unordered_map<int, PartTableEntry>;
+
+        PartTable load_part_table_csv(const std::filesystem::path& csvPath)
+        {
+            PartTable table;
+            std::ifstream file(csvPath);
+            if (!file)
+                return table;
+            std::string line;
+            std::getline(file, line); // skip header
+            while (std::getline(file, line))
             {
-                auto path = textureRoot / candidate;
-                if (std::filesystem::exists(path))
-                    return path;
+                if (line.empty())
+                    continue;
+                // Strip quotes and parse: RecordIndex,MeshIndex,TextureIndex,AlphaBlendingMode,AlphaBlendingModeValue,MeshName,TextureName
+                std::string clean;
+                clean.reserve(line.size());
+                for (char c : line)
+                    if (c != '"') clean += c;
+
+                std::size_t pos = 0;
+                auto next = [&]() -> std::string {
+                    auto comma = clean.find(',', pos);
+                    if (comma == std::string::npos) comma = clean.size();
+                    auto token = clean.substr(pos, comma - pos);
+                    pos = comma < clean.size() ? comma + 1 : clean.size();
+                    return token;
+                };
+                const auto recordIndex = std::atoi(next().c_str());
+                next(); // MeshIndex
+                next(); // TextureIndex
+                const auto alphaMode = next();
+                next(); // AlphaBlendingModeValue
+                auto meshName = next();
+                auto textureName = next();
+                if (meshName.empty())
+                    continue;
+                PartTableEntry entry{};
+                entry.meshName = std::move(meshName);
+                entry.textureName = std::move(textureName);
+                entry.alphaCutout = (alphaMode == "Alpha" || alphaMode == "Visibility");
+                table[recordIndex] = std::move(entry);
             }
-            return {};
+            return table;
         }
 
-        std::filesystem::path resolve_body_texture(
+        struct ResolvedPart
+        {
+            std::string mesh;
+            std::filesystem::path texture;
+            bool alphaCutout;
+        };
+
+        std::optional<ResolvedPart> resolve_part_from_table(
             const std::filesystem::path& textureRoot,
+            const std::filesystem::path& raceRoot,
             std::string_view prefix,
-            std::string_view part,
+            std::string_view partFile,
             int index)
         {
-            const auto bodyPrefix = prefix.substr(0, std::min<std::size_t>(3, prefix.size()));
-            std::vector<std::wstring> candidates{
-                std::format(L"{}_{}{:03d}.dds", widen_ascii(bodyPrefix), widen_ascii(part), index),
-                std::format(L"{}_{}{:03d}.dds", widen_ascii(prefix), widen_ascii(part), index),
-            };
-            for (const auto& candidate : candidates)
-            {
-                auto path = textureRoot / candidate;
-                if (std::filesystem::exists(path))
-                    return path;
-            }
-            return {};
+            auto csvPath = raceRoot / std::format("{}_{}.csv", prefix, partFile);
+            if (!std::filesystem::exists(csvPath))
+                return std::nullopt;
+            auto table = load_part_table_csv(csvPath);
+            auto it = table.find(index);
+            if (it == table.end())
+                return std::nullopt;
+            const auto& entry = it->second;
+            ResolvedPart part{};
+            part.mesh = entry.meshName;
+            part.alphaCutout = entry.alphaCutout;
+            if (!entry.textureName.empty())
+                part.texture = textureRoot / entry.textureName;
+            return part;
         }
 
         void append_loaded_part(
@@ -604,10 +655,29 @@ namespace phoenix::character
 
         cacheReady_ = true;
         {
+            std::size_t modelBytes = 0;
+            for (const auto& [k, m] : cachedModels_)
+                modelBytes += m.vertices.capacity() * sizeof(world::CharacterVertex)
+                    + m.faces.capacity() * sizeof(world::CharacterFace)
+                    + m.bones.capacity() * sizeof(world::CharacterBone);
+            std::size_t animBytes = 0;
+            std::size_t totalAnims = 0;
+            for (const auto& [k, choices] : cachedAnimations_)
+            {
+                totalAnims += choices.size();
+                for (const auto& c : choices)
+                    for (const auto& bone : c.animation.bones)
+                        animBytes += bone.rotationFrames.capacity() * sizeof(world::CharacterAnimationRotationFrame)
+                            + bone.translationFrames.capacity() * sizeof(world::CharacterAnimationTranslationFrame)
+                            + sizeof(world::CharacterAnimationBone);
+            }
             std::ofstream log("PhoenixEngine.log", std::ios::app);
             log << "Character cache: models=" << cachedModels_.size()
                 << " textures=" << cachedTexturePaths_.size()
                 << " animationSets=" << cachedAnimations_.size()
+                << " totalAnims=" << totalAnims
+                << " modelMB=" << (modelBytes / (1024 * 1024))
+                << " animMB=" << (animBytes / (1024 * 1024))
                 << "\n";
         }
         return true;
@@ -622,7 +692,7 @@ namespace phoenix::character
     {
         preload(dataRoot);
 
-        const auto root = dataRoot / "Character" / widen_ascii(appearance.raceFolder);
+        const auto root = dataRoot / "Character" / appearance.raceFolder;
         const auto meshRoot = root / "3DC";
         const auto textureRoot = root / "DDS";
         const auto animationRoot = root / "ANI";
@@ -634,26 +704,41 @@ namespace phoenix::character
 
         struct Part
         {
-            std::wstring mesh;
+            std::string mesh;
             std::filesystem::path texture;
             bool alphaCutout;
         };
 
-        const std::array<Part, 6> parts{ {
-            { indexed_name(appearance.prefix, "torso", appearance.armorIndex, L".3DC"), resolve_part_texture(textureRoot, appearance.prefix, "torso", appearance.armorIndex), false },
-            { indexed_name(appearance.prefix, "lower", appearance.armorIndex, L".3DC"), resolve_part_texture(textureRoot, appearance.prefix, "lower", appearance.armorIndex), false },
-            { indexed_name(appearance.prefix, "hand", appearance.armorIndex, L".3DC"), resolve_part_texture(textureRoot, appearance.prefix, "hand", appearance.armorIndex), false },
-            { indexed_name(appearance.prefix, "boots", appearance.armorIndex, L".3DC"), resolve_part_texture(textureRoot, appearance.prefix, "boots", appearance.armorIndex), false },
-            { indexed_name(appearance.prefix, "face", appearance.faceIndex, L".3DC"), resolve_body_texture(textureRoot, appearance.prefix, "face", appearance.faceIndex), false },
-            { indexed_name(appearance.prefix, "hair", appearance.hairIndex, L".3DC"), resolve_body_texture(textureRoot, appearance.prefix, "hair", appearance.hairIndex), true },
-        } };
+        // Resolve parts from CSV tables (MLT converted to CSV).
+        // Helmet and hair are mutually exclusive: if helmet is visible, hair is hidden.
+        struct PartSpec { std::string_view partFile; int index; };
+        std::vector<PartSpec> partSpecs{
+            { "upper",   appearance.upperIndex },
+            { "lower",   appearance.lowerIndex },
+            { "hand",    appearance.handIndex },
+            { "foot",    appearance.footIndex },
+            { "face",    appearance.faceIndex },
+        };
+        if (appearance.helmetVisible)
+            partSpecs.push_back({ "helmet", appearance.helmetIndex });
+        else
+            partSpecs.push_back({ "hair", appearance.hairIndex });
+
+        std::vector<Part> parts;
+        parts.reserve(6);
+        for (const auto& spec : partSpecs)
+        {
+            auto resolved = resolve_part_from_table(textureRoot, root, appearance.prefix, spec.partFile, spec.index);
+            if (resolved)
+                parts.push_back({ std::move(resolved->mesh), std::move(resolved->texture), resolved->alphaCutout });
+        }
 
         // Load animations.
         const auto prefix = appearance.prefix + "_";
         if (const auto it = cachedAnimations_.find(animation_cache_key(animationRoot, prefix)); it != cachedAnimations_.end())
             data_.animations = it->second;
         else
-            data_.animations = load_animation_choices(animationRoot, widen_ascii(prefix));
+            data_.animations = load_animation_choices(animationRoot, prefix);
         data_.idleAnimation = find_animation(data_.animations, prefix + "000_normal", 0);
         data_.walkAnimation = find_animation(data_.animations, prefix + "001_walk", 1);
         data_.runAnimation = find_animation(data_.animations, prefix + "002_run", 2);
@@ -715,7 +800,11 @@ namespace phoenix::character
             std::ofstream log("PhoenixEngine.log", std::ios::app);
             log << "Character loaded: race=" << appearance.raceFolder
                 << " prefix=" << appearance.prefix
-                << " armor=" << appearance.armorIndex
+                << " upper=" << appearance.upperIndex
+                << " lower=" << appearance.lowerIndex
+                << " hand=" << appearance.handIndex
+                << " foot=" << appearance.footIndex
+                << " helmet=" << appearance.helmetIndex
                 << " face=" << appearance.faceIndex
                 << " hair=" << appearance.hairIndex
                 << " parts=" << parsedParts

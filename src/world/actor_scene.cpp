@@ -7,6 +7,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstring>
 #include <cctype>
 #include <fstream>
 #include <limits>
@@ -61,7 +62,7 @@ namespace phoenix::world
             auto path = assets.resolve(name);
             if (!path.empty())
                 return path;
-            path = assets.resolve((folder / std::filesystem::path(phoenix::assets::widen_ascii(name))).generic_string());
+            path = assets.resolve((folder / name).generic_string());
             if (!path.empty())
                 return path;
             return {};
@@ -93,17 +94,6 @@ namespace phoenix::world
             }
         };
 
-        struct ActorSourceVertex
-        {
-            float position[3]{};
-            float normal[3]{};
-            float weights[3]{};
-            std::uint8_t bones[3]{};
-            std::uint32_t meshBoneBase{};
-            std::uint32_t meshBoneCount{};
-            float outputScale{ kActorMeshScale };
-        };
-
         struct ModelBuild
         {
             std::uint32_t firstVertex{};
@@ -112,12 +102,8 @@ namespace phoenix::world
             std::uint32_t indexCount{};
             float radius{ 24.0f };
             float labelHeight{ 32.0f };
-            std::vector<ActorSourceVertex> sourceVertices;
-            std::vector<CharacterBone> meshBones;
-            std::vector<std::vector<phoenix::renderer::TerrainVertex>> animationFrames; // breath
-            std::vector<std::vector<phoenix::renderer::TerrainVertex>> idleFrames;
-            std::vector<std::vector<phoenix::renderer::TerrainVertex>> walkFrames;
-            std::vector<std::vector<phoenix::renderer::TerrainVertex>> runFrames;
+            ActorSkinData skinData;
+            ActorAnimationSet animations;
             bool built{};
         };
 
@@ -137,9 +123,9 @@ namespace phoenix::world
             ModelBuild& build)
         {
             const auto baseVertex = static_cast<std::uint32_t>(vertices.size());
-            const auto meshBoneBase = static_cast<std::uint32_t>(build.meshBones.size());
+            const auto meshBoneBase = static_cast<std::uint32_t>(build.skinData.meshBones.size());
             const auto meshBoneCount = static_cast<std::uint32_t>(model.bones.size());
-            build.meshBones.insert(build.meshBones.end(), model.bones.begin(), model.bones.end());
+            build.skinData.meshBones.insert(build.skinData.meshBones.end(), model.bones.begin(), model.bones.end());
             for (const auto& src : model.vertices)
             {
                 phoenix::renderer::TerrainVertex v{};
@@ -168,7 +154,7 @@ namespace phoenix::world
                 source.meshBoneBase = meshBoneBase;
                 source.meshBoneCount = meshBoneCount;
                 source.outputScale = kActorMeshScale * scale;
-                build.sourceVertices.push_back(source);
+                build.skinData.sourceVertices.push_back(source);
             }
 
             for (const auto& face : model.faces)
@@ -360,14 +346,16 @@ namespace phoenix::world
             return { last.translation[0], last.translation[1], last.translation[2] };
         }
 
-        std::vector<Mat4> compute_client_finals(const CharacterAnimation& animation, float frame)
+        static constexpr std::size_t kMaxBones = 128;
+
+        void compute_client_finals(const CharacterAnimation& animation, float frame, Mat4* finals, std::size_t maxBones)
         {
-            const auto boneCount = animation.bones.size();
-            std::vector<Mat4> rawMatrices(boneCount);
+            const auto boneCount = std::min(animation.bones.size(), maxBones);
+            Mat4 rawMatrices[kMaxBones];
             for (std::size_t i = 0; i < boneCount; ++i)
                 rawMatrices[i] = mat4_from_shaiya_transposed(animation.bones[i].matrix);
 
-            std::vector<Mat4> locals(boneCount);
+            Mat4 locals[kMaxBones];
             for (std::size_t i = 0; i < boneCount; ++i)
             {
                 const auto& bone = animation.bones[i];
@@ -391,7 +379,8 @@ namespace phoenix::world
                 locals[i] = local;
             }
 
-            std::vector<Mat4> finals(boneCount, Mat4::identity());
+            for (std::size_t i = 0; i < boneCount; ++i)
+                finals[i] = Mat4::identity();
             for (std::size_t i = 0; i < boneCount; ++i)
             {
                 auto matrix = locals[i];
@@ -400,23 +389,29 @@ namespace phoenix::world
                     matrix = mat4_multiply(matrix, finals[static_cast<std::size_t>(parent)]);
                 finals[i] = matrix;
             }
-            return finals;
         }
 
-        std::vector<phoenix::renderer::TerrainVertex> skin_actor_frame(
-            const ModelBuild& build,
-            std::span<const phoenix::renderer::TerrainVertex> bindVertices,
+        void skin_actor_frame_inplace(
+            const ActorSkinData& skin,
+            std::span<phoenix::renderer::TerrainVertex> animated,
             const CharacterAnimation& animation,
             float frame)
         {
-            auto animated = std::vector<phoenix::renderer::TerrainVertex>(bindVertices.begin(), bindVertices.end());
-            if (!animation.parsed || animation.bones.empty() || build.sourceVertices.size() != animated.size())
-                return animated;
+            if (!animation.parsed || animation.bones.empty() || skin.sourceVertices.size() != animated.size())
+                return;
 
-            const auto clientFinals = compute_client_finals(animation, frame);
-            for (std::size_t i = 0; i < build.sourceVertices.size(); ++i)
+            Mat4 clientFinals[kMaxBones];
+            const auto boneCount = std::min(animation.bones.size(), static_cast<std::size_t>(kMaxBones));
+            compute_client_finals(animation, frame, clientFinals, kMaxBones);
+
+            const auto meshBoneCount = std::min(skin.meshBones.size(), static_cast<std::size_t>(kMaxBones));
+            Mat4 skinMatrices[kMaxBones];
+            bool skinMatrixComputed[kMaxBones];
+            std::memset(skinMatrixComputed, 0, sizeof(bool) * meshBoneCount);
+
+            for (std::size_t i = 0; i < skin.sourceVertices.size(); ++i)
             {
-                const auto& source = build.sourceVertices[i];
+                const auto& source = skin.sourceVertices[i];
                 Vec3 position{};
                 Vec3 normal{};
                 float totalWeight = 0.0f;
@@ -424,17 +419,24 @@ namespace phoenix::world
                 for (std::size_t influence = 0; influence < 3; ++influence)
                 {
                     const auto boneIndex = static_cast<std::size_t>(source.bones[influence]);
-                    if (boneIndex >= source.meshBoneCount || boneIndex >= clientFinals.size())
+                    if (boneIndex >= source.meshBoneCount || boneIndex >= boneCount)
                         continue;
-                    const float weight = std::max(0.0f, source.weights[influence]);
+                    const float weight = source.weights[influence];
                     if (weight <= 0.0001f)
                         continue;
                     const auto meshBoneIdx = static_cast<std::size_t>(source.meshBoneBase) + boneIndex;
-                    if (meshBoneIdx >= build.meshBones.size())
+                    if (meshBoneIdx >= meshBoneCount)
                         continue;
 
-                    const auto meshBone = mat4_from_shaiya_transposed(build.meshBones[meshBoneIdx].matrix);
-                    const auto skinMatrix = mat4_multiply(meshBone, clientFinals[boneIndex]);
+                    if (!skinMatrixComputed[meshBoneIdx])
+                    {
+                        skinMatrices[meshBoneIdx] = mat4_multiply(
+                            mat4_from_shaiya_transposed(skin.meshBones[meshBoneIdx].matrix),
+                            clientFinals[boneIndex]);
+                        skinMatrixComputed[meshBoneIdx] = true;
+                    }
+                    const auto& skinMatrix = skinMatrices[meshBoneIdx];
+
                     const Vec3 srcPos{ source.position[0], source.position[1], source.position[2] };
                     const Vec3 srcNrm{ source.normal[0], source.normal[1], source.normal[2] };
                     const auto p = transform_point(skinMatrix, srcPos);
@@ -451,19 +453,23 @@ namespace phoenix::world
                 if (totalWeight <= 0.0001f)
                     continue;
 
-                position.x /= totalWeight;
-                position.y /= totalWeight;
-                position.z /= totalWeight;
-                normal = normalize_vec3({ normal.x / totalWeight, normal.y / totalWeight, normal.z / totalWeight });
+                const float invWeight = 1.0f / totalWeight;
+                position.x *= invWeight;
+                position.y *= invWeight;
+                position.z *= invWeight;
+                const float nx = normal.x * invWeight;
+                const float ny = normal.y * invWeight;
+                const float nz = normal.z * invWeight;
+                const float nlen = std::sqrt(nx * nx + ny * ny + nz * nz);
+                const float invLen = nlen > 0.0001f ? 1.0f / nlen : 0.0f;
 
                 animated[i].position[0] = position.x * source.outputScale;
                 animated[i].position[1] = position.y * source.outputScale;
                 animated[i].position[2] = position.z * source.outputScale;
-                animated[i].normal[0] = normal.x;
-                animated[i].normal[1] = normal.y;
-                animated[i].normal[2] = normal.z;
+                animated[i].normal[0] = nx * invLen;
+                animated[i].normal[1] = ny * invLen;
+                animated[i].normal[2] = nz * invLen;
             }
-            return animated;
         }
 
         std::uint32_t resolve_texture_layer(
@@ -545,84 +551,31 @@ namespace phoenix::world
 
             if (buildAnimation && result.built && result.vertexCount > 0)
             {
-                const auto bind = std::span<const phoenix::renderer::TerrainVertex>(
-                    vertices.data() + result.firstVertex,
-                    result.vertexCount);
+                // Store animation keyframes for runtime skinning (no pre-baked frames).
+                const auto breathName = !actor_asset_placeholder(def.animationSlots[6]) ? def.animationSlots[6] : def.animationSlots[8];
+                const auto breathPath = resolve_actor_file(assets, folder, breathName);
+                if (!breathPath.empty())
+                    result.animations.breath = load_character_ani(breathPath);
 
-                // Default animation: breathing (slot 6) or idle (slot 8) as fallback.
-                const auto animationName = !actor_asset_placeholder(def.animationSlots[6]) ? def.animationSlots[6] : def.animationSlots[8];
-                const auto animationPath = resolve_actor_file(assets, folder, animationName);
-                const auto animation = animationPath.empty() ? CharacterAnimation{} : load_character_ani(animationPath);
-                if (animation.parsed && animation.endKeyframe > animation.startKeyframe)
-                {
-                    const auto frameCount = std::clamp<std::uint32_t>(animation.endKeyframe - animation.startKeyframe, 8u, 48u);
-                    result.animationFrames.reserve(frameCount);
-                    for (std::uint32_t i = 0; i < frameCount; ++i)
-                    {
-                        const float t = static_cast<float>(i) / static_cast<float>(frameCount);
-                        const float frame = static_cast<float>(animation.startKeyframe)
-                            + t * static_cast<float>(animation.endKeyframe - animation.startKeyframe);
-                        result.animationFrames.push_back(skin_actor_frame(result, bind, animation, frame));
-                    }
-                }
-
-                // Idle gesture animation (slot 8) — occasional gesture played over breathing.
                 if (!actor_asset_placeholder(def.animationSlots[8]))
                 {
                     const auto idlePath = resolve_actor_file(assets, folder, def.animationSlots[8]);
-                    const auto idleAnim = idlePath.empty() ? CharacterAnimation{} : load_character_ani(idlePath);
-                    if (idleAnim.parsed && idleAnim.endKeyframe > idleAnim.startKeyframe)
-                    {
-                        const auto idleFrameCount = std::clamp<std::uint32_t>(idleAnim.endKeyframe - idleAnim.startKeyframe, 8u, 48u);
-                        result.idleFrames.reserve(idleFrameCount);
-                        for (std::uint32_t i = 0; i < idleFrameCount; ++i)
-                        {
-                            const float t = static_cast<float>(i) / static_cast<float>(idleFrameCount);
-                            const float frame = static_cast<float>(idleAnim.startKeyframe)
-                                + t * static_cast<float>(idleAnim.endKeyframe - idleAnim.startKeyframe);
-                            result.idleFrames.push_back(skin_actor_frame(result, bind, idleAnim, frame));
-                        }
-                    }
+                    if (!idlePath.empty())
+                        result.animations.idle = load_character_ani(idlePath);
                 }
 
-                // Walk animation (slot 0) — built with reduced frame count for performance.
                 if (!actor_asset_placeholder(def.animationSlots[0]))
                 {
                     const auto walkPath = resolve_actor_file(assets, folder, def.animationSlots[0]);
-                    const auto walkAnim = walkPath.empty() ? CharacterAnimation{} : load_character_ani(walkPath);
-                    if (walkAnim.parsed && walkAnim.endKeyframe > walkAnim.startKeyframe)
-                    {
-                        const auto walkFrameCount = std::clamp<std::uint32_t>(
-                            (walkAnim.endKeyframe - walkAnim.startKeyframe) / 2u, 6u, 16u);
-                        result.walkFrames.reserve(walkFrameCount);
-                        for (std::uint32_t i = 0; i < walkFrameCount; ++i)
-                        {
-                            const float t = static_cast<float>(i) / static_cast<float>(walkFrameCount);
-                            const float f = static_cast<float>(walkAnim.startKeyframe)
-                                + t * static_cast<float>(walkAnim.endKeyframe - walkAnim.startKeyframe);
-                            result.walkFrames.push_back(skin_actor_frame(result, bind, walkAnim, f));
-                        }
-                    }
+                    if (!walkPath.empty())
+                        result.animations.walk = load_character_ani(walkPath);
                 }
 
-                // Run animation (slot 1) — built with reduced frame count for performance.
                 if (!actor_asset_placeholder(def.animationSlots[1]))
                 {
                     const auto runPath = resolve_actor_file(assets, folder, def.animationSlots[1]);
-                    const auto runAnim = runPath.empty() ? CharacterAnimation{} : load_character_ani(runPath);
-                    if (runAnim.parsed && runAnim.endKeyframe > runAnim.startKeyframe)
-                    {
-                        const auto runFrameCount = std::clamp<std::uint32_t>(
-                            (runAnim.endKeyframe - runAnim.startKeyframe) / 2u, 6u, 16u);
-                        result.runFrames.reserve(runFrameCount);
-                        for (std::uint32_t i = 0; i < runFrameCount; ++i)
-                        {
-                            const float t = static_cast<float>(i) / static_cast<float>(runFrameCount);
-                            const float f = static_cast<float>(runAnim.startKeyframe)
-                                + t * static_cast<float>(runAnim.endKeyframe - runAnim.startKeyframe);
-                            result.runFrames.push_back(skin_actor_frame(result, bind, runAnim, f));
-                        }
-                    }
+                    if (!runPath.empty())
+                        result.animations.run = load_character_ani(runPath);
                 }
             }
             return result;
@@ -778,6 +731,15 @@ namespace phoenix::world
         }
     }
 
+    void skin_actor_vertices(
+        const ActorSkinData& skin,
+        std::span<phoenix::renderer::TerrainVertex> vertices,
+        const CharacterAnimation& animation,
+        float frame)
+    {
+        skin_actor_frame_inplace(skin, vertices, animation, frame);
+    }
+
     ActorScene build_actor_scene(
         const std::filesystem::path& dataRoot,
         const std::string& mapStem,
@@ -795,10 +757,10 @@ namespace phoenix::world
             return scene;
         }
 
-        const auto monsterTable = load_monster_table(dataRoot / "Monster" / "monster.MON");
-        const auto npcTable = load_monster_table(dataRoot / "Npc" / "npc.MON");
-        const auto monsterSData = load_monster_sdata(dataRoot / "Monster" / "Monster.SData");
-        const auto npcQuestSData = load_npcquest_sdata(dataRoot / "Npc" / "NpcQuest.SData");
+        const auto monsterTable = load_monster_table(dataRoot / "Monster" / "mob.csv");
+        const auto npcTable = load_monster_table(dataRoot / "Npc" / "npc.csv");
+        const auto monsterSData = load_monster_sdata(dataRoot / "Monster" / "monster.csv");
+        const auto npcQuestSData = load_npcquest_sdata(dataRoot / "Npc" / "NpcQuest.csv");
         if (!monsterTable.parsed && !npcTable.parsed)
         {
             std::ofstream log("PhoenixEngine.log", std::ios::app);
@@ -857,13 +819,14 @@ namespace phoenix::world
                     textureLayerBase,
                     kNpcScale,
                     true);
-                if (!built.animationFrames.empty())
+                if (!built.skinData.sourceVertices.empty())
                 {
                     ActorScene::VertexAnimation animation{};
                     animation.firstVertex = built.firstVertex;
                     animation.vertexCount = built.vertexCount;
-                    animation.frames = std::move(built.animationFrames);
-                    animation.idleFrames = std::move(built.idleFrames);
+                    animation.skinData = std::move(built.skinData);
+                    animation.animations = std::move(built.animations);
+                    animation.hasActorSkin = true;
                     animation.boundingRadius = built.radius;
                     npcKeyToAnimIndex[key] = scene.vertexAnimations.size();
                     scene.vertexAnimations.push_back(std::move(animation));
@@ -914,15 +877,14 @@ namespace phoenix::world
                         textureLayerBase,
                         scale,
                         true);
-                    if (!built.animationFrames.empty())
+                    if (!built.skinData.sourceVertices.empty())
                     {
                         ActorScene::VertexAnimation animation{};
                         animation.firstVertex = built.firstVertex;
                         animation.vertexCount = built.vertexCount;
-                        animation.frames = std::move(built.animationFrames);
-                        animation.idleFrames = std::move(built.idleFrames);
-                        animation.walkFrames = std::move(built.walkFrames);
-                        animation.runFrames = std::move(built.runFrames);
+                        animation.skinData = std::move(built.skinData);
+                        animation.animations = std::move(built.animations);
+                        animation.hasActorSkin = true;
                         animation.boundingRadius = built.radius;
                         animation.isMob = true;
                         monsterKeyToAnimIndex[spawn.mobId] = scene.vertexAnimations.size();
@@ -1077,7 +1039,7 @@ namespace phoenix::world
                         anim.worldY = heightSampler(anim.worldX, anim.worldZ, heightUserData);
                     // Expand bounding radius to cover the farthest instance from centroid,
                     // just like mobs. NPCs of the same type (e.g. animals) can be spread
-                    // across the map — without this, culling kills their animation.
+                    // across the map ï¿½ without this, culling kills their animation.
                     float maxDistSq = 0.0f;
                     for (const auto& [groupKey, instances] : npcGroups)
                     {
@@ -1103,6 +1065,13 @@ namespace phoenix::world
             append_animated_batch(scene, npcModels[npcKey], instances, label);
         }
 
+        std::size_t animMemBytes = 0;
+        for (const auto& va : scene.vertexAnimations)
+        {
+            for (const auto& f : va.frames) animMemBytes += f.size() * sizeof(phoenix::renderer::TerrainVertex);
+            animMemBytes += va.skinData.sourceVertices.size() * sizeof(ActorSourceVertex);
+            animMemBytes += va.skinData.meshBones.size() * sizeof(CharacterBone);
+        }
         std::ofstream log("PhoenixEngine.log", std::ios::app);
         log << "Actor scene: svmap=" << mapStem
             << " npcs=" << scene.npcCount
@@ -1111,7 +1080,8 @@ namespace phoenix::world
             << " textures=" << scene.texturePaths.size()
             << " batches=" << scene.batches.size()
             << " npcAnimatedBatches=" << scene.animatedBatches.size()
-            << " npcVertexAnimations=" << scene.vertexAnimations.size()
+            << " vertexAnimations=" << scene.vertexAnimations.size()
+            << " animFrameMemMB=" << (animMemBytes / (1024 * 1024))
             << " monsterSData=" << monsterSData.records.size()
             << " npcSData=" << npcQuestSData.records.size()
             << "\n";

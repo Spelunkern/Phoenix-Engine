@@ -2,118 +2,24 @@
 
 #include "assets/data_index.h"
 
+#define STB_VORBIS_HEADER_ONLY
+#include "stb_vorbis.c"
+
+#define MINIAUDIO_IMPLEMENTATION
+#include "miniaudio.h"
+
+#undef STB_VORBIS_HEADER_ONLY
+#include "stb_vorbis.c"
+
 #include <algorithm>
 #include <cmath>
-#include <cstdint>
-#include <cstring>
-#include <fstream>
-#include <memory>
 #include <string>
 #include <unordered_map>
-
-#ifndef WIN32_LEAN_AND_MEAN
-#define WIN32_LEAN_AND_MEAN
-#endif
-#include <windows.h>
-#include <xaudio2.h>
 
 namespace phoenix::audio
 {
     namespace
     {
-        struct WaveClip
-        {
-            WAVEFORMATEX format{};
-            std::vector<std::uint8_t> data;
-            bool valid{};
-        };
-
-        std::uint32_t read_u32(const std::vector<std::uint8_t>& bytes, std::size_t offset)
-        {
-            if (offset + 4 > bytes.size())
-                return 0;
-            std::uint32_t value{};
-            std::memcpy(&value, bytes.data() + offset, sizeof(value));
-            return value;
-        }
-
-        std::uint16_t read_u16(const std::vector<std::uint8_t>& bytes, std::size_t offset)
-        {
-            if (offset + 2 > bytes.size())
-                return 0;
-            std::uint16_t value{};
-            std::memcpy(&value, bytes.data() + offset, sizeof(value));
-            return value;
-        }
-
-        bool chunk_id_equals(const std::vector<std::uint8_t>& bytes, std::size_t offset, const char* id)
-        {
-            return offset + 4 <= bytes.size() && std::memcmp(bytes.data() + offset, id, 4) == 0;
-        }
-
-        WaveClip load_wave_clip(const std::filesystem::path& path)
-        {
-            WaveClip clip{};
-            std::ifstream file(path, std::ios::binary);
-            if (!file)
-                return clip;
-
-            std::vector<std::uint8_t> bytes(
-                (std::istreambuf_iterator<char>(file)),
-                std::istreambuf_iterator<char>());
-            if (bytes.size() < 44
-                || !chunk_id_equals(bytes, 0, "RIFF")
-                || !chunk_id_equals(bytes, 8, "WAVE"))
-            {
-                return clip;
-            }
-
-            bool foundFmt = false;
-            bool foundData = false;
-            std::size_t dataOffset = 0;
-            std::uint32_t dataSize = 0;
-            std::size_t offset = 12;
-            while (offset + 8 <= bytes.size())
-            {
-                const auto chunkSize = read_u32(bytes, offset + 4);
-                const auto payload = offset + 8;
-                if (payload + chunkSize > bytes.size())
-                    break;
-
-                if (chunk_id_equals(bytes, offset, "fmt ") && chunkSize >= 16)
-                {
-                    clip.format.wFormatTag = read_u16(bytes, payload);
-                    clip.format.nChannels = read_u16(bytes, payload + 2);
-                    clip.format.nSamplesPerSec = read_u32(bytes, payload + 4);
-                    clip.format.nAvgBytesPerSec = read_u32(bytes, payload + 8);
-                    clip.format.nBlockAlign = read_u16(bytes, payload + 12);
-                    clip.format.wBitsPerSample = read_u16(bytes, payload + 14);
-                    clip.format.cbSize = 0;
-                    foundFmt = true;
-                }
-                else if (chunk_id_equals(bytes, offset, "data"))
-                {
-                    dataOffset = payload;
-                    dataSize = chunkSize;
-                    foundData = true;
-                }
-
-                offset = payload + chunkSize + (chunkSize & 1u);
-            }
-
-            if (!foundFmt || !foundData || clip.format.wFormatTag != WAVE_FORMAT_PCM
-                || clip.format.nChannels == 0 || clip.format.nSamplesPerSec == 0
-                || clip.format.wBitsPerSample == 0 || dataSize == 0)
-            {
-                return {};
-            }
-
-            clip.data.assign(bytes.begin() + static_cast<std::ptrdiff_t>(dataOffset),
-                bytes.begin() + static_cast<std::ptrdiff_t>(dataOffset + dataSize));
-            clip.valid = !clip.data.empty();
-            return clip;
-        }
-
         std::string key_for_path(const std::filesystem::path& path)
         {
             return phoenix::assets::lower_ascii(path.lexically_normal().string());
@@ -124,19 +30,16 @@ namespace phoenix::audio
     {
         struct ActiveVoice
         {
-            std::shared_ptr<WaveClip> clip;
-            IXAudio2SourceVoice* voice{};
+            ma_sound sound{};
+            bool soundValid{};
             float currentVolume{};
             float targetVolume{};
             float silentSeconds{};
             bool music{};
         };
 
-        IXAudio2* engine{};
-        IXAudio2MasteringVoice* masterVoice{};
+        ma_engine engine{};
         bool initialized{};
-        bool comInitialized{};
-        std::unordered_map<std::string, std::shared_ptr<WaveClip>> clips;
         std::unordered_map<std::string, ActiveVoice> voices;
 
         ~Impl()
@@ -149,22 +52,9 @@ namespace phoenix::audio
             if (initialized)
                 return true;
 
-            const auto coResult = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
-            comInitialized = SUCCEEDED(coResult);
-            if (FAILED(coResult) && coResult != RPC_E_CHANGED_MODE)
+            ma_engine_config config = ma_engine_config_init();
+            if (ma_engine_init(&config, &engine) != MA_SUCCESS)
                 return false;
-
-            if (FAILED(XAudio2Create(&engine, 0, XAUDIO2_DEFAULT_PROCESSOR)) || !engine)
-            {
-                shutdown();
-                return false;
-            }
-
-            if (FAILED(engine->CreateMasteringVoice(&masterVoice)) || !masterVoice)
-            {
-                shutdown();
-                return false;
-            }
 
             initialized = true;
             return true;
@@ -174,46 +64,20 @@ namespace phoenix::audio
         {
             for (auto& [_, active] : voices)
             {
-                if (active.voice)
+                if (active.soundValid)
                 {
-                    active.voice->Stop(0);
-                    active.voice->DestroyVoice();
-                    active.voice = nullptr;
+                    ma_sound_stop(&active.sound);
+                    ma_sound_uninit(&active.sound);
+                    active.soundValid = false;
                 }
             }
             voices.clear();
-            clips.clear();
 
-            if (masterVoice)
+            if (initialized)
             {
-                masterVoice->DestroyVoice();
-                masterVoice = nullptr;
+                ma_engine_uninit(&engine);
+                initialized = false;
             }
-            if (engine)
-            {
-                engine->Release();
-                engine = nullptr;
-            }
-            if (comInitialized)
-            {
-                CoUninitialize();
-                comInitialized = false;
-            }
-            initialized = false;
-        }
-
-        std::shared_ptr<WaveClip> clip_for(const std::filesystem::path& path)
-        {
-            const auto key = key_for_path(path);
-            if (const auto it = clips.find(key); it != clips.end())
-                return it->second;
-
-            auto clip = std::make_shared<WaveClip>(load_wave_clip(path));
-            if (!clip->valid)
-                return {};
-
-            clips.emplace(key, clip);
-            return clip;
         }
 
         ActiveVoice* ensure_voice(const std::filesystem::path& path, bool music)
@@ -228,34 +92,24 @@ namespace phoenix::audio
                 return &it->second;
             }
 
-            auto clip = clip_for(path);
-            if (!clip)
-                return nullptr;
+            auto [it, _] = voices.emplace(key, ActiveVoice{});
+            auto& active = it->second;
+            active.music = music;
 
-            IXAudio2SourceVoice* voice = nullptr;
-            if (FAILED(engine->CreateSourceVoice(&voice, &clip->format)) || !voice)
-                return nullptr;
-
-            XAUDIO2_BUFFER buffer{};
-            buffer.AudioBytes = static_cast<UINT32>(clip->data.size());
-            buffer.pAudioData = clip->data.data();
-            buffer.Flags = XAUDIO2_END_OF_STREAM;
-            buffer.LoopCount = XAUDIO2_LOOP_INFINITE;
-            if (FAILED(voice->SubmitSourceBuffer(&buffer)))
+            const auto pathStr = path.string();
+            if (ma_sound_init_from_file(&engine, pathStr.c_str(),
+                    MA_SOUND_FLAG_DECODE | MA_SOUND_FLAG_NO_SPATIALIZATION,
+                    nullptr, nullptr, &active.sound) != MA_SUCCESS)
             {
-                voice->DestroyVoice();
+                voices.erase(it);
                 return nullptr;
             }
 
-            voice->SetVolume(0.0f);
-            voice->Start(0);
-
-            ActiveVoice active{};
-            active.clip = std::move(clip);
-            active.voice = voice;
-            active.music = music;
-            const auto [it, _] = voices.emplace(key, std::move(active));
-            return &it->second;
+            active.soundValid = true;
+            ma_sound_set_looping(&active.sound, MA_TRUE);
+            ma_sound_set_volume(&active.sound, 0.0f);
+            ma_sound_start(&active.sound);
+            return &active;
         }
 
         void update(float deltaSeconds, const std::vector<AudibleTrack>& tracks)
@@ -281,8 +135,8 @@ namespace phoenix::audio
             {
                 auto& active = it->second;
                 active.currentVolume = std::lerp(active.currentVolume, active.targetVolume, fadeRate);
-                if (active.voice)
-                    active.voice->SetVolume(active.currentVolume);
+                if (active.soundValid)
+                    ma_sound_set_volume(&active.sound, active.currentVolume);
 
                 if (active.targetVolume <= 0.001f && active.currentVolume <= 0.003f)
                     active.silentSeconds += deltaSeconds;
@@ -291,10 +145,10 @@ namespace phoenix::audio
 
                 if (active.silentSeconds > 1.2f)
                 {
-                    if (active.voice)
+                    if (active.soundValid)
                     {
-                        active.voice->Stop(0);
-                        active.voice->DestroyVoice();
+                        ma_sound_stop(&active.sound);
+                        ma_sound_uninit(&active.sound);
                     }
                     it = voices.erase(it);
                 }

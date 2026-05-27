@@ -2,6 +2,7 @@
 
 #include "assets/data_index.h"
 #include "renderer/vulkan_renderer.h"
+#include "world/actor_scene.h"
 #include "world/eft_loader.h"
 #include "world/mani_loader.h"
 #include "world/wld_loader.h"
@@ -12,10 +13,6 @@
 #include <unordered_map>
 #include <vector>
 
-#ifndef WIN32_LEAN_AND_MEAN
-#define WIN32_LEAN_AND_MEAN
-#endif
-#include <windows.h>
 
 namespace phoenix::runtime
 {
@@ -162,10 +159,9 @@ namespace phoenix::runtime
         {
             std::uint32_t firstVertex{};
             std::uint32_t vertexCount{};
-            std::vector<std::vector<phoenix::renderer::TerrainVertex>> frames;      // breath
-            std::vector<std::vector<phoenix::renderer::TerrainVertex>> idleFrames;  // idle gesture
-            std::vector<std::vector<phoenix::renderer::TerrainVertex>> walkFrames;  // walk cycle (mobs)
-            std::vector<std::vector<phoenix::renderer::TerrainVertex>> runFrames;   // run cycle (mobs)
+            std::vector<std::vector<phoenix::renderer::TerrainVertex>> frames; // world VANI only
+            phoenix::world::ActorSkinData skinData;
+            phoenix::world::ActorAnimationSet animations;
             float worldX{};
             float worldY{};
             float worldZ{};
@@ -173,6 +169,9 @@ namespace phoenix::runtime
             float gestureTimer{};
             bool playingGesture{};
             bool isMob{};
+            bool hasActorSkin{};
+            std::int32_t cachedFrame{ -1 };
+            const phoenix::world::CharacterAnimation* cachedAnim{};
             // Mob type-level movement state.
             std::uint32_t totalInstances{};
             std::uint32_t movingCount{};
@@ -291,7 +290,7 @@ namespace phoenix::runtime
         std::filesystem::path sky_texture_path() const;
         void camera_state(float& x, float& y, float& z, float& yaw, float& pitch) const;
         void update_camera(float deltaSeconds, const CameraInput& input);
-        void update_window_title(HWND hwnd, const std::string& rendererName, float fps, bool fogEnabled) const;
+        std::string window_title(const std::string& rendererName, float fps, bool fogEnabled) const;
         const std::vector<std::string>& world_map_names() const { return state_.worldMapNames; }
         const std::vector<std::string>& sky_file_names() const { return state_.skyFileNames; }
         const std::vector<std::string>& terrain_texture_names() const { return state_.terrainTextureNames; }

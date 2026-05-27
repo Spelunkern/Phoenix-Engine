@@ -5,20 +5,6 @@
 
 namespace phoenix::assets
 {
-    std::wstring widen_ascii(std::string_view value)
-    {
-        return { value.begin(), value.end() };
-    }
-
-    std::string narrow_ascii(std::wstring_view value)
-    {
-        std::string result;
-        result.reserve(value.size());
-        for (const auto ch : value)
-            result.push_back(ch <= 0x7F ? static_cast<char>(ch) : '?');
-        return result;
-    }
-
     std::string lower_ascii(std::string value)
     {
         std::transform(value.begin(), value.end(), value.begin(), [](unsigned char ch) {
@@ -39,7 +25,7 @@ namespace phoenix::assets
         if (assetName.empty())
             return {};
 
-        const auto requested = std::filesystem::path(widen_ascii(assetName));
+        const auto requested = std::filesystem::path(std::string(assetName));
         if (requested.is_absolute() && std::filesystem::exists(requested))
             return requested;
 
@@ -68,7 +54,7 @@ namespace phoenix::assets
         if (assetName.empty())
             return {};
 
-        const auto requested = std::filesystem::path(widen_ascii(assetName));
+        const auto requested = std::filesystem::path(std::string(assetName));
         const auto direct = root / requested;
         if (std::filesystem::exists(direct))
             return direct;

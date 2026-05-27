@@ -1,16 +1,13 @@
 #pragma once
 
-#ifndef WIN32_LEAN_AND_MEAN
-#define WIN32_LEAN_AND_MEAN
-#endif
-#include <windows.h>
-
 #include "volk.h"
 
 #include <cstddef>
 #include <cstdint>
 #include <string>
 #include <vector>
+
+struct SDL_Window;
 
 namespace phoenix::renderer
 {
@@ -55,10 +52,11 @@ namespace phoenix::renderer
         VulkanRenderer& operator=(const VulkanRenderer&) = delete;
         ~VulkanRenderer();
 
-        bool initialize(HWND hwnd, std::uint32_t width, std::uint32_t height);
-        bool initialize_imgui(HWND hwnd);
+        bool initialize(SDL_Window* window, std::uint32_t width, std::uint32_t height);
+        bool initialize_imgui(SDL_Window* window);
         void begin_imgui_frame();
         bool set_preview_image(std::uint32_t width, std::uint32_t height, const std::vector<std::uint8_t>& bgraPixels);
+        void enter_loading_mode();
         bool set_terrain_mesh(const std::vector<TerrainVertex>& vertices, const std::vector<std::uint32_t>& indices);
         bool update_terrain_vertices(const std::vector<TerrainVertex>& vertices);
         bool set_static_object_mesh(
@@ -112,8 +110,8 @@ namespace phoenix::renderer
         std::uint64_t vram_used_bytes() const;
 
     private:
-        bool create_instance();
-        bool create_surface(HWND hwnd);
+        bool create_instance(SDL_Window* window);
+        bool create_surface(SDL_Window* window);
         bool select_device();
         bool create_device();
         bool create_swapchain(std::uint32_t width, std::uint32_t height);

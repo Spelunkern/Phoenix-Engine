@@ -1,7 +1,7 @@
 #include "audio/audio_system.h"
 #include "character/character_system.h"
 #include "runtime/phoenix_runtime.h"
-#include "platform/win32_window.h"
+#include "platform/sdl_window.h"
 #include "renderer/dds_loader.h"
 #include "renderer/vulkan_renderer.h"
 #include "world/actor_scene.h"
@@ -9,6 +9,7 @@
 
 #include "imgui.h"
 
+#include <SDL.h>
 
 #include <algorithm>
 #include <array>
@@ -30,13 +31,19 @@
 #include <unordered_map>
 #include <vector>
 
+#ifdef _WIN32
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#include <windows.h>
 #include <psapi.h>
 #include <winternl.h>
 #pragma comment(lib, "ntdll.lib")
+#endif
 
 namespace
 {
-    constexpr const wchar_t* kAppTitle = L"Phoenix Engine";
+    constexpr const char* kAppTitle = "Phoenix Engine";
     constexpr const char* kLogName = "PhoenixEngine.log";
     constexpr std::size_t kWaterTextureLayer = 62;
     constexpr std::size_t kSkyTextureLayer = 63;
@@ -64,7 +71,7 @@ namespace
         Night,
     };
 
-    // Height sampler context — terrain + collision mesh floor surfaces.
+    // Height sampler context ï¿½ terrain + collision mesh floor surfaces.
     struct HeightSamplerContext
     {
         const phoenix::runtime::PhoenixRuntime* runtime{};
@@ -95,7 +102,7 @@ namespace
         return terrainY;
     }
 
-    // Collision callback — triangle mesh collision against world objects.
+    // Collision callback ï¿½ triangle mesh collision against world objects.
     constexpr float kCharacterRadius = 0.6f;
     constexpr float kCharacterHeight = 2.2f;
 
@@ -165,13 +172,16 @@ namespace
 
     std::filesystem::path executable_directory()
     {
+#ifdef _WIN32
         std::wstring path(MAX_PATH, L'\0');
         const auto length = GetModuleFileNameW(nullptr, path.data(), static_cast<DWORD>(path.size()));
         if (length == 0)
             return std::filesystem::current_path();
-
         path.resize(length);
         return std::filesystem::path(path).parent_path();
+#else
+        return std::filesystem::canonical("/proc/self/exe").parent_path();
+#endif
     }
 
     void apply_renderer_fog(
@@ -283,7 +293,11 @@ namespace
         std::string raceFolder;
         std::string prefix;
         std::string label;
-        std::vector<int> armorIndices;
+        std::vector<int> upperIndices;
+        std::vector<int> lowerIndices;
+        std::vector<int> handIndices;
+        std::vector<int> footIndices;
+        std::vector<int> helmetIndices;
         std::vector<int> faceIndices;
         std::vector<int> hairIndices;
     };
@@ -297,75 +311,80 @@ namespace
         return value;
     }
 
-    std::optional<std::pair<std::string, int>> parse_character_part(std::string stem, std::string_view part)
+    std::vector<int> scan_csv_indices(const std::filesystem::path& csvPath)
     {
-        stem = lower_ascii(std::move(stem));
-        const auto marker = "_" + std::string(part);
-        const auto markerPos = stem.find(marker);
-        if (markerPos == std::string::npos || markerPos < 4)
-            return std::nullopt;
-        const auto indexPos = markerPos + marker.size();
-        if (indexPos + 3 > stem.size()
-            || !std::isdigit(static_cast<unsigned char>(stem[indexPos]))
-            || !std::isdigit(static_cast<unsigned char>(stem[indexPos + 1]))
-            || !std::isdigit(static_cast<unsigned char>(stem[indexPos + 2])))
+        std::vector<int> indices;
+        std::ifstream file(csvPath);
+        if (!file)
+            return indices;
+        std::string line;
+        std::getline(file, line); // skip header
+        while (std::getline(file, line))
         {
-            return std::nullopt;
+            if (line.empty())
+                continue;
+            std::string clean;
+            clean.reserve(line.size());
+            for (char c : line)
+                if (c != '"') clean += c;
+            auto comma = clean.find(',');
+            if (comma == std::string::npos) continue;
+            indices.push_back(std::atoi(clean.substr(0, comma).c_str()));
         }
-        return std::make_pair(stem.substr(0, markerPos), std::stoi(stem.substr(indexPos, 3)));
+        return indices;
     }
 
     std::vector<CharacterOption> scan_character_options(const std::filesystem::path& dataRoot)
     {
-        struct Temp
-        {
-            std::string raceFolder;
-            std::string prefix;
-            std::set<int> torso;
-            std::set<int> lower;
-            std::set<int> hand;
-            std::set<int> boots;
-            std::set<int> face;
-            std::set<int> hair;
-        };
-
-        std::map<std::string, Temp> byKey;
         const auto characterRoot = dataRoot / "Character";
         if (!std::filesystem::exists(characterRoot))
             return {};
 
+        constexpr std::string_view partFiles[] = { "upper", "lower", "hand", "foot", "helmet", "face", "hair" };
+
+        struct Temp
+        {
+            std::string raceFolder;
+            std::string prefix;
+            std::vector<int> upper, lower, hand, foot, helmet, face, hair;
+        };
+
+        std::map<std::string, Temp> byKey;
         for (const auto& raceEntry : std::filesystem::directory_iterator(characterRoot))
         {
             if (!raceEntry.is_directory())
                 continue;
-            const auto meshRoot = raceEntry.path() / "3DC";
-            if (!std::filesystem::exists(meshRoot))
-                continue;
             const auto raceFolder = raceEntry.path().filename().string();
-            for (const auto& entry : std::filesystem::directory_iterator(meshRoot))
+            for (const auto& entry : std::filesystem::directory_iterator(raceEntry.path()))
             {
-                if (!entry.is_regular_file() || lower_ascii(entry.path().extension().string()) != ".3dc")
+                if (!entry.is_regular_file())
+                    continue;
+                auto ext = lower_ascii(entry.path().extension().string());
+                if (ext != ".csv")
+                    continue;
+                auto stem = lower_ascii(entry.path().stem().string());
+                if (stem.find("_action") != std::string::npos)
                     continue;
 
-                const auto stem = entry.path().stem().string();
-                const std::pair<std::string_view, std::set<int> Temp::*> parts[] = {
-                    { "torso", &Temp::torso },
-                    { "lower", &Temp::lower },
-                    { "hand", &Temp::hand },
-                    { "boots", &Temp::boots },
-                    { "face", &Temp::face },
-                    { "hair", &Temp::hair },
-                };
-                for (const auto& [partName, member] : parts)
+                for (const auto partName : partFiles)
                 {
-                    if (auto parsed = parse_character_part(stem, partName))
-                    {
-                        const auto key = raceFolder + "|" + parsed->first;
-                        auto& temp = byKey[key];
-                        temp.raceFolder = raceFolder;
-                        temp.prefix = parsed->first;
-                        (temp.*member).insert(parsed->second);
-                    }
+                    auto suffix = "_" + std::string(partName);
+                    if (!stem.ends_with(suffix))
+                        continue;
+                    auto prefix = stem.substr(0, stem.size() - suffix.size());
+                    auto key = raceFolder + "|" + prefix;
+                    auto& temp = byKey[key];
+                    temp.raceFolder = raceFolder;
+                    temp.prefix = prefix;
+                    auto indices = scan_csv_indices(entry.path());
+                    if (partName == "upper") temp.upper = std::move(indices);
+                    else if (partName == "lower") temp.lower = std::move(indices);
+                    else if (partName == "hand") temp.hand = std::move(indices);
+                    else if (partName == "foot") temp.foot = std::move(indices);
+                    else if (partName == "helmet") temp.helmet = std::move(indices);
+                    else if (partName == "face") temp.face = std::move(indices);
+                    else if (partName == "hair") temp.hair = std::move(indices);
+                    break;
                 }
             }
         }
@@ -374,32 +393,19 @@ namespace
         options.reserve(byKey.size());
         for (auto& [_, temp] : byKey)
         {
-            std::vector<int> armor;
-            std::set_intersection(
-                temp.torso.begin(), temp.torso.end(),
-                temp.lower.begin(), temp.lower.end(),
-                std::back_inserter(armor));
-            std::vector<int> armor2;
-            std::set_intersection(
-                armor.begin(), armor.end(),
-                temp.hand.begin(), temp.hand.end(),
-                std::back_inserter(armor2));
-            armor.clear();
-            std::set_intersection(
-                armor2.begin(), armor2.end(),
-                temp.boots.begin(), temp.boots.end(),
-                std::back_inserter(armor));
-
-            if (armor.empty() || temp.face.empty() || temp.hair.empty())
+            if (temp.face.empty() || temp.hair.empty())
                 continue;
-
             CharacterOption option{};
             option.raceFolder = temp.raceFolder;
             option.prefix = temp.prefix;
             option.label = temp.raceFolder + " / " + temp.prefix;
-            option.armorIndices = std::move(armor);
-            option.faceIndices.assign(temp.face.begin(), temp.face.end());
-            option.hairIndices.assign(temp.hair.begin(), temp.hair.end());
+            option.upperIndices = std::move(temp.upper);
+            option.lowerIndices = std::move(temp.lower);
+            option.handIndices = std::move(temp.hand);
+            option.footIndices = std::move(temp.foot);
+            option.helmetIndices = std::move(temp.helmet);
+            option.faceIndices = std::move(temp.face);
+            option.hairIndices = std::move(temp.hair);
             options.push_back(std::move(option));
         }
 
@@ -1039,9 +1045,12 @@ namespace
         if (scene.batches.empty() || scene.batchBounds.size() != scene.batches.size())
             return;
 
-        batches.reserve(scene.batches.size());
+        const auto limit = std::min(scene.batches.size(), actorViewDistance < 0.0f ? actorBatchStart : scene.batches.size());
+        batches.reserve(limit);
         for (std::size_t i = 0; i < scene.batches.size(); ++i)
         {
+            if (i >= actorBatchStart && actorViewDistance < 0.0f)
+                break;
             const auto& bounds = scene.batchBounds[i];
             auto batchView = view;
             if (i >= actorBatchStart)
@@ -1065,12 +1074,232 @@ namespace
         batches.reserve(scene.batches.size());
         for (std::size_t i = 0; i < scene.batches.size(); ++i)
         {
+            if (i >= actorAnimatedBatchStart && actorViewDistance < 0.0f)
+                break;
             const auto& bounds = scene.batchBounds[i];
             auto batchView = view;
             if (i >= actorAnimatedBatchStart)
                 batchView.distance = std::min(batchView.distance, actorViewDistance);
             if (sphere_visible(batchView, bounds.x, bounds.y, bounds.z, bounds.radius))
                 batches.push_back(scene.batches[i]);
+        }
+    }
+
+    // ====================================================================
+    // Actor spatial grid: divide map into cells, stream nearby actors.
+    // ====================================================================
+    struct ActorGrid
+    {
+        static constexpr float kCellSize = 96.0f;
+
+        static int to_cell(float v) { return static_cast<int>(std::floor(v / kCellSize)); }
+        static std::uint64_t cell_key(int cx, int cz)
+        {
+            return (static_cast<std::uint64_t>(static_cast<std::uint32_t>(cx)) << 32)
+                 | static_cast<std::uint64_t>(static_cast<std::uint32_t>(cz));
+        }
+
+        struct StaticTemplate { std::uint32_t firstIndex; std::uint32_t indexCount; };
+        struct StaticEntry { std::uint32_t tmpl; phoenix::renderer::ObjectInstance inst; };
+
+        std::vector<StaticTemplate> staticTemplates;
+        std::unordered_map<std::uint64_t, std::vector<StaticEntry>> staticCells;
+
+        std::vector<phoenix::renderer::ObjectInstance> worldInstances;
+        std::vector<phoenix::renderer::ObjectBatch> worldBatches;
+        std::vector<phoenix::runtime::StaticObjectScene::BatchBounds> worldBounds;
+
+        int lastCX = INT_MAX;
+        int lastCZ = INT_MAX;
+        bool built{};
+
+        void reset()
+        {
+            staticTemplates.clear();
+            staticCells.clear();
+            worldInstances.clear();
+            worldBatches.clear();
+            worldBounds.clear();
+            lastCX = INT_MAX;
+            lastCZ = INT_MAX;
+            built = false;
+        }
+
+        bool camera_cell_changed(float cx, float cz)
+        {
+            const int x = to_cell(cx);
+            const int z = to_cell(cz);
+            if (x == lastCX && z == lastCZ)
+                return false;
+            lastCX = x;
+            lastCZ = z;
+            return true;
+        }
+
+        void rebuild(float cameraX, float cameraZ, float actorViewDist,
+            phoenix::runtime::StaticObjectScene& scene,
+            std::size_t& outActorBatchStart) const
+        {
+            scene.instances = worldInstances;
+            scene.batches = worldBatches;
+            scene.batchBounds = worldBounds;
+            outActorBatchStart = scene.batches.size();
+            if (staticCells.empty())
+                return;
+
+            const int cx0 = to_cell(cameraX);
+            const int cz0 = to_cell(cameraZ);
+            const int r = std::max(1, static_cast<int>(std::ceil(actorViewDist / kCellSize)));
+
+            std::unordered_map<std::uint32_t, std::vector<const phoenix::renderer::ObjectInstance*>> groups;
+            for (int dz = -r; dz <= r; ++dz)
+                for (int dx = -r; dx <= r; ++dx)
+                {
+                    auto it = staticCells.find(cell_key(cx0 + dx, cz0 + dz));
+                    if (it == staticCells.end()) continue;
+                    for (const auto& e : it->second)
+                        groups[e.tmpl].push_back(&e.inst);
+                }
+
+            for (const auto& [ti, insts] : groups)
+            {
+                const auto& t = staticTemplates[ti];
+                phoenix::renderer::ObjectBatch batch{};
+                batch.firstIndex = t.firstIndex;
+                batch.indexCount = t.indexCount;
+                batch.firstInstance = static_cast<std::uint32_t>(scene.instances.size());
+                batch.instanceCount = static_cast<std::uint32_t>(insts.size());
+
+                float minX = std::numeric_limits<float>::max(), minY = minX, minZ = minX;
+                float maxX = std::numeric_limits<float>::lowest(), maxY = maxX, maxZ = maxX;
+                for (const auto* inst : insts)
+                {
+                    scene.instances.push_back(*inst);
+                    minX = std::min(minX, inst->position[0]);
+                    minY = std::min(minY, inst->position[1]);
+                    minZ = std::min(minZ, inst->position[2]);
+                    maxX = std::max(maxX, inst->position[0]);
+                    maxY = std::max(maxY, inst->position[1]);
+                    maxZ = std::max(maxZ, inst->position[2]);
+                }
+                phoenix::runtime::StaticObjectScene::BatchBounds bb{};
+                bb.x = (minX + maxX) * 0.5f;
+                bb.y = (minY + maxY) * 0.5f;
+                bb.z = (minZ + maxZ) * 0.5f;
+                const auto hx = (maxX - minX) * 0.5f + 8.0f;
+                const auto hy = (maxY - minY) * 0.5f + 8.0f;
+                const auto hz = (maxZ - minZ) * 0.5f + 8.0f;
+                bb.radius = std::sqrt(hx * hx + hy * hy + hz * hz);
+                scene.batches.push_back(batch);
+                scene.batchBounds.push_back(bb);
+            }
+        }
+    };
+
+    void split_animated_actor_batches_by_cell(
+        phoenix::runtime::AnimatedObjectScene& scene,
+        phoenix::world::ActorScene& actorScene,
+        std::size_t actorAnimBatchStart,
+        std::size_t instanceBase)
+    {
+        if (actorAnimBatchStart >= scene.batches.size())
+            return;
+
+        struct CellGroup
+        {
+            std::size_t origBatch;
+            std::vector<std::uint32_t> oldIndices;
+        };
+        std::vector<CellGroup> groups;
+
+        for (std::size_t b = actorAnimBatchStart; b < scene.batches.size(); ++b)
+        {
+            const auto& batch = scene.batches[b];
+            std::map<std::uint64_t, std::size_t> cellMap;
+            for (std::uint32_t j = 0; j < batch.instanceCount; ++j)
+            {
+                const auto gi = batch.firstInstance + j;
+                if (gi >= scene.instances.size()) continue;
+                const auto& inst = scene.instances[gi];
+                const auto key = ActorGrid::cell_key(
+                    ActorGrid::to_cell(inst.position[0]),
+                    ActorGrid::to_cell(inst.position[2]));
+                auto it = cellMap.find(key);
+                if (it == cellMap.end())
+                {
+                    it = cellMap.emplace(key, groups.size()).first;
+                    groups.push_back({ b, {} });
+                }
+                groups[it->second].oldIndices.push_back(gi);
+            }
+        }
+        if (groups.empty()) return;
+
+        std::unordered_map<std::uint32_t, std::uint32_t> remap;
+        std::vector<phoenix::renderer::ObjectInstance> newInst(
+            scene.instances.begin(), scene.instances.begin() + instanceBase);
+        std::vector<phoenix::renderer::ObjectInstance> newBase(
+            scene.baseInstances.begin(), scene.baseInstances.begin() + instanceBase);
+        newInst.reserve(scene.instances.size());
+        newBase.reserve(scene.baseInstances.size());
+
+        std::vector<phoenix::renderer::ObjectBatch> newBatches;
+        std::vector<phoenix::runtime::StaticObjectScene::BatchBounds> newBounds;
+
+        for (const auto& g : groups)
+        {
+            const auto& orig = scene.batches[g.origBatch];
+            phoenix::renderer::ObjectBatch sb{};
+            sb.firstIndex = orig.firstIndex;
+            sb.indexCount = orig.indexCount;
+            sb.firstInstance = static_cast<std::uint32_t>(newInst.size());
+            sb.instanceCount = static_cast<std::uint32_t>(g.oldIndices.size());
+
+            float minX = std::numeric_limits<float>::max(), minY = minX, minZ = minX;
+            float maxX = std::numeric_limits<float>::lowest(), maxY = maxX, maxZ = maxX;
+            for (auto oi : g.oldIndices)
+            {
+                remap[oi] = static_cast<std::uint32_t>(newInst.size());
+                newInst.push_back(scene.instances[oi]);
+                if (oi < scene.baseInstances.size())
+                    newBase.push_back(scene.baseInstances[oi]);
+                const auto& p = scene.instances[oi].position;
+                minX = std::min(minX, p[0] - 6.0f); maxX = std::max(maxX, p[0] + 6.0f);
+                minY = std::min(minY, p[1]);         maxY = std::max(maxY, p[1] + 12.0f);
+                minZ = std::min(minZ, p[2] - 6.0f); maxZ = std::max(maxZ, p[2] + 6.0f);
+            }
+            phoenix::runtime::StaticObjectScene::BatchBounds bb{};
+            bb.x = (minX + maxX) * 0.5f;
+            bb.y = (minY + maxY) * 0.5f;
+            bb.z = (minZ + maxZ) * 0.5f;
+            const auto hx = (maxX - minX) * 0.5f;
+            const auto hy = (maxY - minY) * 0.5f;
+            const auto hz = (maxZ - minZ) * 0.5f;
+            bb.radius = std::sqrt(hx * hx + hy * hy + hz * hz);
+            newBatches.push_back(sb);
+            newBounds.push_back(bb);
+        }
+
+        scene.instances = std::move(newInst);
+        scene.baseInstances = std::move(newBase);
+        scene.batches.resize(actorAnimBatchStart);
+        scene.batchBounds.resize(actorAnimBatchStart);
+        scene.batches.insert(scene.batches.end(), newBatches.begin(), newBatches.end());
+        scene.batchBounds.insert(scene.batchBounds.end(), newBounds.begin(), newBounds.end());
+
+        for (auto& label : actorScene.labels)
+        {
+            if (!label.followsAnimatedInstance || label.animatedInstanceIndex == UINT32_MAX)
+                continue;
+            auto it = remap.find(label.animatedInstanceIndex);
+            if (it != remap.end())
+                label.animatedInstanceIndex = it->second;
+        }
+        for (auto& mob : scene.mobInstances)
+        {
+            auto it = remap.find(mob.instanceIndex);
+            if (it != remap.end())
+                mob.instanceIndex = it->second;
         }
     }
 
@@ -1110,20 +1339,26 @@ namespace
         phoenix::renderer::VulkanRenderer* renderer{};
 
         // Per-core CPU state.
+#ifdef _WIN32
         struct CoreTimes { ULONGLONG idle{}; ULONGLONG kernel{}; ULONGLONG user{}; };
         CoreTimes lastCoreTimes[kMaxCores]{};
+#endif
         bool cpuInitialized{};
 
         void initialize_system_info()
         {
+#ifdef _WIN32
             SYSTEM_INFO sysInfo{};
             GetSystemInfo(&sysInfo);
             cpuCores = std::min(static_cast<std::uint32_t>(sysInfo.dwNumberOfProcessors), kMaxCores);
+#else
+            cpuCores = std::min(static_cast<std::uint32_t>(std::thread::hardware_concurrency()), kMaxCores);
+#endif
         }
 
         void update_system_metrics()
         {
-            // RAM.
+#ifdef _WIN32
             MEMORYSTATUSEX memStatus{};
             memStatus.dwLength = sizeof(memStatus);
             if (GlobalMemoryStatusEx(&memStatus))
@@ -1134,13 +1369,11 @@ namespace
                 ramPercent = static_cast<float>(memStatus.dwMemoryLoad);
             }
 
-            // Process RAM.
             PROCESS_MEMORY_COUNTERS_EX pmc{};
             pmc.cb = sizeof(pmc);
             if (GetProcessMemoryInfo(GetCurrentProcess(), reinterpret_cast<PROCESS_MEMORY_COUNTERS*>(&pmc), sizeof(pmc)))
                 processRamMB = static_cast<float>(pmc.WorkingSetSize) / (1024.0f * 1024.0f);
 
-            // Per-core CPU usage via NtQuerySystemInformation.
             struct SYSTEM_PROCESSOR_PERFORMANCE_INFORMATION {
                 LARGE_INTEGER IdleTime;
                 LARGE_INTEGER KernelTime;
@@ -1152,11 +1385,11 @@ namespace
             std::vector<SYSTEM_PROCESSOR_PERFORMANCE_INFORMATION> cpuInfo(cpuCores);
             ULONG returnLength = 0;
             const auto status = NtQuerySystemInformation(
-                static_cast<SYSTEM_INFORMATION_CLASS>(8), // SystemProcessorPerformanceInformation
+                static_cast<SYSTEM_INFORMATION_CLASS>(8),
                 cpuInfo.data(),
                 static_cast<ULONG>(cpuInfo.size() * sizeof(SYSTEM_PROCESSOR_PERFORMANCE_INFORMATION)),
                 &returnLength);
-            if (status == 0) // STATUS_SUCCESS
+            if (status == 0)
             {
                 float totalUsage = 0.0f;
                 for (std::uint32_t i = 0; i < cpuCores; ++i)
@@ -1179,6 +1412,7 @@ namespace
                 cpuPercent = totalUsage / static_cast<float>(cpuCores);
                 cpuInitialized = true;
             }
+#endif
 
             // GPU VRAM.
             if (renderer)
@@ -1347,6 +1581,7 @@ namespace
         int& selectedMapIndex,
         float& viewDistance,
         float& actorViewDistance,
+        bool& actorsEnabled,
         WeatherMode& weatherMode,
         const std::vector<CharacterOption>& characterOptions,
         int& selectedCharacterOption,
@@ -1396,6 +1631,8 @@ namespace
         const auto previousActorViewDistance = actorViewDistance;
         ImGui::SetNextItemWidth(200.0f);
         ImGui::SliderFloat("Actors", &actorViewDistance, 10.0f, 2500.0f, "%.0f");
+        ImGui::SameLine();
+        ImGui::Checkbox("##actorsOn", &actorsEnabled);
         result.viewDistanceChanged = result.viewDistanceChanged
             || std::abs(previousActorViewDistance - actorViewDistance) > 1.0f;
 
@@ -1451,7 +1688,11 @@ namespace
                         selectedCharacterOption = static_cast<int>(i);
                         appearance.raceFolder = characterOptions[i].raceFolder;
                         appearance.prefix = characterOptions[i].prefix;
-                        appearance.armorIndex = nearest_available(appearance.armorIndex, characterOptions[i].armorIndices);
+                        appearance.upperIndex = nearest_available(appearance.upperIndex, characterOptions[i].upperIndices);
+                        appearance.lowerIndex = nearest_available(appearance.lowerIndex, characterOptions[i].lowerIndices);
+                        appearance.handIndex = nearest_available(appearance.handIndex, characterOptions[i].handIndices);
+                        appearance.footIndex = nearest_available(appearance.footIndex, characterOptions[i].footIndices);
+                        appearance.helmetIndex = nearest_available(appearance.helmetIndex, characterOptions[i].helmetIndices);
                         appearance.faceIndex = nearest_available(appearance.faceIndex, characterOptions[i].faceIndices);
                         appearance.hairIndex = nearest_available(appearance.hairIndex, characterOptions[i].hairIndices);
                     }
@@ -1462,18 +1703,42 @@ namespace
             }
 
             const auto& current = characterOptions[static_cast<std::size_t>(selectedCharacterOption)];
-            appearance.armorIndex = nearest_available(appearance.armorIndex, current.armorIndices);
+            appearance.upperIndex = nearest_available(appearance.upperIndex, current.upperIndices);
+            appearance.lowerIndex = nearest_available(appearance.lowerIndex, current.lowerIndices);
+            appearance.handIndex = nearest_available(appearance.handIndex, current.handIndices);
+            appearance.footIndex = nearest_available(appearance.footIndex, current.footIndices);
+            appearance.helmetIndex = nearest_available(appearance.helmetIndex, current.helmetIndices);
             appearance.faceIndex = nearest_available(appearance.faceIndex, current.faceIndices);
             appearance.hairIndex = nearest_available(appearance.hairIndex, current.hairIndices);
+            ImGui::Checkbox("Helmet", &appearance.helmetVisible);
+            if (appearance.helmetVisible)
+            {
+                ImGui::SameLine();
+                ImGui::SetNextItemWidth(80.0f);
+                ImGui::InputInt("##helmet", &appearance.helmetIndex);
+                appearance.helmetIndex = nearest_available(appearance.helmetIndex, current.helmetIndices);
+            }
             ImGui::SetNextItemWidth(80.0f);
-            ImGui::InputInt("Armor", &appearance.armorIndex);
-            appearance.armorIndex = nearest_available(appearance.armorIndex, current.armorIndices);
+            ImGui::InputInt("Upper", &appearance.upperIndex);
+            appearance.upperIndex = nearest_available(appearance.upperIndex, current.upperIndices);
+            ImGui::SetNextItemWidth(80.0f);
+            ImGui::InputInt("Lower", &appearance.lowerIndex);
+            appearance.lowerIndex = nearest_available(appearance.lowerIndex, current.lowerIndices);
+            ImGui::SetNextItemWidth(80.0f);
+            ImGui::InputInt("Gloves", &appearance.handIndex);
+            appearance.handIndex = nearest_available(appearance.handIndex, current.handIndices);
+            ImGui::SetNextItemWidth(80.0f);
+            ImGui::InputInt("Boots", &appearance.footIndex);
+            appearance.footIndex = nearest_available(appearance.footIndex, current.footIndices);
             ImGui::SetNextItemWidth(80.0f);
             ImGui::InputInt("Face", &appearance.faceIndex);
             appearance.faceIndex = nearest_available(appearance.faceIndex, current.faceIndices);
-            ImGui::SetNextItemWidth(80.0f);
-            ImGui::InputInt("Hair", &appearance.hairIndex);
-            appearance.hairIndex = nearest_available(appearance.hairIndex, current.hairIndices);
+            if (!appearance.helmetVisible)
+            {
+                ImGui::SetNextItemWidth(80.0f);
+                ImGui::InputInt("Hair", &appearance.hairIndex);
+                appearance.hairIndex = nearest_available(appearance.hairIndex, current.hairIndices);
+            }
 
             result.characterApplyRequested = ImGui::Button("Apply");
             ImGui::TreePop();
@@ -1489,7 +1754,7 @@ namespace
     }
 }
 
-int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int)
+int main(int, char**)
 {
     constexpr int kWidth = 1280;
     constexpr int kHeight = 720;
@@ -1501,10 +1766,10 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int)
         log << "Executable directory: " << executableDir.string() << "\n";
     }
 
-    phoenix::platform::Win32Window window;
-    if (!window.create(instance, kWidth, kHeight, kAppTitle))
+    phoenix::platform::SdlWindow window;
+    if (!window.create(kWidth, kHeight, kAppTitle))
     {
-        MessageBoxW(nullptr, L"Could not create Phoenix Engine window.", kAppTitle, MB_ICONERROR);
+        std::fprintf(stderr, "Could not create Phoenix Engine window.\n");
         return 1;
     }
 
@@ -1515,7 +1780,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int)
         static_cast<std::uint32_t>(clientWidth > 0 ? clientWidth : kWidth),
         static_cast<std::uint32_t>(clientHeight > 0 ? clientHeight : kHeight)))
     {
-        MessageBoxW(window.handle(), L"Could not initialize Vulkan.", kAppTitle, MB_ICONERROR);
+        std::fprintf(stderr, "Could not initialize Vulkan.\n");
         return 1;
     }
 
@@ -1531,21 +1796,42 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int)
         log << "ImGui initialization unavailable\n";
     }
 
-    auto showLoading = [&](float progress, std::wstring_view stage) {
+    auto showLoading = [&](float progress, std::string_view stage) {
         window.pump_messages();
-        window.set_title(std::wstring(kAppTitle) + L" - Loading - " + std::wstring(stage));
-        const auto width = std::max(1u, renderer.surface_width());
-        const auto height = std::max(1u, renderer.surface_height());
-        auto image = make_loading_image(width, height, progress, loadingIcon);
-        renderer.set_preview_image(width, height, image);
-        renderer.render_frame();
+        window.set_title(std::string(kAppTitle) + " - Loading - " + std::string(stage));
+        const auto [sw, sh] = window.client_size();
+        if (sw > 0 && sh > 0)
+        {
+            const auto width = static_cast<std::uint32_t>(sw);
+            const auto height = static_cast<std::uint32_t>(sh);
+            renderer.resize(width, height);
+            auto image = make_loading_image(width, height, progress, loadingIcon);
+            renderer.set_preview_image(width, height, image);
+            renderer.render_frame();
+        }
     };
 
-    showLoading(0.03f, L"Starting");
+    // Run a function on a background thread while keeping the window responsive.
+    auto runAsync = [&](auto fn, float progress, std::string_view stage) {
+        auto future = std::async(std::launch::async, std::move(fn));
+        while (future.wait_for(std::chrono::milliseconds(16)) != std::future_status::ready)
+            showLoading(progress, stage);
+        return future.get();
+    };
+
+    // Overload for void-returning functions.
+    auto runAsyncVoid = [&](auto fn, float progress, std::string_view stage) {
+        auto future = std::async(std::launch::async, std::move(fn));
+        while (future.wait_for(std::chrono::milliseconds(16)) != std::future_status::ready)
+            showLoading(progress, stage);
+        future.get();
+    };
+
+    showLoading(0.03f, "Starting");
 
     phoenix::runtime::PhoenixRuntime runtime;
-    runtime.initialize(executableDir, false);
-    showLoading(0.12f, L"Indexing data");
+    runAsyncVoid([&]() { runtime.initialize(executableDir, false); }, 0.06f, "Indexing data");
+    showLoading(0.12f, "Indexing data");
 
     std::size_t defaultMap{};
     const auto& startupMaps = runtime.world_map_names();
@@ -1558,15 +1844,12 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int)
         }
     }
     if (!startupMaps.empty())
-    {
-        showLoading(0.17f, L"Loading world");
-        runtime.load_world_map(defaultMap);
-    }
-    showLoading(0.24f, L"World ready");
+        runAsyncVoid([&]() { runtime.load_world_map(defaultMap); }, 0.17f, "Loading world");
+    showLoading(0.24f, "World ready");
 
     phoenix::audio::AudioSystem audioSystem;
     const bool audioAvailable = audioSystem.initialize();
-    showLoading(0.27f, L"Audio");
+    showLoading(0.27f, "Audio");
     if (!audioAvailable)
     {
         std::ofstream log(kLogName, std::ios::app);
@@ -1576,8 +1859,8 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int)
     phoenix::character::CharacterSystem characterSystem;
     phoenix::character::CharacterAppearance characterAppearance{};
     auto characterOptions = scan_character_options(runtime.state().assets.root);
-    characterSystem.preload(runtime.state().assets.root);
-    showLoading(0.32f, L"Characters");
+    runAsyncVoid([&]() { characterSystem.preload(runtime.state().assets.root); }, 0.29f, "Loading characters");
+    showLoading(0.32f, "Characters");
     int selectedCharacterOption = 0;
     for (std::size_t i = 0; i < characterOptions.size(); ++i)
     {
@@ -1589,11 +1872,12 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int)
         }
     }
     bool characterLoaded = false;
-    bool playableMode = false; // true = third-person playable, false = free camera viewer
+    bool playableMode = true; // true = third-person playable, false = free camera viewer
 
     bool fogEnabled = true;
     float viewDistance = 1000.0f;
     float actorViewDistance = 100.0f;
+    bool actorsEnabled = true;
     bool showNamePlates = true;
     bool showCollisionDebug = false;
     WeatherMode weatherMode = WeatherMode::Default;
@@ -1618,6 +1902,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int)
     phoenix::runtime::StaticObjectScene staticObjectScene;
     phoenix::runtime::AnimatedObjectScene animatedObjectScene;
     phoenix::world::ActorScene actorScene;
+    ActorGrid actorGrid;
     std::size_t actorBatchStart = std::numeric_limits<std::size_t>::max();
     std::size_t actorAnimatedBatchStart = std::numeric_limits<std::size_t>::max();
     std::size_t actorVertexAnimationStart = std::numeric_limits<std::size_t>::max();
@@ -1625,6 +1910,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int)
     HeightSamplerContext heightSamplerCtx{ &runtime, &worldCollisionMesh };
     MapAudioScene mapAudioScene;
     bool forceVisibilityUpdate = true;
+    std::optional<std::size_t> pendingMapLoad;
     CameraView lastCullView{};
     float displayedFps = 0.0f;
     PerfHudState perfHud;
@@ -1708,7 +1994,8 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int)
     };
 
     const auto uploadCurrentWorld = [&]() {
-        showLoading(0.36f, L"Preparing scene");
+        renderer.enter_loading_mode();
+        showLoading(0.36f, "Preparing scene");
         applyFogSettings();
         mapAudioScene = build_map_audio_scene(runtime);
         {
@@ -1730,14 +2017,15 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int)
         const auto totalSlots = waterFrameBase + waterAnim.frameCount;
         const auto actorTextureBaseSlot = totalSlots;
         const auto mapStem = runtime.state().world.path.stem().string();
-        showLoading(0.38f, L"Loading actors");
-        actorScene = phoenix::world::build_actor_scene(
-            runtime.state().dataRoot,
-            mapStem,
-            runtime.state().assets,
-            static_cast<std::uint32_t>(actorTextureBaseSlot),
-            character_height_sampler,
-            &heightSamplerCtx);
+        actorScene = runAsync([&]() {
+            return phoenix::world::build_actor_scene(
+                runtime.state().dataRoot,
+                mapStem,
+                runtime.state().assets,
+                static_cast<std::uint32_t>(actorTextureBaseSlot),
+                character_height_sampler,
+                &heightSamplerCtx);
+        }, 0.38f, "Loading actors");
         characterTextureBaseSlot = actorTextureBaseSlot + actorScene.texturePaths.size();
         std::vector<phoenix::renderer::DdsTexture> terrainTextures(characterTextureBaseSlot);
 
@@ -1789,12 +2077,12 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int)
             while (completedJobs.load(std::memory_order_relaxed) < jobs.size())
             {
                 const float textureProgress = static_cast<float>(completedJobs.load(std::memory_order_relaxed)) / static_cast<float>(jobs.size());
-                showLoading(0.40f + textureProgress * 0.26f, L"Loading textures");
+                showLoading(0.40f + textureProgress * 0.26f, "Loading textures");
                 std::this_thread::sleep_for(std::chrono::milliseconds(33));
             }
             for (auto& t : threads)
                 t.join();
-            showLoading(0.66f, L"Textures ready");
+            showLoading(0.66f, "Textures ready");
         }
 
 
@@ -1882,9 +2170,16 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int)
             characterSystem.set_texture_layer_base(static_cast<std::uint32_t>(characterTextureBaseSlot));
         }
 
-        showLoading(0.68f, L"Uploading textures");
+        showLoading(0.68f, "Uploading textures");
         if (!terrainTextures.empty())
         {
+            std::size_t texRamBytes = 0;
+            for (const auto& t : terrainTextures) texRamBytes += t.rgba.size();
+            {
+                std::ofstream log(kLogName, std::ios::app);
+                log << "Texture RAM: " << terrainTextures.size() << " slots, "
+                    << (texRamBytes / (1024 * 1024)) << " MB decoded RGBA\n";
+            }
             renderer.upload_terrain_textures(terrainTextures);
             cachedTextures = std::move(terrainTextures);
         }
@@ -1913,8 +2208,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int)
             return runtime.build_animated_object_scene();
         });
 
-        showLoading(0.74f, L"Building terrain");
-        runtime.build_terrain_mesh(terrainVertices, terrainIndices);
+        runAsyncVoid([&]() { runtime.build_terrain_mesh(terrainVertices, terrainIndices); }, 0.74f, "Building terrain");
         terrainVertexCount = static_cast<std::uint32_t>(terrainVertices.size());
         terrainIndexCount = static_cast<std::uint32_t>(terrainIndices.size());
         {
@@ -1933,7 +2227,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int)
             renderer.set_preview_image(preview.width, preview.height, preview.bgra);
         }
 
-        showLoading(0.82f, L"Building objects");
+        showLoading(0.82f, "Building objects");
         staticObjectScene = objectFuture.get();
         animatedObjectScene = animatedObjectFuture.get();
         actorAnimatedBatchStart = animatedObjectScene.batches.size();
@@ -1988,9 +2282,9 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int)
                 animation.firstVertex = vertexBase + actorAnimation.firstVertex;
                 animation.vertexCount = actorAnimation.vertexCount;
                 animation.frames = actorAnimation.frames;
-                animation.idleFrames = actorAnimation.idleFrames;
-                animation.walkFrames = actorAnimation.walkFrames;
-                animation.runFrames = actorAnimation.runFrames;
+                animation.skinData = actorAnimation.skinData;
+                animation.animations = actorAnimation.animations;
+                animation.hasActorSkin = actorAnimation.hasActorSkin;
                 animation.isMob = actorAnimation.isMob;
                 animation.worldX = actorAnimation.worldX;
                 animation.worldY = actorAnimation.worldY;
@@ -2052,32 +2346,34 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int)
                     animatedObjectScene.mobInstances.push_back(mob);
                 }
             }
+            split_animated_actor_batches_by_cell(animatedObjectScene, actorScene,
+                actorAnimatedBatchStart, instanceBase);
         }
+        actorGrid.reset();
         actorBatchStart = staticObjectScene.batches.size();
         if (!actorScene.vertices.empty() && !actorScene.indices.empty() && !actorScene.instances.empty())
         {
             const auto vertexBase = static_cast<std::uint32_t>(staticObjectScene.vertices.size());
             const auto indexBase = static_cast<std::uint32_t>(staticObjectScene.indices.size());
-            const auto instanceBase = static_cast<std::uint32_t>(staticObjectScene.instances.size());
-            staticObjectScene.vertices.insert(staticObjectScene.vertices.end(), actorScene.vertices.begin(), actorScene.vertices.end());
+            staticObjectScene.vertices.insert(staticObjectScene.vertices.end(),
+                actorScene.vertices.begin(), actorScene.vertices.end());
             staticObjectScene.indices.reserve(staticObjectScene.indices.size() + actorScene.indices.size());
             for (const auto index : actorScene.indices)
                 staticObjectScene.indices.push_back(vertexBase + index);
-            staticObjectScene.instances.insert(staticObjectScene.instances.end(), actorScene.instances.begin(), actorScene.instances.end());
-            for (auto batch : actorScene.batches)
+
+            for (std::size_t b = 0; b < actorScene.batches.size(); ++b)
             {
-                batch.firstIndex += indexBase;
-                batch.firstInstance += instanceBase;
-                staticObjectScene.batches.push_back(batch);
-            }
-            for (const auto& bounds : actorScene.batchBounds)
-            {
-                phoenix::runtime::StaticObjectScene::BatchBounds converted{};
-                converted.x = bounds.x;
-                converted.y = bounds.y;
-                converted.z = bounds.z;
-                converted.radius = bounds.radius;
-                staticObjectScene.batchBounds.push_back(converted);
+                const auto& origBatch = actorScene.batches[b];
+                const auto ti = static_cast<std::uint32_t>(actorGrid.staticTemplates.size());
+                actorGrid.staticTemplates.push_back({
+                    indexBase + origBatch.firstIndex, origBatch.indexCount });
+                for (std::uint32_t j = 0; j < origBatch.instanceCount; ++j)
+                {
+                    const auto& inst = actorScene.instances[origBatch.firstInstance + j];
+                    const auto cx = ActorGrid::to_cell(inst.position[0]);
+                    const auto cz = ActorGrid::to_cell(inst.position[2]);
+                    actorGrid.staticCells[ActorGrid::cell_key(cx, cz)].push_back({ ti, inst });
+                }
             }
         }
         objectInstanceCount = static_cast<std::uint32_t>(staticObjectScene.instances.size());
@@ -2111,27 +2407,23 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int)
             log << "Animated object mesh upload unavailable\n";
         }
 
-        showLoading(0.92f, L"Finalizing scene");
+        showLoading(0.90f, "Finalizing scene");
         uploadDebugGizmos();
 
-        // Build collision mesh from world objects.
-        worldCollisionMesh = runtime.build_collision_mesh();
+        worldCollisionMesh = runAsync([&]() { return runtime.build_collision_mesh(); }, 0.92f, "Building collision");
 
         // Re-sample actor heights now that collision mesh is available.
         // Actors were initially placed using terrain-only height; now they
         // should also stand on walkable collision surfaces (bridges, etc.).
         {
-            // Static actor instances (mobs).
-            if (actorBatchStart < staticObjectScene.batches.size())
+            // Re-sample static actor instances in grid cells.
+            for (auto& [cellKey_, entries] : actorGrid.staticCells)
             {
-                const auto firstActorInstance = staticObjectScene.batches[actorBatchStart].firstInstance;
-                for (std::size_t i = firstActorInstance; i < staticObjectScene.instances.size(); ++i)
+                for (auto& entry : entries)
                 {
-                    auto& inst = staticObjectScene.instances[i];
-                    const float x = inst.position[0];
-                    const float z = inst.position[2];
-                    heightSamplerCtx.lastCharacterY = inst.position[1];
-                    inst.position[1] = character_height_sampler(x, z, &heightSamplerCtx);
+                    heightSamplerCtx.lastCharacterY = entry.inst.position[1];
+                    entry.inst.position[1] = character_height_sampler(
+                        entry.inst.position[0], entry.inst.position[2], &heightSamplerCtx);
                 }
             }
             // Animated actor instances (NPCs) + vertex animation world positions.
@@ -2166,15 +2458,40 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int)
             }
         }
 
+        // Finalize actor grid and perform initial nearby-instance upload.
+        actorGrid.worldInstances = staticObjectScene.instances;
+        actorGrid.worldBatches = staticObjectScene.batches;
+        actorGrid.worldBounds = staticObjectScene.batchBounds;
+        actorGrid.built = true;
+        {
+            float initCamX, initCamY, initCamZ, initYaw, initPitch;
+            runtime.camera_state(initCamX, initCamY, initCamZ, initYaw, initPitch);
+            actorGrid.rebuild(initCamX, initCamZ, actorViewDistance, staticObjectScene, actorBatchStart);
+            actorGrid.lastCX = ActorGrid::to_cell(initCamX);
+            actorGrid.lastCZ = ActorGrid::to_cell(initCamZ);
+            renderer.update_static_object_instances(staticObjectScene.instances, staticObjectScene.batches);
+            objectInstanceCount = static_cast<std::uint32_t>(staticObjectScene.instances.size());
+            objectBatchCount = static_cast<std::uint32_t>(staticObjectScene.batches.size());
+        }
+        {
+            std::ofstream log(kLogName, std::ios::app);
+            log << "Actor grid: " << actorGrid.staticCells.size() << " cells, "
+                << actorGrid.staticTemplates.size() << " static templates, "
+                << (animatedObjectScene.batches.size() - actorAnimatedBatchStart)
+                << " animated sub-batches\n";
+        }
+
         // Upload character mesh (initial bind pose).
         if (characterLoaded && characterSystem.ready())
             uploadCharacterMesh();
 
         forceVisibilityUpdate = true;
+        showLoading(1.0f, "Ready");
     };
 
     uploadCurrentWorld();
-    runtime.update_window_title(window.handle(), renderer.adapter_name(), displayedFps, fogEnabled);
+    applyFogSettings();
+    window.set_title(runtime.window_title(renderer.adapter_name(), displayedFps, fogEnabled));
 
     using clock = std::chrono::steady_clock;
     auto lastFrame = clock::now();
@@ -2222,7 +2539,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int)
             renderer.update_animated_object_scene(animatedObjectScene.vertices, animatedObjectScene.instances);
         }
 
-        const auto fogToggleDown = window.is_key_down('F');
+        const auto fogToggleDown = window.is_key_down(SDLK_f);
         if (fogToggleDown && !fogToggleWasDown)
         {
             fogEnabled = !fogEnabled;
@@ -2231,7 +2548,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int)
         fogToggleWasDown = fogToggleDown;
 
         // Toggle playable mode with P key.
-        const auto playToggleDown = window.is_key_down('P');
+        const auto playToggleDown = window.is_key_down(SDLK_p);
         if (playToggleDown && !playToggleWasDown && characterLoaded)
         {
             playableMode = !playableMode;
@@ -2287,16 +2604,16 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int)
             phoenix::character::PlayableInput pInput{};
             if (!imguiWantsKeyboard)
             {
-                pInput.forward = window.is_key_down('W');
-                pInput.backward = window.is_key_down('S');
-                pInput.left = window.is_key_down('A');
-                pInput.right = window.is_key_down('D');
-                pInput.jump = window.is_key_down(VK_SPACE);
-                pInput.fast = window.is_key_down(VK_SHIFT);
-                pInput.yawLeft = window.is_key_down(VK_LEFT);
-                pInput.yawRight = window.is_key_down(VK_RIGHT);
-                pInput.pitchUp = window.is_key_down(VK_UP);
-                pInput.pitchDown = window.is_key_down(VK_DOWN);
+                pInput.forward = window.is_key_down(SDLK_w);
+                pInput.backward = window.is_key_down(SDLK_s);
+                pInput.left = window.is_key_down(SDLK_a);
+                pInput.right = window.is_key_down(SDLK_d);
+                pInput.jump = window.is_key_down(SDLK_SPACE);
+                pInput.fast = window.is_key_down(SDLK_LSHIFT);
+                pInput.yawLeft = window.is_key_down(SDLK_LEFT);
+                pInput.yawRight = window.is_key_down(SDLK_RIGHT);
+                pInput.pitchUp = window.is_key_down(SDLK_UP);
+                pInput.pitchDown = window.is_key_down(SDLK_DOWN);
             }
             pInput.cameraDrag = !imguiWantsMouse && window.is_mouse_button_down(1);
             pInput.mouseDx = !imguiWantsMouse ? static_cast<float>(mouseDx) : 0.0f;
@@ -2319,17 +2636,17 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int)
             phoenix::runtime::CameraInput cameraInput{};
             if (!imguiWantsKeyboard)
             {
-                cameraInput.forward = window.is_key_down('W');
-                cameraInput.backward = window.is_key_down('S');
-                cameraInput.left = window.is_key_down('A');
-                cameraInput.right = window.is_key_down('D');
-                cameraInput.up = window.is_key_down('E') || window.is_key_down(VK_SPACE);
-                cameraInput.down = window.is_key_down('Q') || window.is_key_down(VK_CONTROL);
-                cameraInput.fast = window.is_key_down(VK_SHIFT);
-                cameraInput.yawLeft = window.is_key_down(VK_LEFT);
-                cameraInput.yawRight = window.is_key_down(VK_RIGHT);
-                cameraInput.pitchUp = window.is_key_down(VK_UP);
-                cameraInput.pitchDown = window.is_key_down(VK_DOWN);
+                cameraInput.forward = window.is_key_down(SDLK_w);
+                cameraInput.backward = window.is_key_down(SDLK_s);
+                cameraInput.left = window.is_key_down(SDLK_a);
+                cameraInput.right = window.is_key_down(SDLK_d);
+                cameraInput.up = window.is_key_down(SDLK_e) || window.is_key_down(SDLK_SPACE);
+                cameraInput.down = window.is_key_down(SDLK_q) || window.is_key_down(SDLK_LCTRL);
+                cameraInput.fast = window.is_key_down(SDLK_LSHIFT);
+                cameraInput.yawLeft = window.is_key_down(SDLK_LEFT);
+                cameraInput.yawRight = window.is_key_down(SDLK_RIGHT);
+                cameraInput.pitchUp = window.is_key_down(SDLK_UP);
+                cameraInput.pitchDown = window.is_key_down(SDLK_DOWN);
             }
             cameraInput.look = !imguiWantsMouse && window.is_mouse_button_down(1);
             cameraInput.mouseDx = !imguiWantsMouse ? static_cast<float>(mouseDx) : 0.0f;
@@ -2369,6 +2686,15 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int)
             / static_cast<float>(std::max(1u, renderer.surface_height()));
         currentView.distance = viewDistance;
 
+        if (actorGrid.built && actorsEnabled && actorGrid.camera_cell_changed(cameraX, cameraZ))
+        {
+            actorGrid.rebuild(cameraX, cameraZ, actorViewDistance, staticObjectScene, actorBatchStart);
+            renderer.update_static_object_instances(staticObjectScene.instances, staticObjectScene.batches);
+            objectInstanceCount = static_cast<std::uint32_t>(staticObjectScene.instances.size());
+            objectBatchCount = static_cast<std::uint32_t>(staticObjectScene.batches.size());
+            forceVisibilityUpdate = true;
+        }
+
         const auto cullMoveDx = currentView.x - lastCullView.x;
         const auto cullMoveDy = currentView.y - lastCullView.y;
         const auto cullMoveDz = currentView.z - lastCullView.z;
@@ -2389,8 +2715,9 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int)
             if (visibleTerrainIndexCount > 0)
                 terrainIndexCount = visibleTerrainIndexCount;
 
+            const float effectiveActorDistance = actorsEnabled ? actorViewDistance : -1.0f;
             std::vector<phoenix::renderer::ObjectBatch> visibleBatches;
-            build_visible_object_batches(staticObjectScene, currentView, actorBatchStart, actorViewDistance, visibleBatches);
+            build_visible_object_batches(staticObjectScene, currentView, actorBatchStart, effectiveActorDistance, visibleBatches);
             renderer.set_static_object_batches(visibleBatches);
             std::uint32_t visibleObjectInstances{};
             for (const auto& batch : visibleBatches)
@@ -2401,7 +2728,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int)
             if (!animatedObjectScene.batches.empty())
             {
                 std::vector<phoenix::renderer::ObjectBatch> visibleAnimatedBatches;
-                build_visible_animated_batches(animatedObjectScene, currentView, actorAnimatedBatchStart, actorViewDistance, visibleAnimatedBatches);
+                build_visible_animated_batches(animatedObjectScene, currentView, actorAnimatedBatchStart, effectiveActorDistance, visibleAnimatedBatches);
                 renderer.set_animated_object_batches(visibleAnimatedBatches);
             }
 
@@ -2411,6 +2738,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int)
 
         if (imguiAvailable)
         {
+            const bool prevActorsEnabled = actorsEnabled;
             const auto panelResult = draw_editor_panel(
                 runtime,
                 renderer,
@@ -2426,21 +2754,19 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int)
                 selectedMapIndex,
                 viewDistance,
                 actorViewDistance,
+                actorsEnabled,
                 weatherMode,
                 characterOptions,
                 selectedCharacterOption,
                 characterAppearance,
                 cameraX, cameraY, cameraZ, cameraYaw, cameraPitch);
 
-            if (panelResult.loadRequested
-                && runtime.load_world_map(static_cast<std::size_t>(std::max(0, selectedMapIndex))))
-            {
-                applyFogSettings();
-                uploadCurrentWorld();
-            }
+            if (panelResult.loadRequested)
+                pendingMapLoad = static_cast<std::size_t>(std::max(0, selectedMapIndex));
             else if (panelResult.viewDistanceChanged)
             {
                 applyFogSettings();
+                actorGrid.lastCX = INT_MAX;
                 forceVisibilityUpdate = true;
             }
             else if (panelResult.weatherChanged)
@@ -2455,7 +2781,13 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int)
             if (panelResult.characterApplyRequested)
                 reloadCharacterIntoRenderer();
 
-            if (showNamePlates && !actorScene.labels.empty())
+            if (actorsEnabled != prevActorsEnabled)
+            {
+                actorGrid.lastCX = INT_MAX;
+                forceVisibilityUpdate = true;
+            }
+
+            if (actorsEnabled && showNamePlates && !actorScene.labels.empty())
             {
                 struct VisibleLabel
                 {
@@ -2564,12 +2896,26 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int)
 
         renderer.render_frame();
 
+        if (pendingMapLoad)
+        {
+            const auto mapIdx = *pendingMapLoad;
+            pendingMapLoad.reset();
+            renderer.enter_loading_mode();
+            showLoading(0.05f, "Changing map");
+            if (runAsync([&]() { return runtime.load_world_map(mapIdx); }, 0.10f, "Loading world"))
+            {
+                uploadCurrentWorld();
+                applyFogSettings();
+            }
+            lastFrame = clock::now();
+        }
+
         if (now - lastTitleUpdate > std::chrono::seconds(1))
         {
             const auto titleSeconds = std::chrono::duration<float>(now - lastTitleUpdate).count();
             displayedFps = titleSeconds > 0.0f ? static_cast<float>(framesSinceTitleUpdate) / titleSeconds : 0.0f;
             framesSinceTitleUpdate = 0;
-            runtime.update_window_title(window.handle(), renderer.adapter_name(), displayedFps, fogEnabled);
+            window.set_title(runtime.window_title(renderer.adapter_name(), displayedFps, fogEnabled));
             lastTitleUpdate = now;
         }
     }

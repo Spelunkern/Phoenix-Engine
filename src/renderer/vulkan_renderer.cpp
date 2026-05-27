@@ -1,9 +1,10 @@
 #include "renderer/vulkan_renderer.h"
 #include "renderer/dds_loader.h"
+#include "platform/sdl_window.h"
 
 #include "imgui.h"
 #include "imgui_impl_vulkan.h"
-#include "imgui_impl_win32.h"
+#include "imgui_impl_sdl2.h"
 #include "volk.h"
 
 #include <algorithm>
@@ -150,7 +151,7 @@ namespace phoenix::renderer
         shutdown();
     }
 
-    bool VulkanRenderer::initialize(HWND hwnd, std::uint32_t width, std::uint32_t height)
+    bool VulkanRenderer::initialize(SDL_Window* window, std::uint32_t width, std::uint32_t height)
     {
         impl_ = new Impl{};
         if (volkInitialize() != VK_SUCCESS)
@@ -160,8 +161,8 @@ namespace phoenix::renderer
         }
 
         log_line("Vulkan: creating instance");
-        if (!create_instance()
-            || (log_line("Vulkan: creating surface"), !create_surface(hwnd))
+        if (!create_instance(window)
+            || (log_line("Vulkan: creating surface"), !create_surface(window))
             || (log_line("Vulkan: selecting device"), !select_device())
             || (log_line("Vulkan: creating device"), !create_device())
             || (log_line("Vulkan: creating swapchain"), !create_swapchain(width, height))
@@ -189,7 +190,7 @@ namespace phoenix::renderer
         return true;
     }
 
-    bool VulkanRenderer::initialize_imgui(HWND hwnd)
+    bool VulkanRenderer::initialize_imgui(SDL_Window* window)
     {
         if (!ready_ || imguiReady_)
             return ready_;
@@ -200,7 +201,7 @@ namespace phoenix::renderer
         io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
         ImGui::StyleColorsDark();
 
-        if (!ImGui_ImplWin32_Init(hwnd))
+        if (!ImGui_ImplSDL2_InitForVulkan(window))
             return false;
 
         ImGui_ImplVulkan_InitInfo initInfo{};
@@ -218,7 +219,7 @@ namespace phoenix::renderer
         initInfo.PipelineInfoMain.MSAASamples = VK_SAMPLE_COUNT_1_BIT;
         if (!ImGui_ImplVulkan_Init(&initInfo))
         {
-            ImGui_ImplWin32_Shutdown();
+            ImGui_ImplSDL2_Shutdown();
             ImGui::DestroyContext();
             return false;
         }
@@ -234,13 +235,26 @@ namespace phoenix::renderer
             return;
 
         ImGui_ImplVulkan_NewFrame();
-        ImGui_ImplWin32_NewFrame();
+        ImGui_ImplSDL2_NewFrame();
         ImGui::NewFrame();
         imguiFrameStarted_ = true;
     }
 
-    bool VulkanRenderer::create_instance()
+    bool VulkanRenderer::create_instance(SDL_Window* window)
     {
+        unsigned extCount = 0;
+        if (!SDL_Vulkan_GetInstanceExtensions(window, &extCount, nullptr) || extCount == 0)
+        {
+            log_line("Vulkan: SDL_Vulkan_GetInstanceExtensions count failed");
+            return false;
+        }
+        std::vector<const char*> extensions(extCount);
+        if (!SDL_Vulkan_GetInstanceExtensions(window, &extCount, extensions.data()))
+        {
+            log_line("Vulkan: SDL_Vulkan_GetInstanceExtensions names failed");
+            return false;
+        }
+
         VkApplicationInfo appInfo{ VK_STRUCTURE_TYPE_APPLICATION_INFO };
         appInfo.pApplicationName = "Phoenix Engine";
         appInfo.applicationVersion = VK_MAKE_VERSION(0, 1, 0);
@@ -248,15 +262,10 @@ namespace phoenix::renderer
         appInfo.engineVersion = VK_MAKE_VERSION(0, 1, 0);
         appInfo.apiVersion = VK_API_VERSION_1_2;
 
-        const char* extensions[] = {
-            VK_KHR_SURFACE_EXTENSION_NAME,
-            VK_KHR_WIN32_SURFACE_EXTENSION_NAME,
-        };
-
         VkInstanceCreateInfo createInfo{ VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO };
         createInfo.pApplicationInfo = &appInfo;
-        createInfo.enabledExtensionCount = static_cast<std::uint32_t>(std::size(extensions));
-        createInfo.ppEnabledExtensionNames = extensions;
+        createInfo.enabledExtensionCount = static_cast<std::uint32_t>(extensions.size());
+        createInfo.ppEnabledExtensionNames = extensions.data();
 
         if (vkCreateInstance(&createInfo, nullptr, &impl_->instance) != VK_SUCCESS)
         {
@@ -268,14 +277,11 @@ namespace phoenix::renderer
         return true;
     }
 
-    bool VulkanRenderer::create_surface(HWND hwnd)
+    bool VulkanRenderer::create_surface(SDL_Window* window)
     {
-        VkWin32SurfaceCreateInfoKHR createInfo{ VK_STRUCTURE_TYPE_WIN32_SURFACE_CREATE_INFO_KHR };
-        createInfo.hinstance = GetModuleHandleW(nullptr);
-        createInfo.hwnd = hwnd;
-        if (vkCreateWin32SurfaceKHR(impl_->instance, &createInfo, nullptr, &impl_->surface) != VK_SUCCESS)
+        if (!SDL_Vulkan_CreateSurface(window, impl_->instance, &impl_->surface))
         {
-            log_line("Vulkan: vkCreateWin32SurfaceKHR failed");
+            log_line("Vulkan: SDL_Vulkan_CreateSurface failed");
             return false;
         }
         return true;
@@ -1632,6 +1638,18 @@ namespace phoenix::renderer
         return true;
     }
 
+    void VulkanRenderer::enter_loading_mode()
+    {
+        if (!impl_)
+            return;
+        vkDeviceWaitIdle(impl_->device);
+        impl_->terrainReady = false;
+        impl_->objectsReady = false;
+        impl_->animatedObjectsReady = false;
+        impl_->debugReady = false;
+        impl_->characterReady = false;
+    }
+
     bool VulkanRenderer::create_host_buffer(
         const void* data,
         std::size_t byteSize,
@@ -2647,7 +2665,7 @@ namespace phoenix::renderer
         if (imguiReady_)
         {
             ImGui_ImplVulkan_Shutdown();
-            ImGui_ImplWin32_Shutdown();
+            ImGui_ImplSDL2_Shutdown();
             ImGui::DestroyContext();
             imguiReady_ = false;
             imguiFrameStarted_ = false;

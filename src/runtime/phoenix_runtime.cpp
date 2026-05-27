@@ -1,3 +1,4 @@
+#define _CRT_SECURE_NO_WARNINGS
 #include "runtime/phoenix_runtime.h"
 
 #include "world/dg_loader.h"
@@ -9,6 +10,7 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <cstdlib>
 #include <format>
 #include <fstream>
 #include <limits>
@@ -28,11 +30,6 @@ namespace phoenix::runtime
         constexpr std::uint32_t kMaxAssetTextureLayers = 960;
         constexpr std::uint32_t kWaterTextureLayer = 62;
 
-        std::wstring widen(std::string_view value)
-        {
-            return { value.begin(), value.end() };
-        }
-
         bool is_world_asset_extension(std::string extension)
         {
             extension = phoenix::assets::lower_ascii(std::move(extension));
@@ -42,12 +39,7 @@ namespace phoenix::runtime
         bool is_audio_asset_extension(std::string extension)
         {
             extension = phoenix::assets::lower_ascii(std::move(extension));
-            return extension == ".wav"
-                || extension == ".mp3"
-                || extension == ".ogg"
-                || extension == ".wma"
-                || extension == ".mid"
-                || extension == ".midi";
+            return extension == ".ogg";
         }
 
         void put_pixel(PreviewImage& image, int x, int y, std::uint8_t r, std::uint8_t g, std::uint8_t b)
@@ -440,11 +432,8 @@ namespace phoenix::runtime
         };
 
         std::vector<std::filesystem::path> candidates;
-        if (wchar_t* envValue = nullptr; _wdupenv_s(&envValue, nullptr, L"PHOENIX_ENGINE_DATA") == 0 && envValue)
-        {
+        if (const char* envValue = std::getenv("PHOENIX_ENGINE_DATA"); envValue && envValue[0])
             candidates.emplace_back(envValue);
-            std::free(envValue);
-        }
 
         candidates.push_back(executableDir / "Data");
         candidates.push_back(std::filesystem::current_path() / "Data");
@@ -452,16 +441,15 @@ namespace phoenix::runtime
         candidates.push_back(executableDir.parent_path().parent_path() / "Data");
         candidates.push_back(executableDir.parent_path().parent_path().parent_path() / "Data");
 
-        if (wchar_t* localAppData = nullptr; _wdupenv_s(&localAppData, nullptr, L"LOCALAPPDATA") == 0 && localAppData)
-        {
+#ifdef _WIN32
+        if (const char* localAppData = std::getenv("LOCALAPPDATA"); localAppData && localAppData[0])
             candidates.emplace_back(std::filesystem::path(localAppData) / "Phoenix Engine" / "Data");
-            std::free(localAppData);
-        }
-        if (wchar_t* programData = nullptr; _wdupenv_s(&programData, nullptr, L"PROGRAMDATA") == 0 && programData)
-        {
+        if (const char* programData = std::getenv("PROGRAMDATA"); programData && programData[0])
             candidates.emplace_back(std::filesystem::path(programData) / "Phoenix Engine" / "Data");
-            std::free(programData);
-        }
+#else
+        if (const char* home = std::getenv("HOME"); home && home[0])
+            candidates.emplace_back(std::filesystem::path(home) / ".local" / "share" / "Phoenix Engine" / "Data");
+#endif
 
         for (const auto& candidate : candidates)
             if (validDataRoot(candidate))
@@ -521,7 +509,7 @@ namespace phoenix::runtime
             }
             std::sort(nearbyYValues.begin(), nearbyYValues.end());
 
-            // Use the 15th percentile as the floor level — low enough to be on
+            // Use the 15th percentile as the floor level ï¿½ low enough to be on
             // a walkable surface, but not the absolute min (could be below geometry).
             const auto floorIdx = std::min<std::size_t>(
                 nearbyYValues.size() - 1,
@@ -861,7 +849,7 @@ namespace phoenix::runtime
                 }
                 // Fallback: generate collision from visual mesh for assets without
                 // explicit collision data. Uses the preview mesh positions directly.
-                // Skip Grass section — these should never block movement.
+                // Skip Grass section ï¿½ these should never block movement.
                 if (!asset.hasCollision && asset.loaded
                     && !asset.previewVertices.empty() && !asset.previewIndices.empty()
                     && !asset.vertexAnimated && section.name != "Grass")
@@ -1260,44 +1248,42 @@ namespace phoenix::runtime
         if (fileName.empty())
             return {};
 
-        const auto requested = std::filesystem::path(widen(fileName));
-        std::vector<std::filesystem::path> candidates;
-        candidates.push_back(requested);
-        candidates.push_back(requested.filename());
+        const auto requested = std::filesystem::path(std::string(fileName));
+        const auto parentDir = requested.parent_path();
+        const auto stem = requested.filename().stem().string();
+        const auto oggName = stem + ".ogg";
 
-        const auto ext = phoenix::assets::lower_ascii(requested.extension().string());
-        if (ext.empty())
+        const std::filesystem::path roots[] = {
+            state_.dataRoot / "Sound",
+            state_.dataRoot / "Sounds",
+            state_.dataRoot / "Music",
+            state_.dataRoot / "BGM",
+            state_.dataRoot / "Audio",
+        };
+
+        auto path = state_.assets.resolve(oggName);
+        if (!path.empty() && std::filesystem::exists(path))
+            return path;
+
+        if (!parentDir.empty())
         {
-            const auto stem = requested.filename().string();
-            constexpr std::string_view audioExtensions[] = {
-                ".wav", ".mp3", ".ogg", ".wma", ".mid", ".midi"
-            };
-            for (const auto extension : audioExtensions)
-                candidates.emplace_back(widen(stem + std::string(extension)));
-        }
-
-        for (const auto& candidate : candidates)
-        {
-            if (candidate.empty())
-                continue;
-
-            auto path = state_.assets.resolve(candidate.string());
+            const auto relativeOgg = parentDir / oggName;
+            path = state_.assets.resolve(relativeOgg.string());
             if (!path.empty() && std::filesystem::exists(path))
                 return path;
+        }
 
-            const std::filesystem::path roots[] = {
-                state_.dataRoot / "Sound",
-                state_.dataRoot / "Sounds",
-                state_.dataRoot / "Music",
-                state_.dataRoot / "BGM",
-                state_.dataRoot / "Audio",
-            };
-            for (const auto& root : roots)
+        for (const auto& root : roots)
+        {
+            if (!parentDir.empty())
             {
-                path = root / candidate.filename();
+                path = root / parentDir / oggName;
                 if (std::filesystem::exists(path))
                     return path;
             }
+            path = root / oggName;
+            if (std::filesystem::exists(path))
+                return path;
         }
 
         return {};
@@ -2453,14 +2439,12 @@ namespace phoenix::runtime
         for (std::size_t i = 0; i < scene.vertexAnimations.size(); ++i)
         {
             auto& animation = scene.vertexAnimations[i];
-            if (animation.frames.empty())
-                continue;
-
             const bool isActor = i >= actorVertexAnimationStart;
 
             if (!isActor)
             {
-                // World asset VANI animation — simple looping, no culling, no gestures.
+                if (animation.frames.empty())
+                    continue;
                 const auto frame = static_cast<std::size_t>(std::floor(totalTime * 12.0f)) % animation.frames.size();
                 const auto& frameVertices = animation.frames[frame];
                 const auto count = std::min<std::size_t>(animation.vertexCount, frameVertices.size());
@@ -2469,8 +2453,9 @@ namespace phoenix::runtime
                 continue;
             }
 
-            // ---- Actor vertex animation (NPC or Mob) ----
-            // Distance culling.
+            if (!animation.hasActorSkin || animation.skinData.sourceVertices.empty())
+                continue;
+
             const float dx = animation.worldX - cameraX;
             const float dy = animation.worldY - cameraY;
             const float dz = animation.worldZ - cameraZ;
@@ -2480,33 +2465,53 @@ namespace phoenix::runtime
             if (distSq > effectiveRangeSq)
                 continue;
 
-            // ---- MOB animation state machine ----
+            const auto& breathAnim = animation.animations.breath;
+            const auto& idleAnim = animation.animations.idle;
+            const auto& walkAnim = animation.animations.walk;
+            const auto& runAnim = animation.animations.run;
+
+            auto skinCached = [&](const phoenix::world::CharacterAnimation& anim, float frameF) {
+                const auto discreteFrame = static_cast<std::int32_t>(frameF);
+                if (discreteFrame == animation.cachedFrame && &anim == animation.cachedAnim)
+                    return;
+                const auto first = static_cast<std::size_t>(animation.firstVertex);
+                if (first + animation.vertexCount > scene.vertices.size())
+                    return;
+                auto span = std::span<phoenix::renderer::TerrainVertex>(
+                    scene.vertices.data() + first, animation.vertexCount);
+                phoenix::world::skin_actor_vertices(animation.skinData, span, anim, frameF);
+                animation.cachedFrame = discreteFrame;
+                animation.cachedAnim = &anim;
+            };
+
+            auto animFrameCount = [](const phoenix::world::CharacterAnimation& anim) -> float {
+                if (!anim.parsed || anim.endKeyframe <= anim.startKeyframe)
+                    return 1.0f;
+                return static_cast<float>(anim.endKeyframe - anim.startKeyframe + 1);
+            };
+
             if (animation.isMob)
             {
-                // Choose animation based on type-level movement state.
-                // Only switch to walk/run when a majority of instances are moving,
-                // otherwise stay on breath/idle so idle mobs look natural.
                 const auto total = std::max(1u, animation.totalInstances);
                 const float movingRatio = static_cast<float>(animation.movingCount) / static_cast<float>(total);
                 const float runningRatio = static_cast<float>(animation.runningCount) / static_cast<float>(total);
 
-                const auto* activeFrames = &animation.frames;
-                float playbackRate = 12.0f; // frames per second
+                const phoenix::world::CharacterAnimation* activeAnim = &breathAnim;
+                float playbackRate = 12.0f;
 
-                if (runningRatio > 0.4f && !animation.runFrames.empty())
+                if (runningRatio > 0.4f && runAnim.parsed)
                 {
-                    activeFrames = &animation.runFrames;
+                    activeAnim = &runAnim;
                     playbackRate = 18.0f;
                 }
-                else if (movingRatio > 0.4f && !animation.walkFrames.empty())
+                else if (movingRatio > 0.4f && walkAnim.parsed)
                 {
-                    activeFrames = &animation.walkFrames;
+                    activeAnim = &walkAnim;
                     playbackRate = 14.0f;
                 }
                 else
                 {
-                    // Idle state: breath + occasional idle gesture.
-                    if (!animation.idleFrames.empty())
+                    if (idleAnim.parsed)
                     {
                         if (animation.playingGesture)
                         {
@@ -2522,13 +2527,7 @@ namespace phoenix::runtime
                             else
                             {
                                 const float progress = animation.gestureTimer / kIdleDuration;
-                                const auto idleFrame = std::min(
-                                    static_cast<std::size_t>(progress * static_cast<float>(animation.idleFrames.size())),
-                                    animation.idleFrames.size() - 1);
-                                const auto& fv = animation.idleFrames[idleFrame];
-                                const auto count = std::min<std::size_t>(animation.vertexCount, fv.size());
-                                if (static_cast<std::size_t>(animation.firstVertex) + count <= scene.vertices.size())
-                                    std::copy_n(fv.begin(), count, scene.vertices.begin() + animation.firstVertex);
+                                skinCached(idleAnim, progress * animFrameCount(idleAnim));
                                 continue;
                             }
                         }
@@ -2544,17 +2543,15 @@ namespace phoenix::runtime
                     }
                 }
 
-                const auto frame = static_cast<std::size_t>(std::floor(totalTime * playbackRate)) % activeFrames->size();
-                const auto& frameVertices = (*activeFrames)[frame];
-                const auto count = std::min<std::size_t>(animation.vertexCount, frameVertices.size());
-                if (static_cast<std::size_t>(animation.firstVertex) + count <= scene.vertices.size())
-                    std::copy_n(frameVertices.begin(), count, scene.vertices.begin() + animation.firstVertex);
+                skinCached(*activeAnim, std::fmod(totalTime * playbackRate, animFrameCount(*activeAnim)));
                 continue;
             }
 
             // ---- NPC animation (stationary, breath + idle gesture) ----
-            const auto* activeFrames = &animation.frames;
-            if (!animation.idleFrames.empty())
+            const phoenix::world::CharacterAnimation* activeAnim = &breathAnim;
+            float playbackRate = 12.0f;
+
+            if (idleAnim.parsed)
             {
                 if (animation.playingGesture)
                 {
@@ -2570,13 +2567,7 @@ namespace phoenix::runtime
                     else
                     {
                         const float progress = animation.gestureTimer / kIdleDuration;
-                        const auto idleFrame = std::min(
-                            static_cast<std::size_t>(progress * static_cast<float>(animation.idleFrames.size())),
-                            animation.idleFrames.size() - 1);
-                        const auto& fv = animation.idleFrames[idleFrame];
-                        const auto count = std::min<std::size_t>(animation.vertexCount, fv.size());
-                        if (static_cast<std::size_t>(animation.firstVertex) + count <= scene.vertices.size())
-                            std::copy_n(fv.begin(), count, scene.vertices.begin() + animation.firstVertex);
+                        skinCached(idleAnim, progress * animFrameCount(idleAnim));
                         continue;
                     }
                 }
@@ -2591,12 +2582,7 @@ namespace phoenix::runtime
                 }
             }
 
-            // Breath animation (NPC default state).
-            const auto frame = static_cast<std::size_t>(std::floor(totalTime * 12.0f)) % activeFrames->size();
-            const auto& frameVertices = (*activeFrames)[frame];
-            const auto count = std::min<std::size_t>(animation.vertexCount, frameVertices.size());
-            if (static_cast<std::size_t>(animation.firstVertex) + count <= scene.vertices.size())
-                std::copy_n(frameVertices.begin(), count, scene.vertices.begin() + animation.firstVertex);
+            skinCached(*activeAnim, std::fmod(totalTime * playbackRate, animFrameCount(*activeAnim)));
         }
 
         // ==================================================================
@@ -2733,9 +2719,9 @@ namespace phoenix::runtime
         }
     }
 
-    void PhoenixRuntime::update_window_title(HWND hwnd, const std::string& /*rendererName*/, float /*fps*/, bool /*fogEnabled*/) const
+    std::string PhoenixRuntime::window_title(const std::string& /*rendererName*/, float /*fps*/, bool /*fogEnabled*/) const
     {
-        SetWindowTextW(hwnd, L"Phoenix Engine");
+        return "Phoenix Engine";
     }
 
     bool PhoenixRuntime::load_effect_data()
@@ -3327,7 +3313,7 @@ namespace phoenix::runtime
         const float charMinY = characterY;
         const float charMaxY = characterY + characterHeight;
 
-        // Maximum displacement allowed — prevents teleportation.
+        // Maximum displacement allowed ï¿½ prevents teleportation.
         const float moveDx = proposedX - prevX;
         const float moveDz = proposedZ - prevZ;
         const float maxDisplacementSq = (moveDx * moveDx + moveDz * moveDz) * 4.0f + 1.0f;
@@ -3358,7 +3344,7 @@ namespace phoenix::runtime
                         if (tri.minY > charMaxY || tri.maxY < charMinY)
                             continue;
 
-                        // Skip walkable (floor-like) triangles — these are handled as
+                        // Skip walkable (floor-like) triangles ï¿½ these are handled as
                         // elevated terrain via floor_height_at, not as walls.
                         if (tri.normalY >= kWalkableNormalY)
                             continue;
@@ -3374,7 +3360,7 @@ namespace phoenix::runtime
 
                         if (contact.inside)
                         {
-                            // Inside the triangle — must push out.
+                            // Inside the triangle ï¿½ must push out.
                             // Push direction: from nearest edge point OUTWARD (away from triangle center).
                             float dist = std::sqrt(contact.distSq);
                             float penetration = characterRadius + dist; // full push past the edge
@@ -3396,7 +3382,7 @@ namespace phoenix::runtime
                                     }
                                     else
                                     {
-                                        // No movement direction — push away from edge.
+                                        // No movement direction ï¿½ push away from edge.
                                         pushNx = (proposedX - contact.nearX) / dist;
                                         pushNz = (proposedZ - contact.nearZ) / dist;
                                     }
@@ -3406,7 +3392,7 @@ namespace phoenix::runtime
                         }
                         else if (contact.distSq < radiusSq)
                         {
-                            // Outside but within radius — gentle push.
+                            // Outside but within radius ï¿½ gentle push.
                             float dist = std::sqrt(contact.distSq);
                             float penetration = characterRadius - dist;
                             if (penetration > deepestPen && dist > 0.001f)
@@ -3467,7 +3453,7 @@ namespace phoenix::runtime
                     if (tri.normalY < kWalkableNormalY)
                         continue;
 
-                    // Quick Y range check — triangle must be reachable.
+                    // Quick Y range check ï¿½ triangle must be reachable.
                     if (tri.minY > maxY || tri.maxY < bestY)
                         continue;
 

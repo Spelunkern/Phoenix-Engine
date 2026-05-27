@@ -1,146 +1,162 @@
 #include "world/svmap_loader.h"
 
-#include <bit>
+#include <cstdlib>
 #include <fstream>
-#include <iterator>
+#include <string>
+#include <unordered_map>
+#include <vector>
 
 namespace phoenix::world
 {
     namespace
     {
-        std::uint32_t read_u32(const std::vector<std::uint8_t>& data, std::size_t offset)
+        std::string next_field(const std::string& line, std::size_t& pos)
         {
-            if (offset + 4 > data.size())
-                return 0;
-            return static_cast<std::uint32_t>(data[offset])
-                | (static_cast<std::uint32_t>(data[offset + 1]) << 8)
-                | (static_cast<std::uint32_t>(data[offset + 2]) << 16)
-                | (static_cast<std::uint32_t>(data[offset + 3]) << 24);
-        }
-
-        std::int32_t read_i32(const std::vector<std::uint8_t>& data, std::size_t offset)
-        {
-            return std::bit_cast<std::int32_t>(read_u32(data, offset));
-        }
-
-        float read_f32(const std::vector<std::uint8_t>& data, std::size_t offset)
-        {
-            return std::bit_cast<float>(read_u32(data, offset));
-        }
-
-        bool skip_bytes(std::size_t& offset, std::size_t count, std::size_t size)
-        {
-            if (count > size - offset)
-                return false;
-            offset += count;
-            return true;
-        }
-
-        bool read_vec3(const std::vector<std::uint8_t>& data, std::size_t& offset, SvmapVec3& value)
-        {
-            if (offset + 12 > data.size())
-                return false;
-            value.x = read_f32(data, offset + 0);
-            value.y = read_f32(data, offset + 4);
-            value.z = read_f32(data, offset + 8);
-            offset += 12;
-            return true;
-        }
-
-        bool read_box(const std::vector<std::uint8_t>& data, std::size_t& offset, SvmapBox& box)
-        {
-            return read_vec3(data, offset, box.min) && read_vec3(data, offset, box.max);
-        }
-
-        bool read_count(const std::vector<std::uint8_t>& data, std::size_t& offset, std::uint32_t& count, std::uint32_t cap)
-        {
-            if (offset + 4 > data.size())
-                return false;
-            count = read_u32(data, offset);
-            offset += 4;
-            return count <= cap;
+            auto comma = line.find(',', pos);
+            if (comma == std::string::npos) comma = line.size();
+            auto token = line.substr(pos, comma - pos);
+            pos = comma < line.size() ? comma + 1 : line.size();
+            return token;
         }
     }
 
     SvmapFile load_svmap(const std::filesystem::path& path)
     {
         SvmapFile svmap{};
-        std::ifstream file(path, std::ios::binary);
-        if (!file)
+
+        // Resolve CSV folder: Data/World/svmap/{mapId}/
+        // path is e.g. Data/World/1.svmap — extract stem as map ID.
+        const auto mapId = path.stem().string();
+        const auto csvDir = path.parent_path() / "svmap" / mapId;
+        if (!std::filesystem::exists(csvDir))
             return svmap;
 
-        std::vector<std::uint8_t> data{
-            std::istreambuf_iterator<char>(file),
-            std::istreambuf_iterator<char>() };
-        if (data.size() < 12)
+        // metadata.csv: MapFile,MapSize,MapMaskBytes,CellSize
+        {
+            std::ifstream file(csvDir / "metadata.csv");
+            if (!file) return svmap;
+            std::string line;
+            std::getline(file, line); // header
+            if (!std::getline(file, line)) return svmap;
+            std::size_t pos = 0;
+            next_field(line, pos); // MapFile
+            svmap.mapSize = std::atoi(next_field(line, pos).c_str());
+            next_field(line, pos); // MapMaskBytes
+            svmap.cellSize = std::atoi(next_field(line, pos).c_str());
+        }
+        if (svmap.mapSize <= 0)
             return svmap;
 
-        std::size_t offset = 0;
-        svmap.mapSize = read_i32(data, offset);
-        offset += 4;
-        if (svmap.mapSize <= 0 || svmap.mapSize > 1'000'000)
-            return {};
+        // monster_areas.csv: AreaIndex,LowerX,LowerY,LowerZ,UpperX,UpperY,UpperZ,MonsterCount
+        struct AreaEntry { SvmapBox box{}; };
+        std::unordered_map<int, AreaEntry> areaEntries;
+        {
+            std::ifstream file(csvDir / "monster_areas.csv");
+            if (file)
+            {
+                std::string line;
+                std::getline(file, line);
+                while (std::getline(file, line))
+                {
+                    if (line.empty()) continue;
+                    std::size_t pos = 0;
+                    auto areaIdx = std::atoi(next_field(line, pos).c_str());
+                    AreaEntry entry{};
+                    entry.box.min.x = std::strtof(next_field(line, pos).c_str(), nullptr);
+                    entry.box.min.y = std::strtof(next_field(line, pos).c_str(), nullptr);
+                    entry.box.min.z = std::strtof(next_field(line, pos).c_str(), nullptr);
+                    entry.box.max.x = std::strtof(next_field(line, pos).c_str(), nullptr);
+                    entry.box.max.y = std::strtof(next_field(line, pos).c_str(), nullptr);
+                    entry.box.max.z = std::strtof(next_field(line, pos).c_str(), nullptr);
+                    areaEntries[areaIdx] = entry;
+                }
+            }
+        }
 
-        const auto maskBytes = static_cast<std::size_t>(svmap.mapSize) * static_cast<std::size_t>(svmap.mapSize) / 8u;
-        if (!skip_bytes(offset, maskBytes, data.size()) || offset + 4 > data.size())
-            return {};
+        // monster_spawns.csv: AreaIndex,MonsterIndex,MobId,Count
+        std::unordered_map<int, std::vector<SvmapMonsterSpawn>> spawnsByArea;
+        {
+            std::ifstream file(csvDir / "monster_spawns.csv");
+            if (file)
+            {
+                std::string line;
+                std::getline(file, line);
+                while (std::getline(file, line))
+                {
+                    if (line.empty()) continue;
+                    std::size_t pos = 0;
+                    auto areaIdx = std::atoi(next_field(line, pos).c_str());
+                    next_field(line, pos); // MonsterIndex
+                    SvmapMonsterSpawn spawn{};
+                    spawn.mobId = static_cast<std::uint32_t>(std::atoi(next_field(line, pos).c_str()));
+                    spawn.count = static_cast<std::uint32_t>(std::atoi(next_field(line, pos).c_str()));
+                    spawnsByArea[areaIdx].push_back(spawn);
+                }
+            }
+        }
 
-        svmap.cellSize = read_i32(data, offset);
-        offset += 4;
-
-        std::uint32_t count{};
-        if (!read_count(data, offset, count, 200000) || !skip_bytes(offset, static_cast<std::size_t>(count) * 12u, data.size()))
-            return {};
-
-        if (!read_count(data, offset, count, 200000))
-            return {};
-        svmap.monsterAreas.reserve(count);
-        for (std::uint32_t i = 0; i < count; ++i)
+        for (auto& [areaIdx, entry] : areaEntries)
         {
             SvmapMonsterArea area{};
-            if (!read_box(data, offset, area.area))
-                return {};
-            std::uint32_t spawnCount{};
-            if (!read_count(data, offset, spawnCount, 4096))
-                return {};
-            area.spawns.reserve(spawnCount);
-            for (std::uint32_t s = 0; s < spawnCount; ++s)
-            {
-                if (offset + 8 > data.size())
-                    return {};
-                SvmapMonsterSpawn spawn{};
-                spawn.mobId = read_u32(data, offset + 0);
-                spawn.count = read_u32(data, offset + 4);
-                offset += 8;
-                area.spawns.push_back(spawn);
-            }
+            area.area = entry.box;
+            if (auto it = spawnsByArea.find(areaIdx); it != spawnsByArea.end())
+                area.spawns = std::move(it->second);
             svmap.monsterAreas.push_back(std::move(area));
         }
 
-        if (!read_count(data, offset, count, 200000))
-            return {};
-        svmap.npcs.reserve(count);
-        for (std::uint32_t i = 0; i < count; ++i)
+        // npcs.csv: NpcGroupIndex,NpcType,NpcId,PositionCount
+        // npc_positions.csv: NpcGroupIndex,PositionIndex,X,Y,Z,Yaw
+        struct NpcEntry { std::int32_t npcType{}; std::int32_t npcId{}; };
+        std::unordered_map<int, NpcEntry> npcEntries;
         {
-            if (offset + 8 > data.size())
-                return {};
-            SvmapNpc npc{};
-            npc.npcType = read_i32(data, offset + 0);
-            npc.npcId = read_i32(data, offset + 4);
-            offset += 8;
-            std::uint32_t positionCount{};
-            if (!read_count(data, offset, positionCount, 4096))
-                return {};
-            npc.positions.reserve(positionCount);
-            for (std::uint32_t p = 0; p < positionCount; ++p)
+            std::ifstream file(csvDir / "npcs.csv");
+            if (file)
             {
-                SvmapNpcPosition position{};
-                if (!read_vec3(data, offset, position.position) || offset + 4 > data.size())
-                    return {};
-                position.yaw = read_f32(data, offset);
-                offset += 4;
-                npc.positions.push_back(position);
+                std::string line;
+                std::getline(file, line);
+                while (std::getline(file, line))
+                {
+                    if (line.empty()) continue;
+                    std::size_t pos = 0;
+                    auto groupIdx = std::atoi(next_field(line, pos).c_str());
+                    NpcEntry entry{};
+                    entry.npcType = std::atoi(next_field(line, pos).c_str());
+                    entry.npcId = std::atoi(next_field(line, pos).c_str());
+                    npcEntries[groupIdx] = entry;
+                }
             }
+        }
+
+        std::unordered_map<int, std::vector<SvmapNpcPosition>> npcPositions;
+        {
+            std::ifstream file(csvDir / "npc_positions.csv");
+            if (file)
+            {
+                std::string line;
+                std::getline(file, line);
+                while (std::getline(file, line))
+                {
+                    if (line.empty()) continue;
+                    std::size_t pos = 0;
+                    auto groupIdx = std::atoi(next_field(line, pos).c_str());
+                    next_field(line, pos); // PositionIndex
+                    SvmapNpcPosition position{};
+                    position.position.x = std::strtof(next_field(line, pos).c_str(), nullptr);
+                    position.position.y = std::strtof(next_field(line, pos).c_str(), nullptr);
+                    position.position.z = std::strtof(next_field(line, pos).c_str(), nullptr);
+                    position.yaw = std::strtof(next_field(line, pos).c_str(), nullptr);
+                    npcPositions[groupIdx].push_back(position);
+                }
+            }
+        }
+
+        for (auto& [groupIdx, entry] : npcEntries)
+        {
+            SvmapNpc npc{};
+            npc.npcType = entry.npcType;
+            npc.npcId = entry.npcId;
+            if (auto it = npcPositions.find(groupIdx); it != npcPositions.end())
+                npc.positions = std::move(it->second);
             svmap.npcs.push_back(std::move(npc));
         }
 

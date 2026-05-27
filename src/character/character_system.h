@@ -14,10 +14,15 @@ namespace phoenix::character
     struct CharacterAppearance
     {
         std::string raceFolder{ "Human" };
-        std::string prefix{ "huwm" };
-        int armorIndex{ 4 };
+        std::string prefix{ "humf" };
+        int upperIndex{ 19 };
+        int lowerIndex{ 19 };
+        int handIndex{ 19 };
+        int footIndex{ 19 };
+        int helmetIndex{ 9 };
         int faceIndex{ 1 };
         int hairIndex{ 1 };
+        bool helmetVisible{ true };
     };
 
     // Character GPU vertices match TerrainVertex layout so they can render
