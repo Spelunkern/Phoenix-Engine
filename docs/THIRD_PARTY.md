@@ -1,6 +1,12 @@
 # Third-Party Dependencies
 
-This repository vendors a small set of third-party dependencies to keep the Windows build self-contained.
+This repository vendors a small set of third-party dependencies to keep the build self-contained.
+
+## SDL2
+
+- Path: `external/SDL2/`
+- License: zlib
+- License file: `external/SDL2/LICENSE.txt`
 
 ## Dear ImGui
 
@@ -20,6 +26,18 @@ This repository vendors a small set of third-party dependencies to keep the Wind
 - License: Apache-2.0
 - License file: `external/Vulkan-Headers/LICENSE.md`
 
+## miniaudio
+
+- Path: `external/miniaudio.h`
+- License: MIT-0 (public domain alternative)
+- Source: https://miniaud.io
+
+## stb_vorbis
+
+- Path: `external/stb_vorbis.c`
+- License: MIT / public domain
+- Source: https://github.com/nothings/stb
+
 ## DirectX Shader Compiler
 
 - Path: `external/dxc/`
@@ -30,4 +48,3 @@ This repository vendors a small set of third-party dependencies to keep the Wind
   - `external/dxc/LICENSE-MIT.txt`
 
 When updating vendored dependencies, keep their license files intact.
-

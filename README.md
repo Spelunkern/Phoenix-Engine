@@ -4,7 +4,7 @@
 
 # Phoenix Engine
 
-Phoenix Engine is an open source MMO engine focused on high performance, modular features, and ease of use. It uses Vulkan as its graphics API and aims to become portable over time, starting with Windows and Linux-oriented builds.
+Phoenix Engine is an open source MMO engine focused on high performance, modular features, and ease of use. It uses Vulkan as its graphics API and runs on Windows and Linux.
 
 The project is still in its infancy. Today it provides a gameplay/preview mode, not a full client and not a server component yet. The repository contains engine/source code only; game data and commercial assets are not included.
 
@@ -42,10 +42,12 @@ Phoenix Engine does not assume deep technical knowledge from final users. Everyo
 ## Current Features
 
 - Vulkan renderer with terrain, objects, animated actors, water, fog, and procedural sky.
+- Runtime CPU skinning for character and actor animations with frame caching for high FPS.
 - WLD/DG map loading with free-camera viewer mode and playable character mode.
 - Character appearance loading with race, armor, face, and hair selection.
 - NPC and monster loading from server/map data with nameplates, scale, idle/walk animation, and distance culling.
-- Map ambience support for music and sound zones with distance-based fade behavior.
+- Map ambience support for music and sound zones with distance-based fade behavior (OGG Vorbis via miniaudio).
+- Async loading with a responsive loading screen during initialization and map changes.
 - Water surface rendering, underwater tinting, swimming, floating, and camera-driven movement.
 - ImGui runtime controls for map selection, fog, render distance, actor distance, overlays, character selection, and sky/weather styles.
 - Procedural sky styles: default, storm, snowstorm, sunset, and night with stars/moon/meteors.
@@ -55,32 +57,68 @@ Phoenix Engine does not assume deep technical knowledge from final users. Everyo
 ```text
 src/
   assets/      Data indexing and path resolution.
-  audio/       XAudio2 ambience playback.
+  audio/       Audio playback via miniaudio (OGG Vorbis).
   character/   Playable character controller and character mesh assembly.
   runtime/     Engine runtime state, map loading, terrain/object scene building.
-  platform/    Win32 window/input wrapper.
+  platform/    SDL2 window/input wrapper.
   renderer/    Vulkan renderer, texture loading, GPU resources.
   world/       File format loaders and actor scene construction.
 shaders/       HLSL source and compiled SPIR-V used by the runtime.
 res/           Windows icon/resource files.
 external/      Vendored third-party dependencies.
-scripts/       Helper scripts for local build and shader compilation.
+scripts/       Helper scripts for building and shader compilation.
 docs/          Public documentation and release notes.
 ```
 
+## Supported Platforms
+
+| Platform | Status | Build System |
+|----------|--------|-------------|
+| Windows 10/11 | Primary | Visual Studio 2022 / MSBuild |
+| Linux (X11/Wayland) | Supported | CMake + GCC/Clang |
+
+Both platforms share the same codebase. The platform layer uses SDL2, the renderer uses Vulkan through volk, and the audio system uses miniaudio with stb_vorbis — all cross-platform.
+
 ## Requirements
 
-- Windows 10/11.
+### Windows
+
 - Visual Studio 2022 Build Tools with MSVC v143.
 - Windows SDK.
 - A Vulkan-capable GPU and current graphics driver.
-- PowerShell 5+.
 
-The repository vendors Vulkan Headers, volk, Dear ImGui, and DXC binaries used for shader compilation. A full Vulkan SDK install is not required for this project layout.
+SDL2 is vendored in the repository. No additional downloads needed.
+
+### Linux
+
+- GCC 13+ or Clang 17+ (C++23 required).
+- CMake 3.20+.
+- SDL2 development libraries.
+- Vulkan-capable GPU and driver with ICD loader.
+
+Install dependencies on Debian/Ubuntu:
+
+```bash
+sudo apt install build-essential cmake libsdl2-dev libvulkan-dev
+```
+
+On Fedora:
+
+```bash
+sudo dnf install gcc-c++ cmake SDL2-devel vulkan-loader-devel
+```
+
+On Arch:
+
+```bash
+sudo pacman -S base-devel cmake sdl2 vulkan-icd-loader
+```
 
 ## Build
 
-From the repository root:
+### Windows
+
+From the repository root in PowerShell:
 
 ```powershell
 .\scripts\build.ps1
@@ -92,21 +130,43 @@ Or directly:
 & 'C:\BuildTools\MSBuild\Current\Bin\MSBuild.exe' .\PhoenixEngine.sln /p:Configuration=Release /p:Platform=x64 /m
 ```
 
-The executable is generated at:
+Output: `bin\x64\Release\PhoenixEngine.exe`
 
-```text
-bin\x64\Release\PhoenixEngine.exe
+### Linux
+
+```bash
+./scripts/build.sh
 ```
+
+Or manually:
+
+```bash
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+cmake --build build -j$(nproc)
+```
+
+Output: `build/PhoenixEngine`
+
+The repository vendors Vulkan Headers, volk, Dear ImGui, and DXC binaries used for shader compilation. A full Vulkan SDK install is not required for this project layout.
 
 ## Shader Compilation
 
 Compiled shader binaries are stored in `shaders/compiled/` because the runtime loads SPIR-V at startup.
 
-To recompile shaders:
+To recompile shaders (Windows):
 
 ```powershell
 .\scripts\compile_shaders.ps1
 ```
+
+On Linux, use any HLSL-to-SPIR-V compiler (e.g. `dxc` from the Vulkan SDK):
+
+```bash
+dxc -spirv -T vs_6_0 -E VSMain -Fo shaders/compiled/sky.vert.spv shaders/sky.hlsl
+dxc -spirv -T ps_6_0 -E PSMain -Fo shaders/compiled/sky.frag.spv shaders/sky.hlsl
+```
+
+Pre-compiled SPIR-V is checked into the repository, so shader recompilation is only needed when modifying shader source.
 
 ## Runtime Data
 
@@ -116,13 +176,18 @@ Phoenix Engine resolves runtime data from the first valid location in this order
 2. `Data/` next to the executable.
 3. `Data/` in the current working directory.
 4. `Data/` in parent directories above the executable, useful for source-tree development.
-5. `%LOCALAPPDATA%/Phoenix Engine/Data`.
-6. `%PROGRAMDATA%/Phoenix Engine/Data`.
+
+Platform-specific fallback locations:
+
+| Platform | Paths |
+|----------|-------|
+| Windows | `%LOCALAPPDATA%/Phoenix Engine/Data`, `%PROGRAMDATA%/Phoenix Engine/Data` |
+| Linux | `~/.local/share/Phoenix Engine/Data` |
 
 For quick local development, the recommended layout is:
 
 ```text
-Phoenix Engine\Data\
+Phoenix Engine/Data/
 ```
 
 The code references formats such as `.wld`, `.dg`, `.smod`, `.3dc`, `.ani`, `.dds`, `.mon`, `.sdata`, and `.svmap`. These files are user-supplied and are intentionally excluded from the repository.

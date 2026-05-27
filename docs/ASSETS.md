@@ -4,12 +4,17 @@ Phoenix Engine does not include commercial game data or extracted client/server 
 
 Phoenix Engine resolves runtime data from the first valid location in this order:
 
-1. `PHOENIX_ENGINE_DATA`
-2. `Data/` next to the executable
-3. `Data/` in the current working directory
-4. `Data/` in parent directories above the executable
-5. `%LOCALAPPDATA%/Phoenix Engine/Data`
-6. `%PROGRAMDATA%/Phoenix Engine/Data`
+1. `PHOENIX_ENGINE_DATA` environment variable.
+2. `Data/` next to the executable.
+3. `Data/` in the current working directory.
+4. `Data/` in parent directories above the executable.
+
+Platform-specific fallback locations:
+
+| Platform | Paths |
+|----------|-------|
+| Windows | `%LOCALAPPDATA%/Phoenix Engine/Data`, `%PROGRAMDATA%/Phoenix Engine/Data` |
+| Linux | `~/.local/share/Phoenix Engine/Data` |
 
 For local development, place your own data directory at the project root:
 
@@ -35,7 +40,7 @@ Commonly consumed file types include:
 - Static and animated models: `.smod`, `.3dc`, `.vani`, `.mani`
 - Actor metadata: `.mon`, `.sdata`
 - Animation and textures: `.ani`, `.dds`, `.bmp`
-- Audio: files referenced by map sound/music zones
+- Audio: `.ogg` files referenced by map sound/music zones
 
 The `.gitignore` intentionally excludes `Data/` at every repository depth. Keep this rule unless the project later gains a fully original asset pack that is safe to redistribute.
 
