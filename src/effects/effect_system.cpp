@@ -102,6 +102,8 @@ namespace phoenix::effects
         }
         }
 
+        local[1] += layer.originHeight;   // lift the spawn (e.g. falling from the sky)
+
         float vel[3]{ dir[0] * layer.speed, dir[1] * layer.speed, dir[2] * layer.speed };
 
         local_to_world(anchor, local, out.pos);
@@ -119,7 +121,8 @@ namespace phoenix::effects
         return nullptr;
     }
 
-    EffectManager::Handle EffectManager::spawn(const EffectDefinition& def, const EffectAnchor& anchor)
+    EffectManager::Handle EffectManager::spawn(const EffectDefinition& def, const EffectAnchor& anchor,
+                                               const float velocity[3], float travelTime)
     {
         Instance inst;
         inst.id = nextHandle_++;
@@ -127,6 +130,14 @@ namespace phoenix::effects
         inst.anchor = anchor;
         inst.ageS = 0.0f;
         inst.emitting = true;
+        if (velocity && travelTime > 0.0f)
+        {
+            inst.moving = true;
+            inst.velocity[0] = velocity[0];
+            inst.velocity[1] = velocity[1];
+            inst.velocity[2] = velocity[2];
+            inst.travelTime = travelTime;
+        }
         instances_.push_back(std::move(inst));
         return instances_.back().id;
     }
@@ -158,6 +169,22 @@ namespace phoenix::effects
             // One-shots stop emitting after their duration; loops emit forever.
             if (!inst.def.loop && inst.ageS >= inst.def.duration)
                 inst.emitting = false;
+
+            // Projectiles: advance the anchor; stop emitting once the flight ends
+            // so the trailing particles fade out where it landed.
+            if (inst.moving)
+            {
+                if (inst.ageS < inst.travelTime)
+                {
+                    inst.anchor.position[0] += inst.velocity[0] * dt;
+                    inst.anchor.position[1] += inst.velocity[1] * dt;
+                    inst.anchor.position[2] += inst.velocity[2] * dt;
+                }
+                else
+                {
+                    inst.emitting = false;
+                }
+            }
 
             const int layers = std::clamp(inst.def.layerCount, 0, kMaxEffectLayers);
             for (int li = 0; li < layers; ++li)
@@ -255,7 +282,8 @@ namespace phoenix::effects
             float spawnRate, float lifetime, float size,
             float speed, float gravity, float radius,
             float drag = 0.0f, float intensity = 1.0f,
-            float coneAngleDeg = 25.0f, float height = 1.0f)
+            float coneAngleDeg = 25.0f, float height = 1.0f,
+            float originHeight = 0.0f)
         {
             EffectLayer l;
             l.shape = shape; l.blend = blend;
@@ -264,7 +292,7 @@ namespace phoenix::effects
             l.spawnRate = spawnRate; l.lifetime = lifetime; l.size = size;
             l.speed = speed; l.gravity = gravity; l.radius = radius;
             l.drag = drag; l.intensity = intensity; l.coneAngleDeg = coneAngleDeg;
-            l.height = height; l.enabled = true;
+            l.height = height; l.originHeight = originHeight; l.enabled = true;
             return l;
         }
 
@@ -461,6 +489,49 @@ namespace phoenix::effects
                 mkLayer(S::Sphere, ADD, 1.0f,1.0f,0.9f, 0.8f,0.8f,0.5f, 40,1.5f,0.05f, 0.5f,-0.2f,0.8f, 0.4f,0.9f) }));
             c.push_back(mkDef("Dust", C::Normal, true, 0.0f, {
                 mkLayer(S::Disc, ALP, 0.55f,0.52f,0.48f, 0.3f,0.28f,0.25f, 40,2.0f,0.25f, 0.6f,-0.2f,0.7f, 0.5f,0.4f) }));
+
+            // ===== REQUESTED SPELLS =====
+            // Fireball — forward fire projectile.
+            {
+                auto d = mkDef("Fireball", C::Fire, true, 0.0f, {
+                    mkLayer(S::Sphere, ADD, 1.0f,0.7f,0.2f, 0.8f,0.15f,0.0f, 520,0.35f,0.14f, 0.7f,-0.5f,0.16f, 1.0f,1.2f),
+                    mkLayer(S::Sphere, ALP, 0.22f,0.18f,0.16f, 0.0f,0.0f,0.0f, 70,0.6f,0.20f, 0.3f,-0.3f,0.10f, 0.3f,0.5f) });
+                d.projectile = true; d.projectileSpeed = 16.0f; d.projectileRange = 32.0f;
+                c.push_back(d);
+            }
+            // Magic missile — simple forward arcane bolt.
+            {
+                auto d = mkDef("Magic missile", C::Arcane, true, 0.0f, {
+                    mkLayer(S::Sphere, ADD, 0.5f,0.5f,1.0f, 0.3f,0.2f,0.9f, 460,0.4f,0.12f, 0.5f,0.0f,0.12f, 1.0f,1.2f),
+                    mkLayer(S::Sphere, ADD, 0.8f,0.8f,1.0f, 0.4f,0.4f,1.0f, 130,0.5f,0.06f, 1.0f,0.0f,0.15f, 0.5f,1.0f) });
+                d.projectile = true; d.projectileSpeed = 15.0f; d.projectileRange = 30.0f;
+                c.push_back(d);
+            }
+            // Frost ball — forward ice projectile.
+            {
+                auto d = mkDef("Frost ball", C::Ice, true, 0.0f, {
+                    mkLayer(S::Sphere, ADD, 0.7f,0.95f,1.0f, 0.5f,0.7f,1.0f, 460,0.4f,0.13f, 0.5f,0.5f,0.14f, 1.0f,1.1f),
+                    mkLayer(S::Sphere, ALP, 0.8f,0.92f,1.0f, 0.6f,0.75f,0.95f, 90,0.6f,0.18f, 0.3f,0.0f,0.10f, 0.4f,0.6f) });
+                d.projectile = true; d.projectileSpeed = 14.0f; d.projectileRange = 28.0f;
+                c.push_back(d);
+            }
+            // Fire bush — a curtain of fire that rings the caster.
+            c.push_back(mkDef("Fire bush", C::Fire, true, 0.0f, {
+                mkLayer(S::Ring, ADD, 1.0f,0.65f,0.2f, 0.7f,0.1f,0.0f, 360,0.7f,0.16f, 2.0f,-1.2f,1.2f, 1.0f,1.1f),
+                mkLayer(S::Ring, ADD, 1.0f,0.5f,0.1f, 0.5f,0.05f,0.0f, 90,1.2f,0.06f, 1.6f,-0.6f,1.3f, 0.5f,1.0f) }));
+            // Rock blast — boulders rain from the sky onto the target.
+            c.push_back(mkDef("Rock blast", C::Rock, false, 1.0f, {
+                mkLayer(S::Disc, ALP, 0.45f,0.42f,0.40f, 0.25f,0.23f,0.22f, 110,1.5f,0.20f, 0.5f,14.0f,1.5f, 0.0f,1.0f, 25.0f, 1.0f, 9.0f),
+                mkLayer(S::Disc, ALP, 0.5f,0.46f,0.4f, 0.2f,0.18f,0.16f, 35,1.2f,0.40f, 1.0f,-0.4f,1.4f, 0.5f,0.6f) }));
+            // Magic roots — earthen tendrils rise from the ground.
+            c.push_back(mkDef("Magic roots", C::Nature, false, 1.2f, {
+                mkLayer(S::Disc, ALP, 0.35f,0.22f,0.10f, 0.20f,0.45f,0.10f, 180,1.4f,0.13f, 1.8f,-0.5f,0.8f, 0.6f,1.0f),
+                mkLayer(S::Disc, ADD, 0.3f,0.7f,0.15f, 0.15f,0.5f,0.1f, 60,1.2f,0.07f, 2.2f,-0.8f,0.7f, 0.4f,0.9f) }));
+            // Electric shock — a lightning bolt strikes from the sky.
+            c.push_back(mkDef("Electric shock", C::Lightning, false, 0.18f, {
+                mkLayer(S::Line, ADD, 0.85f,0.92f,1.0f, 0.5f,0.6f,1.0f, 2500,0.18f,0.10f, 0.5f,0.0f,0.06f, 0.0f,1.6f, 25.0f, 12.0f),
+                mkLayer(S::Disc, ADD, 0.9f,0.95f,1.0f, 0.5f,0.6f,1.0f, 600,0.14f,0.40f, 0.5f,0.0f,0.6f, 0.0f,1.6f),
+                mkLayer(S::Shockwave, ADD, 0.8f,0.9f,1.0f, 0.4f,0.5f,1.0f, 1200,0.3f,0.08f, 8.0f,4.0f,0.2f, 2.0f,1.4f) }));
 
             return c;
         }

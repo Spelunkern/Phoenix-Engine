@@ -2768,15 +2768,26 @@ int main(int, char**)
                             ImGui::EndCombo();
                         }
                         const auto& def = catalog[static_cast<std::size_t>(filtered[static_cast<std::size_t>(selInFiltered)])];
+                        const float fx = std::sin(cameraYaw);
+                        const float fz = std::cos(cameraYaw);
 
-                        if (ImGui::Button("Spawn at character"))
-                            effectManager.spawn(def, EffectAnchor::at(sx, sy, sz));
-                        ImGui::SameLine();
-                        if (ImGui::Button("Spawn ahead"))
+                        if (def.projectile)
                         {
-                            const float fx = std::sin(cameraYaw);
-                            const float fz = std::cos(cameraYaw);
-                            effectManager.spawn(def, EffectAnchor::at(sx + fx * 4.0f, sy, sz + fz * 4.0f));
+                            if (ImGui::Button("Cast (forward)"))
+                            {
+                                const float vel[3] = { fx * def.projectileSpeed, 0.0f, fz * def.projectileSpeed };
+                                const float travel = def.projectileRange / std::max(0.1f, def.projectileSpeed);
+                                effectManager.spawn(def,
+                                    EffectAnchor::at(sx + fx * 0.6f, sy + 1.0f, sz + fz * 0.6f), vel, travel);
+                            }
+                        }
+                        else
+                        {
+                            if (ImGui::Button("Spawn at character"))
+                                effectManager.spawn(def, EffectAnchor::at(sx, sy, sz));
+                            ImGui::SameLine();
+                            if (ImGui::Button("Spawn ahead"))
+                                effectManager.spawn(def, EffectAnchor::at(sx + fx * 4.0f, sy, sz + fz * 4.0f));
                         }
                     }
 

@@ -51,6 +51,8 @@ namespace phoenix::effects
         float gravity{ 0.0f };                    // world-down accel (neg = rises)
         float drag{ 0.0f };                       // velocity damping (per second)
         float coneAngleDeg{ 25.0f };              // half-angle for Cone
+        float originHeight{ 0.0f };               // spawn offset up the local Y axis
+                                                  // (e.g. rain / rocks falling from the sky)
         bool enabled{ true };
     };
 
@@ -66,6 +68,12 @@ namespace phoenix::effects
         int layerCount{ 1 };
         bool loop{ true };
         float duration{ 0.6f };
+        // Projectiles travel forward from the spawn point. When projectile=true the
+        // UI launches the effect in the facing direction; the instance moves at
+        // projectileSpeed for projectileRange units, trailing its particles.
+        bool projectile{ false };
+        float projectileSpeed{ 0.0f };
+        float projectileRange{ 0.0f };
     };
 
     // World placement. basis columns map local X/Y/Z to world (identity * scale for
@@ -94,8 +102,11 @@ namespace phoenix::effects
         static constexpr Handle kInvalid = 0;
 
         // Spawn an effect instance. Keep the handle for looping effects you want to
-        // later move (set_anchor) or stop. One-shots despawn themselves.
-        Handle spawn(const EffectDefinition& def, const EffectAnchor& anchor);
+        // later move (set_anchor) or stop. One-shots despawn themselves. Pass a
+        // velocity + travelTime to launch a moving projectile (the anchor advances
+        // each frame and stops emitting after travelTime so the trail dissipates).
+        Handle spawn(const EffectDefinition& def, const EffectAnchor& anchor,
+                     const float velocity[3] = nullptr, float travelTime = 0.0f);
         void set_anchor(Handle handle, const EffectAnchor& anchor);
         void stop(Handle handle);   // stop emitting; existing particles fade out
         void clear();
@@ -127,6 +138,9 @@ namespace phoenix::effects
             std::array<LayerRuntime, kMaxEffectLayers> runtime{};
             float ageS{ 0.0f };
             bool emitting{ true };
+            bool moving{ false };
+            float velocity[3]{ 0.0f, 0.0f, 0.0f };
+            float travelTime{ 0.0f };
         };
 
         void spawn_particle(const EffectLayer& layer, const EffectAnchor& anchor, Particle& out);
