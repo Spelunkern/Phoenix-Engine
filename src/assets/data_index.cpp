@@ -104,9 +104,10 @@ namespace phoenix::assets
         if (const auto fileIt = byFileName.find(lower_ascii(requested.filename().string())); fileIt != byFileName.end())
             return fileIt->second;
 
+        const auto suffix = "\\" + key;   // hoisted out of the loop (was allocating per iteration)
         for (const auto& [relativePath, path] : byRelativePath)
         {
-            if (relativePath.ends_with("\\" + key))
+            if (relativePath.ends_with(suffix))
                 return path;
         }
 

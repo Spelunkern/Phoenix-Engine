@@ -315,5 +315,9 @@ namespace phoenix::runtime
         PhoenixRuntimeState state_;
         RuntimeCamera camera_;
         std::uint32_t effectTextureBase_{};
+        // Memoises resolve_asset_texture_layer by (textureName, forceCutout) so the
+        // per-mesh world build doesn't re-resolve+stat the same texture thousands of
+        // times. Cleared at the start of each load_world_assets().
+        std::unordered_map<std::string, std::uint32_t> assetTextureLayerCache_;
     };
 }

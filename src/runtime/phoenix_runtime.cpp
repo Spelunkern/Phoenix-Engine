@@ -10,9 +10,12 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
+#include <chrono>
 #include <cmath>
 #include <cstdlib>
 #include <cstring>
+#include <thread>
 #include <format>
 #include <fstream>
 #include <limits>
@@ -437,9 +440,20 @@ namespace phoenix::runtime
             state_.worldMapPaths[mapIndex].stem().string());
 
         state_.selectedWorldMap = mapIndex;
+        const auto tWld0 = std::chrono::steady_clock::now();
         state_.world = phoenix::world::analyze_wld(state_.worldMapPaths[mapIndex], diagnostics / previewName);
+        const auto tWld1 = std::chrono::steady_clock::now();
         load_world_assets();
+        const auto tAssets1 = std::chrono::steady_clock::now();
         update_status();
+        {
+            const auto ms = [](auto a, auto b) {
+                return std::chrono::duration_cast<std::chrono::milliseconds>(b - a).count();
+            };
+            std::ofstream tlog(phoenix::core::engine_log_path(), std::ios::app);
+            tlog << "TIMING load_world_map: analyze_wld=" << ms(tWld0, tWld1)
+                 << "ms load_world_assets=" << ms(tWld1, tAssets1) << "ms\n";
+        }
 
         camera_ = {};
         if (state_.world.isDungeon && !state_.sceneObjects.empty())
@@ -679,26 +693,42 @@ namespace phoenix::runtime
 
     std::uint32_t PhoenixRuntime::resolve_asset_texture_layer(std::string_view textureName, bool forceCutout)
     {
+        // Memoise by name+cutout: the world build asks for the same texture across
+        // many meshes, and resolving (3x path lookups + a disk stat) is the bulk of
+        // the world-load cost. Same input => same layer, so this is behaviour-exact.
+        std::string cacheKey;
+        cacheKey.reserve(textureName.size() + 1);
+        cacheKey.append(textureName);
+        cacheKey.push_back(forceCutout ? '\x01' : '\x00');
+        if (const auto it = assetTextureLayerCache_.find(cacheKey); it != assetTextureLayerCache_.end())
+            return it->second;
+        const auto cacheResult = [&](std::uint32_t layer) {
+            assetTextureLayerCache_.emplace(cacheKey, layer);
+            return layer;
+        };
+
         const auto path = phoenix::assets::resolve_texture_asset(state_.assets, std::string(textureName));
         if (path.empty() || !std::filesystem::exists(path))
-            return 0xFFFFFFFFu;
+            return cacheResult(0xFFFFFFFFu);
 
         const auto key = phoenix::assets::lower_ascii(path.string());
         const auto cutoutOffset = (forceCutout || static_texture_uses_cutout(textureName)) ? kAssetCutoutLayerBase : 0u;
         if (const auto it = state_.textureSlotByPath.find(key); it != state_.textureSlotByPath.end())
-            return kAssetTextureLayerBase + cutoutOffset + it->second;
+            return cacheResult(kAssetTextureLayerBase + cutoutOffset + it->second);
 
         if (state_.assetTexturePaths.size() >= kMaxAssetTextureLayers)
-            return 0xFFFFFFFFu;
+            return cacheResult(0xFFFFFFFFu);
 
         const auto slot = static_cast<std::uint32_t>(state_.assetTexturePaths.size());
         state_.textureSlotByPath.emplace(key, slot);
         state_.assetTexturePaths.push_back(path);
-        return kAssetTextureLayerBase + cutoutOffset + slot;
+        return cacheResult(kAssetTextureLayerBase + cutoutOffset + slot);
     }
 
     void PhoenixRuntime::load_world_assets()
     {
+        const auto tWaStart = std::chrono::steady_clock::now();
+        assetTextureLayerCache_.clear();
         state_.worldAssets.clear();
         state_.sceneObjects.clear();
         state_.assetTexturePaths.clear();
@@ -728,6 +758,18 @@ namespace phoenix::runtime
             return resolve_asset_texture_layer(textureName, forceCutout);
         };
 
+        // ---- Pass 0: collect unique assets in load order (serial dedup). ----
+        struct PendingAsset
+        {
+            std::string name;
+            std::string key;
+            std::string sectionName;
+            std::filesystem::path path;
+            int kind{};   // 1 = smod/vani, 2 = dg
+            phoenix::world::SmodModel smod;
+            phoenix::world::DgModel dg;
+        };
+        std::vector<PendingAsset> pending;
         for (const auto& section : state_.world.objectSections)
         {
             for (const auto& assetName : section.assets)
@@ -735,18 +777,61 @@ namespace phoenix::runtime
                 const auto key = phoenix::assets::lower_ascii(assetName);
                 if (!seen.insert(key).second)
                     continue;
+                PendingAsset p;
+                p.name = assetName;
+                p.key = key;
+                p.sectionName = section.name;
+                p.path = state_.assets.resolve(assetName);
+                if (key.ends_with(".smod") || key.ends_with(".vani")) p.kind = 1;
+                else if (key.ends_with(".dg")) p.kind = 2;
+                pending.push_back(std::move(p));
+            }
+        }
 
+        // ---- Pass 1: parse models from disk in parallel (pure, no shared state). ----
+        {
+            std::atomic<std::size_t> nextIdx{ 0 };
+            const auto workerCount = std::min(
+                static_cast<std::size_t>(std::max(1u, std::thread::hardware_concurrency())),
+                std::max<std::size_t>(1, pending.size()));
+            std::vector<std::thread> workers;
+            workers.reserve(workerCount);
+            for (std::size_t w = 0; w < workerCount; ++w)
+            {
+                workers.emplace_back([&pending, &nextIdx]() {
+                    for (;;)
+                    {
+                        const auto i = nextIdx.fetch_add(1);
+                        if (i >= pending.size()) break;
+                        auto& p = pending[i];
+                        if (p.path.empty()) continue;
+                        if (p.kind == 1)
+                            p.smod = p.key.ends_with(".vani")
+                                ? phoenix::world::load_vani(p.path)
+                                : phoenix::world::load_smod(p.path);
+                        else if (p.kind == 2)
+                            p.dg = phoenix::world::load_dg(p.path);
+                    }
+                });
+            }
+            for (auto& worker : workers) worker.join();
+        }
+        const auto tParseDone = std::chrono::steady_clock::now();
+
+        // ---- Pass 2: build world assets serially (same order => identical output,
+        // including texture-layer slot assignment). ----
+        for (auto& p : pending)
+        {
+            {
                 LoadedWorldAsset asset{};
-                asset.name = assetName;
-                asset.path = state_.assets.resolve(assetName);
+                asset.name = p.name;
+                asset.path = p.path;
                 if (!asset.path.empty())
                 {
-                    const auto assetCutout = static_asset_uses_cutout(assetName, asset.path);
-                    if (key.ends_with(".smod") || key.ends_with(".vani"))
+                    const auto assetCutout = static_asset_uses_cutout(p.name, asset.path);
+                    if (p.kind == 1)
                     {
-                        const auto model = key.ends_with(".vani")
-                            ? phoenix::world::load_vani(asset.path)
-                            : phoenix::world::load_smod(asset.path);
+                        auto& model = p.smod;
                         asset.loaded = model.parsed;
                         asset.radius = std::max(8.0f, model.radius);
                         asset.vertexAnimated = model.vertexAnimated;
@@ -788,9 +873,9 @@ namespace phoenix::runtime
                             }
                         }
                     }
-                    else if (key.ends_with(".dg"))
+                    else if (p.kind == 2)
                     {
-                        const auto model = phoenix::world::load_dg(asset.path);
+                        auto& model = p.dg;
                         asset.loaded = model.parsed;
                         asset.radius = std::max({ 12.0f, model.extent[0], model.extent[1], model.extent[2] });
                         if (model.hasCollision)
@@ -819,7 +904,7 @@ namespace phoenix::runtime
                 // Skip Grass section � these should never block movement.
                 if (!asset.hasCollision && asset.loaded
                     && !asset.previewVertices.empty() && !asset.previewIndices.empty()
-                    && !asset.vertexAnimated && section.name != "Grass")
+                    && !asset.vertexAnimated && p.sectionName != "Grass")
                 {
                     asset.collisionVertices.resize(asset.previewVertices.size() * 3);
                     for (std::size_t vi = 0; vi < asset.previewVertices.size(); ++vi)
@@ -833,6 +918,16 @@ namespace phoenix::runtime
                 }
                 state_.worldAssets.push_back(std::move(asset));
             }
+        }
+
+        {
+            const auto tBuildDone = std::chrono::steady_clock::now();
+            const auto ms = [](auto a, auto b) {
+                return std::chrono::duration_cast<std::chrono::milliseconds>(b - a).count();
+            };
+            std::ofstream tlog(phoenix::core::engine_log_path(), std::ios::app);
+            tlog << "TIMING load_world_assets: parallelParse=" << ms(tWaStart, tParseDone)
+                 << "ms serialBuild=" << ms(tParseDone, tBuildDone) << "ms\n";
         }
 
         state_.maniAnimations.reserve(state_.world.maniAssets.size());
