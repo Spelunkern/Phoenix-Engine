@@ -19,6 +19,7 @@ set(ENGINE_SOURCES
     src/renderer/dds_loader.cpp
     src/renderer/vulkan_renderer.cpp
     src/runtime/phoenix_runtime.cpp
+    src/ui/editor_panel.cpp
     src/ui/perf_hud.cpp
     src/world/actor_scene.cpp
     src/world/character_loader.cpp
