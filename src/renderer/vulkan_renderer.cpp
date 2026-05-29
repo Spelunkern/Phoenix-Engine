@@ -572,6 +572,41 @@ namespace phoenix::renderer
         return true;
     }
 
+    bool VulkanRenderer::recreate_swapchain()
+    {
+        if (!ready_ || !impl_ || !impl_->device)
+            return false;
+
+        VkSurfaceCapabilitiesKHR caps{};
+        if (vkGetPhysicalDeviceSurfaceCapabilitiesKHR(impl_->physicalDevice, impl_->surface, &caps) != VK_SUCCESS)
+            return false;
+
+        std::uint32_t width = caps.currentExtent.width;
+        std::uint32_t height = caps.currentExtent.height;
+        if (width == 0xFFFFFFFFu || height == 0xFFFFFFFFu)
+        {
+            width = impl_->swapchainExtent.width;
+            height = impl_->swapchainExtent.height;
+        }
+        if (width == 0 || height == 0)
+            return false; // minimized: defer until the window has a real size again
+
+        // Unlike resize(), recreate even when the extent is unchanged — the
+        // swapchain is out-of-date and must be rebuilt regardless of size.
+        vkDeviceWaitIdle(impl_->device);
+        destroy_swapchain();
+        if (!create_swapchain(width, height)
+            || !create_depth_resources()
+            || !create_framebuffers())
+        {
+            ready_ = false;
+            log_line("Vulkan: swapchain recreate failed");
+            return false;
+        }
+        log_line("Vulkan: swapchain recreated (out-of-date)");
+        return true;
+    }
+
     std::uint32_t VulkanRenderer::find_memory_type(std::uint32_t typeBits, std::uint32_t requiredFlags) const
     {
         const auto& properties = impl_->memoryProperties;
@@ -3593,7 +3628,12 @@ namespace phoenix::renderer
             VK_NULL_HANDLE,
             &imageIndex);
         if (acquire == VK_ERROR_OUT_OF_DATE_KHR)
+        {
+            // Swapchain invalidated (e.g. minimize/restore): rebuild and skip this
+            // frame. Without this the window stays frozen until a manual resize.
+            recreate_swapchain();
             return;
+        }
         if (acquire != VK_SUCCESS && acquire != VK_SUBOPTIMAL_KHR)
             return;
         vkResetFences(impl_->device, 1, &impl_->inFlight[frame]);
@@ -3979,7 +4019,9 @@ namespace phoenix::renderer
         presentInfo.swapchainCount = 1;
         presentInfo.pSwapchains = &impl_->swapchain;
         presentInfo.pImageIndices = &imageIndex;
-        vkQueuePresentKHR(impl_->graphicsQueue, &presentInfo);
+        const auto present = vkQueuePresentKHR(impl_->graphicsQueue, &presentInfo);
+        if (present == VK_ERROR_OUT_OF_DATE_KHR || present == VK_SUBOPTIMAL_KHR)
+            recreate_swapchain();
         ++frameIndex_;
     }
 

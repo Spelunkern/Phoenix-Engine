@@ -138,6 +138,9 @@ namespace phoenix::renderer
             std::uint32_t tileSizeCount);
         void set_camera(float x, float y, float z, float yaw, float pitch, float aspect, float farPlane);
         bool resize(std::uint32_t width, std::uint32_t height);
+        // Recreate the swapchain at the surface's current extent regardless of the
+        // cached size (used when the swapchain goes out-of-date, e.g. minimize/restore).
+        bool recreate_swapchain();
         void render_frame();
         void shutdown();
 

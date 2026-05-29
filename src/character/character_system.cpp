@@ -2340,7 +2340,21 @@ namespace phoenix::character
                 const float ms = static_cast<float>(mountAnim.startKeyframe);
                 const float me = static_cast<float>(mountAnim.endKeyframe);
                 const float mfc = std::max(1.0f, me - ms);
-                const float mFrame = ms + std::fmod(mountAnimationSeconds_ * kAniFramesPerSecond, mfc);
+                // Jump/fall: hold a mid-air pose instead of looping the jump clip
+                // (same behaviour as the on-foot rider, see skin_and_transform frame).
+                float mFrame;
+                const bool mountAirborneJump = !grounded_ && !inWater_
+                    && mountActiveAnimation_ == data_.mount.jumpAnimation;
+                if (mountAirborneJump)
+                {
+                    constexpr float kJumpHoldFrameFraction = 0.55f;
+                    const float holdFrame = mfc * kJumpHoldFrameFraction;
+                    mFrame = ms + std::min(mountAnimationSeconds_ * kAniFramesPerSecond, holdFrame);
+                }
+                else
+                {
+                    mFrame = ms + std::fmod(mountAnimationSeconds_ * kAniFramesPerSecond, mfc);
+                }
                 mountFinals = compute_client_finals(mountAnim, mFrame);
 
                 for (const auto& source : data_.mount.sourceVertices)
