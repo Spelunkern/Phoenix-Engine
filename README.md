@@ -42,15 +42,18 @@ Phoenix Engine does not assume deep technical knowledge from final users. Everyo
 ## Current Features
 
 - Vulkan renderer with terrain, objects, animated actors, water, fog, and procedural sky.
-- Runtime CPU skinning for character and actor animations with frame caching for high FPS.
+- Runtime skinning for character and actor animations with frame caching for high FPS (GPU compute path + CPU fallback).
 - WLD/DG map loading with free-camera viewer mode and playable character mode.
-- Character appearance loading with race, armor, face, and hair selection.
+- Character appearance loading with race, armor, face, hair, weapon, shield, and cloak/mantle selection.
+- Per-race/class weapon and shield attach-bone mapping, with a default starting loadout (one-hand sword + light shield + cloak).
+- Mounts/vehicles: ride seated on the mount's bone, mount animations, and faster-than-foot movement.
+- Procedural weapon "aura" effects: fully shader-generated layered particles (no asset files) with birth→death colour gradients and element presets (fire, ice, holy, poison, shadow, arcane).
 - NPC and monster loading from server/map data with nameplates, scale, idle/walk animation, and distance culling.
 - CSV-based data formats replacing legacy binary formats for monster definitions, NPC data, server metadata, and spawn maps (see [Data Formats](#data-formats)).
 - Map ambience support for music and sound zones with distance-based fade behavior (OGG Vorbis via miniaudio).
-- Async loading with a responsive loading screen during initialization and map changes.
+- Fast, async loading with a responsive loading screen (colour-shifting progress bar) during initialization and map changes.
 - Water surface rendering, underwater tinting, swimming, floating, and camera-driven movement.
-- ImGui runtime controls for map selection, fog, render distance, actor distance, overlays, character selection, and sky/weather styles.
+- ImGui runtime controls for map selection, fog, render distance, actor distance, overlays, character/loadout selection, weapon aura, and sky/weather styles, plus a CPU/RAM/VRAM performance HUD.
 - Procedural sky styles: default, storm, snowstorm, sunset, and night with stars/moon/meteors.
 
 ## Repository Layout
@@ -62,7 +65,8 @@ src/
   character/   Playable character controller and character mesh assembly.
   runtime/     Engine runtime state, map loading, terrain/object scene building.
   platform/    SDL2 window/input wrapper.
-  renderer/    Vulkan renderer, texture loading, GPU resources.
+  renderer/    Vulkan renderer (split by subsystem), texture loading, GPU resources.
+  ui/          ImGui editor panel and performance HUD.
   world/       File format loaders and actor scene construction.
 shaders/       HLSL source and compiled SPIR-V used by the runtime.
 res/           Windows icon/resource files.
@@ -93,27 +97,29 @@ SDL2 is vendored in the repository. No additional downloads needed.
 ### Linux
 
 - GCC 13+ or Clang 17+ (C++23 required).
-- CMake 3.20+.
+- CMake 3.20+ — a portable copy is bundled in `external/cmake/`, so a system install is optional (`scripts/build.sh` uses it automatically when `cmake` is absent).
 - SDL2 development libraries.
-- Vulkan-capable GPU and driver with ICD loader.
+- Vulkan-capable GPU and driver with ICD loader (Vulkan headers are vendored).
 
 Install dependencies on Debian/Ubuntu:
 
 ```bash
-sudo apt install build-essential cmake libsdl2-dev libvulkan-dev
+sudo apt install build-essential pkg-config libsdl2-dev libvulkan1 mesa-vulkan-drivers
 ```
 
 On Fedora:
 
 ```bash
-sudo dnf install gcc-c++ cmake SDL2-devel vulkan-loader-devel
+sudo dnf install gcc-c++ pkgconf SDL2-devel vulkan-loader mesa-vulkan-drivers
 ```
 
 On Arch:
 
 ```bash
-sudo pacman -S base-devel cmake sdl2 vulkan-icd-loader
+sudo pacman -S base-devel pkgconf sdl2 vulkan-icd-loader
 ```
+
+See [BUILD_LINUX.md](BUILD_LINUX.md) for the full Linux guide (`scripts/build.sh` inspects prerequisites and prints exact install commands for your distro).
 
 ## Build
 
@@ -146,7 +152,7 @@ cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
 cmake --build build -j$(nproc)
 ```
 
-Output: `build/PhoenixEngine`
+Output: `build/PhoenixEngine`. Run it from the repo root with `./scripts/run.sh` so `shaders/` and `Data/` resolve correctly.
 
 The repository vendors Vulkan Headers, volk, Dear ImGui, and DXC binaries used for shader compilation. A full Vulkan SDK install is not required for this project layout.
 
@@ -204,12 +210,13 @@ See [docs/ASSETS.md](docs/ASSETS.md) for more details.
 ## Controls
 
 - `W/A/S/D`: move.
+- `Space`: jump (playable mode) / raise camera (viewer mode).
 - Right mouse drag: camera look.
 - Mouse wheel: zoom in playable mode or move camera in viewer mode.
 - `Shift`: faster movement.
 - `P`: toggle playable mode.
 - `F`: toggle fog.
-- ImGui panel: map loading, distances, overlays, audio toggles, character selection, and weather/sky style.
+- ImGui panel: map loading, distances, overlays, audio toggles, character/loadout selection, mount, weapon aura, and weather/sky style.
 
 ## Data Formats
 
@@ -227,6 +234,7 @@ The engine still loads the original WLD, DG, 3DC, SMOD, VANI, MANI, and ANI bina
 
 ## Open Source Notes
 
+- See [CHANGELOG.md](CHANGELOG.md) for notable changes.
 - Do not commit extracted game data, logs, local build output, or generated ImGui state.
 - Third-party dependency licenses are documented in [docs/THIRD_PARTY.md](docs/THIRD_PARTY.md).
 - The engine code is licensed under the BSD 3-Clause License. See [LICENSE](LICENSE).

@@ -47,4 +47,12 @@ This repository vendors a small set of third-party dependencies to keep the buil
   - `external/dxc/LICENSE-LLVM.txt`
   - `external/dxc/LICENSE-MIT.txt`
 
+## CMake (portable Linux build, optional)
+
+- Path: `external/cmake/cmake-*-linux-x86_64.tar.gz`
+- License: BSD-3-Clause
+- Source: https://cmake.org
+- Note: a portable Linux x86_64 CMake distribution, extracted on demand by
+  `scripts/build.sh` when no system `cmake` is present. Not used on Windows.
+
 When updating vendored dependencies, keep their license files intact.
