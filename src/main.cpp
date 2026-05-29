@@ -1311,6 +1311,18 @@ int main(int, char**)
     runAsyncVoid([&]() { runtime.initialize(executableDir, false); }, 0.06f, "Indexing data");
     showLoading(0.12f, "Indexing data");
 
+    // Character system + its renderer-independent catalog preload. Kicked off here
+    // so the heavy model/texture (BC3) cache build overlaps the world load instead
+    // of running serially after it. Joined just before the character is first used.
+    phoenix::character::CharacterSystem characterSystem;
+    phoenix::character::WeaponEffect weaponEffect;
+    phoenix::character::CharacterAppearance characterAppearance{};
+    const auto charDataRoot = runtime.state().assets.root;
+    auto charPreloadFuture = std::async(std::launch::async, [&characterSystem, charDataRoot]() {
+        characterSystem.preload(charDataRoot);
+        characterSystem.preload_items(charDataRoot);
+    });
+
     std::size_t defaultMap{};
     const auto& startupMaps = runtime.world_map_names();
     for (std::size_t i = 0; i < startupMaps.size(); ++i)
@@ -1334,12 +1346,12 @@ int main(int, char**)
         log << "Audio initialization unavailable\n";
     }
 
-    phoenix::character::CharacterSystem characterSystem;
-    phoenix::character::WeaponEffect weaponEffect;
-    phoenix::character::CharacterAppearance characterAppearance{};
     auto characterOptions = scan_character_options(runtime.state().assets.root);
-    runAsyncVoid([&]() { characterSystem.preload(runtime.state().assets.root); }, 0.29f, "Loading characters");
-    runAsyncVoid([&]() { characterSystem.preload_items(runtime.state().assets.root); }, 0.30f, "Loading items");
+    // Join the background character-catalog preload started before the world load.
+    // It typically finished during the (longer) world load, so this rarely blocks.
+    while (charPreloadFuture.wait_for(std::chrono::milliseconds(16)) != std::future_status::ready)
+        showLoading(0.30f, "Loading characters");
+    charPreloadFuture.get();
     showLoading(0.32f, "Characters");
     int selectedCharacterOption = 0;
     for (std::size_t i = 0; i < characterOptions.size(); ++i)
