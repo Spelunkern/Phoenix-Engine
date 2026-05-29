@@ -27,6 +27,10 @@ namespace phoenix::audio
         void update(float deltaSeconds, const std::vector<AudibleTrack>& tracks);
         bool available() const;
 
+        // Master output volume in [0, 1] (applies to all music/sound voices).
+        void set_master_volume(float volume);
+        float master_volume() const;
+
     private:
         struct Impl;
         std::unique_ptr<Impl> impl_;

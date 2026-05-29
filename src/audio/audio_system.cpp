@@ -40,6 +40,7 @@ namespace phoenix::audio
 
         ma_engine engine{};
         bool initialized{};
+        float masterVolume{ 1.0f };
         std::unordered_map<std::string, ActiveVoice> voices;
 
         ~Impl()
@@ -56,8 +57,16 @@ namespace phoenix::audio
             if (ma_engine_init(&config, &engine) != MA_SUCCESS)
                 return false;
 
+            ma_engine_set_volume(&engine, masterVolume);
             initialized = true;
             return true;
+        }
+
+        void set_master_volume(float volume)
+        {
+            masterVolume = std::clamp(volume, 0.0f, 1.0f);
+            if (initialized)
+                ma_engine_set_volume(&engine, masterVolume);
         }
 
         void shutdown()
@@ -185,5 +194,15 @@ namespace phoenix::audio
     bool AudioSystem::available() const
     {
         return impl_ && impl_->initialized;
+    }
+
+    void AudioSystem::set_master_volume(float volume)
+    {
+        impl_->set_master_volume(volume);
+    }
+
+    float AudioSystem::master_volume() const
+    {
+        return impl_->masterVolume;
     }
 }

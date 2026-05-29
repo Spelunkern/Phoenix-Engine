@@ -70,6 +70,7 @@ namespace phoenix::ui
         bool& showCollisionDebug,
         bool& playMapSounds,
         bool& playMapMusic,
+        float& masterVolume,
         int& selectedMapIndex,
         float& viewDistance,
         float& actorViewDistance,

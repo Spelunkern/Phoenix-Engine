@@ -2,6 +2,22 @@
 
 All notable changes to Phoenix Engine are documented here. Dates are ISO-8601.
 
+## [v0.3.1] - 2026-05-29
+
+### Added
+- Master volume slider in the ImGui panel (applies to all music/sound voices).
+
+### Fixed
+- Dungeon mob/NPC placement: coordinates were centred like open-world maps
+  (`mapSize/2`), but dungeon geometry is uncentred — actors appeared scattered.
+  Use no centring (`halfMap = 0`) for dungeons, matching the geometry.
+- Dungeon actor height: dungeons have no terrain heightmap and are multi-level;
+  actors snapped to the collision floor nearest the player's Y and collapsed to
+  the bottom floor. Use the authored svmap spawn Y instead.
+- Dungeon mobs sinking when they move: moving mobs snapped their Y to
+  `terrain_height` (~0 in dungeons) every frame. Keep the authored floor Y while
+  roaming in dungeons; open-world mobs still follow the terrain.
+
 ## [v0.3] - 2026-05-29
 
 This round focused on gameplay/visual features, a large modularity refactor,

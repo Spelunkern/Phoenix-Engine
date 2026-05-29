@@ -120,6 +120,7 @@ namespace phoenix::ui
         bool& showCollisionDebug,
         bool& playMapSounds,
         bool& playMapMusic,
+        float& masterVolume,
         int& selectedMapIndex,
         float& viewDistance,
         float& actorViewDistance,
@@ -208,6 +209,8 @@ namespace phoenix::ui
             ImGui::Checkbox("Play Sounds", &playMapSounds);
             ImGui::SameLine();
             ImGui::Checkbox("Play Music", &playMapMusic);
+            ImGui::SetNextItemWidth(200.0f);
+            ImGui::SliderFloat("Volume", &masterVolume, 0.0f, 1.0f, "%.2f");
             result.debugGizmosChanged = prevSounds != showSoundGizmos
                 || prevMusic != showMusicGizmos
                 || prevPortals != showPortalGizmos

@@ -1400,6 +1400,7 @@ int main(int, char**)
     bool showEffectGizmos = false;
     bool playMapSounds = true;
     bool playMapMusic = true;
+    float masterVolume = 1.0f;
     int selectedMapIndex = static_cast<int>(runtime.selected_world_map());
     bool terrainTexturesUploaded = false;
     std::size_t characterTextureBaseSlot = 0;
@@ -2570,6 +2571,7 @@ int main(int, char**)
                 showCollisionDebug,
                 playMapSounds,
                 playMapMusic,
+                masterVolume,
                 selectedMapIndex,
                 viewDistance,
                 actorViewDistance,
@@ -2696,6 +2698,7 @@ int main(int, char**)
 
         if (audioAvailable)
         {
+            audioSystem.set_master_volume(masterVolume);
             float listenerX = cameraX;
             float listenerY = cameraY;
             float listenerZ = cameraZ;
