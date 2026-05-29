@@ -137,13 +137,26 @@ namespace phoenix::assets
         if (!std::filesystem::exists(dataRoot))
             return index;
 
-        for (const auto& entry : std::filesystem::recursive_directory_iterator(dataRoot))
+        // Reserve up front to avoid repeated rehashing while inserting ~20k+ files.
+        index.byRelativePath.reserve(32768);
+        index.byFileName.reserve(32768);
+
+        std::error_code ec;
+        std::filesystem::recursive_directory_iterator it(
+            dataRoot, std::filesystem::directory_options::skip_permission_denied, ec);
+        const std::filesystem::recursive_directory_iterator end;
+        for (; it != end; it.increment(ec))
         {
-            if (!entry.is_regular_file())
+            if (ec)
+                break;
+            const auto& entry = *it;
+            if (!entry.is_regular_file(ec))
                 continue;
 
-            const auto path = entry.path();
-            const auto relativePath = std::filesystem::relative(path, dataRoot);
+            const auto& path = entry.path();
+            // lexically_relative is pure string math (no filesystem access), unlike
+            // std::filesystem::relative which can stat/resolve — a big cost over 20k+ files.
+            const auto relativePath = path.lexically_relative(dataRoot);
             index.byRelativePath.try_emplace(DataIndex::normalize_key(relativePath), path);
             index.byFileName.try_emplace(lower_ascii(path.filename().string()), path);
             ++index.indexedFiles;
