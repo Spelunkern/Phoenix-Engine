@@ -880,25 +880,25 @@ namespace
         fill_rect(pixels, width, height, barX - 2u, barY - 2u, barX + barWidth + 2u, barY + barHeight + 2u, 32, 40, 52);
         fill_rect(pixels, width, height, barX, barY, barX + barWidth, barY + barHeight, 18, 23, 31);
 
-        // Progress-bar colour shifts with load progress (state): blue -> cyan -> green.
+        // Progress-bar colour shifts with load progress (state):
+        // orange -> yellow -> light green -> dark green.
         const auto lerp8 = [](float a, float b, float t) {
             return static_cast<std::uint8_t>(std::clamp(a + (b - a) * t, 0.0f, 255.0f));
         };
-        std::uint8_t fillR, fillG, fillB;
-        if (progress < 0.5f)
-        {
-            const float t = progress / 0.5f;
-            fillR = lerp8(66.0f, 40.0f, t);
-            fillG = lerp8(120.0f, 200.0f, t);
-            fillB = lerp8(245.0f, 220.0f, t);
-        }
-        else
-        {
-            const float t = (progress - 0.5f) / 0.5f;
-            fillR = lerp8(40.0f, 120.0f, t);
-            fillG = lerp8(200.0f, 230.0f, t);
-            fillB = lerp8(220.0f, 90.0f, t);
-        }
+        struct ColorStop { float r, g, b; };
+        static const ColorStop kStops[] = {
+            { 245.0f, 150.0f,  40.0f },  // orange
+            { 240.0f, 220.0f,  40.0f },  // yellow
+            { 130.0f, 230.0f,  90.0f },  // light green
+            {  30.0f, 140.0f,  50.0f },  // dark green
+        };
+        constexpr int kStopCount = static_cast<int>(std::size(kStops));
+        const float scaled = progress * static_cast<float>(kStopCount - 1);
+        const int i0 = std::clamp(static_cast<int>(scaled), 0, kStopCount - 2);
+        const float t = std::clamp(scaled - static_cast<float>(i0), 0.0f, 1.0f);
+        const std::uint8_t fillR = lerp8(kStops[i0].r, kStops[i0 + 1].r, t);
+        const std::uint8_t fillG = lerp8(kStops[i0].g, kStops[i0 + 1].g, t);
+        const std::uint8_t fillB = lerp8(kStops[i0].b, kStops[i0 + 1].b, t);
         fill_rect(
             pixels,
             width,

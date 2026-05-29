@@ -2200,7 +2200,25 @@ namespace phoenix::character
         const float startFrame = static_cast<float>(anim.startKeyframe);
         const float endFrame = static_cast<float>(anim.endKeyframe);
         const float frameCount = std::max(1.0f, endFrame - startFrame);
-        const float frame = startFrame + std::fmod(animationSeconds_ * kAniFramesPerSecond, frameCount);
+
+        // Jump/fall: play the take-off once, then HOLD a mid-air pose until landing
+        // instead of looping the whole jump clip (which looked like the character
+        // re-jumping repeatedly during a long fall). When the character lands,
+        // grounded_ flips and the state machine switches back to idle/run.
+        float frame;
+        const bool airborneJump = !grounded_ && !inWater_ && !data_.hasMount
+            && activeAnimation_ == data_.jumpAnimation;
+        if (airborneJump)
+        {
+            constexpr float kJumpHoldFrameFraction = 0.55f;  // mid-air "falling" pose
+            const float holdFrame = frameCount * kJumpHoldFrameFraction;
+            const float raw = animationSeconds_ * kAniFramesPerSecond;
+            frame = startFrame + std::min(raw, holdFrame);
+        }
+        else
+        {
+            frame = startFrame + std::fmod(animationSeconds_ * kAniFramesPerSecond, frameCount);
+        }
         const auto clientFinals = compute_client_finals(anim, frame);
 
         // Skin into local-space animated vertices.
