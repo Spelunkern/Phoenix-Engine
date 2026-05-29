@@ -13,10 +13,12 @@ All notable changes to Phoenix Engine are documented here. Dates are ISO-8601.
   - Anchoring via a position+basis transform: world-static (portals, map props),
     entity/bone-attached, or one-shot at a point (attack impacts).
   - `EffectManager`: spawn/move/stop/clear; looping vs one-shot (auto-despawn).
-  - Built-in presets: portal, fire pillar, holy column, poison cloud, impact,
-    heal burst.
-  - ImGui "Effects" window to spawn/preview presets (at character or ahead) and
-    clear; `G` spawns an impact burst at the weapon.
+  - Large categorized preset library (~60 effects across Fire, Water, Ice, Wind,
+    Earth, Rock, Lightning, Holy, Shadow, Nature, Arcane, Poison, Normal),
+    oriented to character spells and map props, built from a compact data table.
+  - New `Shockwave` emitter shape (flat radial burst in the XZ plane).
+  - ImGui "Effects" window with category filter + effect picker to spawn/preview
+    (at character or ahead) and clear; `G` spawns an impact burst at the weapon.
 - Unified particle rendering: the weapon aura and all effects now feed a single
   per-frame `ParticleBatch` (alpha then additive) uploaded in one call.
 

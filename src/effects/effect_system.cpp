@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <initializer_list>
 
 namespace phoenix::effects
 {
@@ -241,337 +242,263 @@ namespace phoenix::effects
             instances_.end());
     }
 
-    // ---- Presets -------------------------------------------------------------
+
+    // ---- Preset library ------------------------------------------------------
     namespace
     {
-        void set3(float (&c)[3], float r, float g, float b) { c[0] = r; c[1] = g; c[2] = b; }
+        // Compact layer builder. Less-common fields (drag/intensity/cone/height)
+        // are trailing with sensible defaults so most calls stay short.
+        // gravity > 0 pulls particles down; gravity < 0 makes them rise.
+        EffectLayer mkLayer(EmitterShape shape, Blend blend,
+            float sr, float sg, float sb,   // colour at birth
+            float er, float eg, float eb,   // colour at death
+            float spawnRate, float lifetime, float size,
+            float speed, float gravity, float radius,
+            float drag = 0.0f, float intensity = 1.0f,
+            float coneAngleDeg = 25.0f, float height = 1.0f)
+        {
+            EffectLayer l;
+            l.shape = shape; l.blend = blend;
+            l.colorStart[0] = sr; l.colorStart[1] = sg; l.colorStart[2] = sb;
+            l.colorEnd[0] = er; l.colorEnd[1] = eg; l.colorEnd[2] = eb;
+            l.spawnRate = spawnRate; l.lifetime = lifetime; l.size = size;
+            l.speed = speed; l.gravity = gravity; l.radius = radius;
+            l.drag = drag; l.intensity = intensity; l.coneAngleDeg = coneAngleDeg;
+            l.height = height; l.enabled = true;
+            return l;
+        }
+
+        EffectDefinition mkDef(const char* name, EffectCategory cat, bool loop, float duration,
+                               std::initializer_list<EffectLayer> layers)
+        {
+            EffectDefinition d;
+            d.name = name; d.category = cat; d.loop = loop; d.duration = duration;
+            int i = 0;
+            for (const auto& l : layers)
+            {
+                if (i >= kMaxEffectLayers) break;
+                d.layers[static_cast<std::size_t>(i++)] = l;
+            }
+            d.layerCount = i;
+            return d;
+        }
+
+        using C = EffectCategory;
+        using S = EmitterShape;
+        constexpr Blend ADD = Blend::Additive;
+        constexpr Blend ALP = Blend::Alpha;
+
+        std::vector<EffectDefinition> build_catalog()
+        {
+            std::vector<EffectDefinition> c;
+
+            // ===== FIRE =====
+            c.push_back(mkDef("Fireball impact", C::Fire, false, 0.05f, {
+                mkLayer(S::Sphere, ADD, 1.0f,0.7f,0.2f, 0.8f,0.1f,0.0f, 1600,0.4f,0.10f, 7.0f,4.0f,0.2f, 2.0f,1.2f),
+                mkLayer(S::Point,  ADD, 1.0f,0.95f,0.7f, 1.0f,0.4f,0.1f, 250,0.12f,0.4f, 0.5f,0.0f,0.05f, 0.0f,1.6f) }));
+            c.push_back(mkDef("Flame nova", C::Fire, false, 0.08f, {
+                mkLayer(S::Shockwave, ADD, 1.0f,0.6f,0.1f, 0.7f,0.05f,0.0f, 2000,0.5f,0.14f, 9.0f,-1.0f,0.3f, 2.0f,1.2f) }));
+            c.push_back(mkDef("Meteor crash", C::Fire, false, 0.1f, {
+                mkLayer(S::Sphere, ADD, 1.0f,0.5f,0.1f, 0.5f,0.05f,0.0f, 1800,0.6f,0.16f, 8.0f,5.0f,0.3f, 1.5f,1.3f),
+                mkLayer(S::Disc, ALP, 0.3f,0.25f,0.2f, 0.05f,0.05f,0.05f, 120,1.4f,0.5f, 1.5f,-0.6f,0.5f, 0.5f,0.6f) }));
+            c.push_back(mkDef("Fire pillar", C::Fire, true, 0.0f, {
+                mkLayer(S::Disc, ADD, 1.0f,0.7f,0.2f, 0.7f,0.05f,0.0f, 260,0.8f,0.18f, 2.4f,-1.5f,0.5f, 1.2f,1.0f),
+                mkLayer(S::Disc, ALP, 0.25f,0.22f,0.2f, 0.05f,0.05f,0.05f, 40,1.6f,0.35f, 1.6f,-0.8f,0.4f, 0.6f,0.5f) }));
+            c.push_back(mkDef("Ember field", C::Fire, true, 0.0f, {
+                mkLayer(S::Disc, ADD, 1.0f,0.6f,0.15f, 0.6f,0.1f,0.0f, 40,2.0f,0.05f, 1.0f,-0.6f,0.8f, 0.4f) }));
+            c.push_back(mkDef("Flamethrower", C::Fire, true, 0.0f, {
+                mkLayer(S::Cone, ADD, 1.0f,0.75f,0.25f, 0.7f,0.1f,0.0f, 400,0.5f,0.14f, 7.0f,-1.0f,0.2f, 1.5f,1.0f, 18.0f) }));
+
+            // ===== WATER =====
+            c.push_back(mkDef("Water bolt", C::Water, false, 0.05f, {
+                mkLayer(S::Sphere, ALP, 0.6f,0.8f,1.0f, 0.85f,0.95f,1.0f, 900,0.5f,0.10f, 5.0f,9.0f,0.15f, 0.5f,0.8f) }));
+            c.push_back(mkDef("Tidal splash", C::Water, false, 0.06f, {
+                mkLayer(S::Shockwave, ALP, 0.7f,0.85f,1.0f, 0.9f,0.95f,1.0f, 1400,0.5f,0.12f, 8.0f,4.0f,0.3f, 1.5f,0.8f) }));
+            c.push_back(mkDef("Water fountain", C::Water, true, 0.0f, {
+                mkLayer(S::Cone, ALP, 0.6f,0.8f,1.0f, 0.85f,0.95f,1.0f, 300,1.4f,0.10f, 6.0f,9.0f,0.2f, 0.0f,0.7f, 14.0f) }));
+            c.push_back(mkDef("Bubble stream", C::Water, true, 0.0f, {
+                mkLayer(S::Disc, ALP, 0.7f,0.9f,1.0f, 0.85f,0.95f,1.0f, 60,2.0f,0.08f, 1.2f,-1.2f,0.3f, 0.3f,0.7f) }));
+            c.push_back(mkDef("Healing spring", C::Water, true, 0.0f, {
+                mkLayer(S::Ring, ADD, 0.5f,0.9f,1.0f, 0.8f,1.0f,1.0f, 200,1.0f,0.09f, 1.0f,-0.6f,1.0f, 0.0f,0.8f) }));
+
+            // ===== ICE =====
+            c.push_back(mkDef("Frost nova", C::Ice, false, 0.08f, {
+                mkLayer(S::Sphere, ADD, 0.7f,0.95f,1.0f, 0.5f,0.7f,1.0f, 1600,0.5f,0.09f, 5.0f,1.5f,0.2f, 2.5f,1.1f),
+                mkLayer(S::Disc, ALP, 0.8f,0.92f,1.0f, 0.6f,0.75f,0.95f, 200,0.7f,0.30f, 2.0f,0.0f,0.6f, 3.0f,0.4f) }));
+            c.push_back(mkDef("Ice shards", C::Ice, false, 0.05f, {
+                mkLayer(S::Shockwave, ADD, 0.8f,0.95f,1.0f, 0.55f,0.75f,1.0f, 1400,0.45f,0.10f, 8.0f,2.0f,0.25f, 2.0f,1.0f) }));
+            c.push_back(mkDef("Ice spike burst", C::Ice, false, 0.06f, {
+                mkLayer(S::Cone, ADD, 0.75f,0.9f,1.0f, 0.5f,0.7f,1.0f, 700,0.6f,0.11f, 6.0f,3.0f,0.15f, 1.0f,1.0f, 16.0f) }));
+            c.push_back(mkDef("Blizzard", C::Ice, true, 0.0f, {
+                mkLayer(S::Sphere, ALP, 0.85f,0.92f,1.0f, 0.7f,0.8f,0.95f, 200,1.6f,0.10f, 1.0f,2.0f,2.0f, 0.6f,0.7f) }));
+            c.push_back(mkDef("Frost mist", C::Ice, true, 0.0f, {
+                mkLayer(S::Disc, ALP, 0.8f,0.9f,1.0f, 0.6f,0.72f,0.9f, 60,2.2f,0.4f, 0.4f,-0.1f,1.1f, 0.8f,0.5f) }));
+
+            // ===== WIND =====
+            c.push_back(mkDef("Gust", C::Wind, false, 0.1f, {
+                mkLayer(S::Cone, ALP, 0.85f,0.95f,0.9f, 0.7f,0.85f,0.8f, 400,0.6f,0.18f, 7.0f,0.0f,0.2f, 1.5f,0.5f, 35.0f) }));
+            c.push_back(mkDef("Wind slash", C::Wind, false, 0.05f, {
+                mkLayer(S::Shockwave, ALP, 0.9f,0.97f,0.95f, 0.7f,0.85f,0.8f, 1200,0.4f,0.10f, 11.0f,0.0f,0.3f, 1.5f,0.6f) }));
+            c.push_back(mkDef("Air burst", C::Wind, false, 0.05f, {
+                mkLayer(S::Sphere, ALP, 0.9f,0.95f,1.0f, 0.75f,0.85f,0.9f, 1000,0.45f,0.14f, 6.0f,0.0f,0.2f, 2.0f,0.5f) }));
+            c.push_back(mkDef("Whirlwind", C::Wind, true, 0.0f, {
+                mkLayer(S::Cone, ALP, 0.85f,0.92f,0.85f, 0.65f,0.8f,0.75f, 220,1.0f,0.16f, 3.0f,-1.5f,0.6f, 0.3f,0.5f, 30.0f) }));
+            c.push_back(mkDef("Leaf swirl", C::Wind, true, 0.0f, {
+                mkLayer(S::Disc, ALP, 0.5f,0.7f,0.25f, 0.4f,0.5f,0.15f, 50,2.0f,0.10f, 1.2f,-0.6f,0.8f, 0.3f,0.8f) }));
+
+            // ===== EARTH =====
+            c.push_back(mkDef("Dust burst", C::Earth, false, 0.06f, {
+                mkLayer(S::Sphere, ALP, 0.55f,0.45f,0.32f, 0.3f,0.24f,0.16f, 900,0.7f,0.18f, 4.0f,3.0f,0.25f, 1.2f,0.7f) }));
+            c.push_back(mkDef("Earthquake wave", C::Earth, false, 0.08f, {
+                mkLayer(S::Shockwave, ALP, 0.5f,0.4f,0.28f, 0.3f,0.22f,0.14f, 1500,0.6f,0.16f, 7.0f,2.0f,0.3f, 1.5f,0.8f) }));
+            c.push_back(mkDef("Sand geyser", C::Earth, true, 0.0f, {
+                mkLayer(S::Cone, ALP, 0.8f,0.7f,0.45f, 0.5f,0.42f,0.25f, 220,1.2f,0.16f, 5.0f,6.0f,0.2f, 0.4f,0.7f, 20.0f) }));
+            c.push_back(mkDef("Dust devil", C::Earth, true, 0.0f, {
+                mkLayer(S::Disc, ALP, 0.6f,0.5f,0.35f, 0.35f,0.28f,0.18f, 120,1.4f,0.18f, 2.0f,-1.0f,0.5f, 0.3f,0.6f) }));
+
+            // ===== ROCK =====
+            c.push_back(mkDef("Rock shatter", C::Rock, false, 0.05f, {
+                mkLayer(S::Sphere, ALP, 0.5f,0.5f,0.52f, 0.28f,0.28f,0.3f, 700,0.7f,0.12f, 5.0f,9.0f,0.2f, 0.6f,0.9f) }));
+            c.push_back(mkDef("Boulder impact", C::Rock, false, 0.08f, {
+                mkLayer(S::Sphere, ALP, 0.45f,0.43f,0.42f, 0.25f,0.24f,0.24f, 1000,0.8f,0.16f, 6.0f,8.0f,0.3f, 0.8f,0.9f),
+                mkLayer(S::Shockwave, ALP, 0.55f,0.5f,0.45f, 0.3f,0.27f,0.22f, 900,0.5f,0.14f, 6.0f,1.0f,0.3f, 1.5f,0.7f) }));
+            c.push_back(mkDef("Stone shards", C::Rock, false, 0.05f, {
+                mkLayer(S::Shockwave, ALP, 0.5f,0.48f,0.48f, 0.3f,0.28f,0.28f, 1200,0.5f,0.10f, 8.0f,3.0f,0.25f, 1.0f,0.9f) }));
+            c.push_back(mkDef("Rubble plume", C::Rock, true, 0.0f, {
+                mkLayer(S::Disc, ALP, 0.4f,0.38f,0.36f, 0.18f,0.17f,0.16f, 60,2.0f,0.4f, 1.5f,-0.7f,0.4f, 0.5f,0.6f) }));
+
+            // ===== LIGHTNING =====
+            c.push_back(mkDef("Lightning strike", C::Lightning, false, 0.12f, {
+                mkLayer(S::Point, ADD, 0.8f,0.9f,1.0f, 0.4f,0.5f,1.0f, 1200,0.2f,0.07f, 9.0f,3.0f,0.05f, 1.5f,1.5f),
+                mkLayer(S::Point, ADD, 0.95f,0.97f,1.0f, 0.6f,0.7f,1.0f, 200,0.1f,0.35f, 0.5f,0.0f,0.05f, 0.0f,1.6f) }));
+            c.push_back(mkDef("Thunder burst", C::Lightning, false, 0.05f, {
+                mkLayer(S::Shockwave, ADD, 0.85f,0.9f,1.0f, 0.5f,0.6f,1.0f, 1600,0.35f,0.10f, 11.0f,0.0f,0.3f, 2.0f,1.3f) }));
+            c.push_back(mkDef("Spark spray", C::Lightning, false, 0.06f, {
+                mkLayer(S::Cone, ADD, 0.9f,0.95f,1.0f, 0.5f,0.6f,1.0f, 700,0.3f,0.07f, 8.0f,5.0f,0.1f, 1.5f,1.4f, 22.0f) }));
+            c.push_back(mkDef("Static field", C::Lightning, true, 0.0f, {
+                mkLayer(S::Sphere, ADD, 0.7f,0.85f,1.0f, 0.4f,0.5f,1.0f, 120,0.5f,0.06f, 1.5f,0.0f,1.0f, 0.5f,1.2f) }));
+
+            // ===== HOLY =====
+            c.push_back(mkDef("Smite", C::Holy, false, 0.1f, {
+                mkLayer(S::Line, ADD, 1.0f,0.95f,0.6f, 1.0f,1.0f,0.9f, 600,0.5f,0.12f, 2.0f,-2.0f,0.2f, 0.5f,1.4f, 25.0f, 3.0f),
+                mkLayer(S::Disc, ADD, 1.0f,0.9f,0.5f, 1.0f,1.0f,0.85f, 400,0.6f,0.13f, 2.5f,-1.0f,0.7f, 1.0f,1.2f) }));
+            c.push_back(mkDef("Divine nova", C::Holy, false, 0.08f, {
+                mkLayer(S::Sphere, ADD, 1.0f,0.95f,0.7f, 1.0f,1.0f,0.95f, 1600,0.5f,0.11f, 6.0f,-1.0f,0.2f, 1.5f,1.3f) }));
+            c.push_back(mkDef("Holy column", C::Holy, true, 0.0f, {
+                mkLayer(S::Line, ADD, 1.0f,0.95f,0.6f, 1.0f,1.0f,0.95f, 160,1.2f,0.13f, 1.2f,-0.5f,0.5f, 0.0f,1.0f, 25.0f, 3.0f) }));
+            c.push_back(mkDef("Sanctuary ring", C::Holy, true, 0.0f, {
+                mkLayer(S::Ring, ADD, 1.0f,0.92f,0.55f, 1.0f,1.0f,0.9f, 240,1.0f,0.09f, 0.5f,-0.2f,1.6f, 0.0f,1.0f) }));
+            c.push_back(mkDef("Blessing motes", C::Holy, true, 0.0f, {
+                mkLayer(S::Sphere, ADD, 1.0f,0.95f,0.6f, 1.0f,0.85f,0.4f, 30,3.0f,0.05f, 0.25f,-0.1f,1.8f, 0.3f,0.9f) }));
+            c.push_back(mkDef("Heal burst", C::Holy, false, 0.5f, {
+                mkLayer(S::Disc, ADD, 0.4f,1.0f,0.5f, 0.9f,1.0f,0.8f, 240,1.0f,0.12f, 2.2f,-1.0f,0.7f, 1.0f,1.1f) }));
+
+            // ===== SHADOW =====
+            c.push_back(mkDef("Dark burst", C::Shadow, false, 0.07f, {
+                mkLayer(S::Sphere, ADD, 0.5f,0.15f,0.7f, 0.1f,0.0f,0.2f, 1400,0.6f,0.13f, 5.0f,-0.5f,0.2f, 1.5f,1.1f) }));
+            c.push_back(mkDef("Curse nova", C::Shadow, false, 0.08f, {
+                mkLayer(S::Shockwave, ADD, 0.55f,0.2f,0.75f, 0.12f,0.0f,0.22f, 1400,0.6f,0.13f, 8.0f,0.0f,0.3f, 1.5f,1.1f) }));
+            c.push_back(mkDef("Shadow flames", C::Shadow, true, 0.0f, {
+                mkLayer(S::Disc, ADD, 0.5f,0.15f,0.7f, 0.15f,0.0f,0.25f, 240,0.9f,0.18f, 2.2f,-1.4f,0.45f, 1.1f,1.0f),
+                mkLayer(S::Disc, ALP, 0.1f,0.0f,0.15f, 0.0f,0.0f,0.0f, 40,1.5f,0.3f, 1.6f,-0.8f,0.35f, 0.6f,0.5f) }));
+            c.push_back(mkDef("Void rift", C::Shadow, true, 0.0f, {
+                mkLayer(S::Ring, ADD, 0.4f,0.1f,0.6f, 0.05f,0.0f,0.12f, 220,1.1f,0.11f, 0.6f,-0.2f,1.3f, 0.0f,1.0f),
+                mkLayer(S::Disc, ALP, 0.08f,0.0f,0.12f, 0.0f,0.0f,0.0f, 80,0.9f,0.25f, 0.4f,-0.3f,1.0f, 0.5f,0.7f) }));
+            c.push_back(mkDef("Shadow tendrils", C::Shadow, true, 0.0f, {
+                mkLayer(S::Cone, ALP, 0.3f,0.1f,0.45f, 0.05f,0.0f,0.1f, 120,1.4f,0.16f, 2.0f,-1.0f,0.3f, 0.4f,0.7f, 30.0f) }));
+
+            // ===== NATURE / GRASS =====
+            c.push_back(mkDef("Bloom burst", C::Nature, false, 0.4f, {
+                mkLayer(S::Disc, ADD, 0.5f,1.0f,0.4f, 0.9f,1.0f,0.6f, 220,0.9f,0.11f, 2.2f,-1.0f,0.6f, 1.0f,1.0f) }));
+            c.push_back(mkDef("Vine surge", C::Nature, false, 0.1f, {
+                mkLayer(S::Cone, ALP, 0.3f,0.7f,0.2f, 0.15f,0.4f,0.1f, 300,0.7f,0.14f, 5.0f,2.0f,0.2f, 1.0f,0.9f, 18.0f) }));
+            c.push_back(mkDef("Pollen motes", C::Nature, true, 0.0f, {
+                mkLayer(S::Sphere, ADD, 0.85f,1.0f,0.4f, 0.5f,0.8f,0.2f, 28,3.0f,0.05f, 0.22f,-0.05f,2.0f, 0.3f,0.85f) }));
+            c.push_back(mkDef("Spore cloud", C::Nature, true, 0.0f, {
+                mkLayer(S::Disc, ALP, 0.5f,0.8f,0.3f, 0.25f,0.45f,0.12f, 60,2.2f,0.35f, 0.4f,-0.1f,1.2f, 0.7f,0.5f) }));
+            c.push_back(mkDef("Grass rustle", C::Nature, true, 0.0f, {
+                mkLayer(S::Disc, ALP, 0.45f,0.7f,0.25f, 0.3f,0.5f,0.15f, 70,1.4f,0.09f, 1.0f,-0.5f,0.9f, 0.4f,0.7f) }));
+
+            // ===== ARCANE / MAGICAL =====
+            c.push_back(mkDef("Portal", C::Arcane, true, 0.0f, {
+                mkLayer(S::Ring, ADD, 0.55f,0.45f,1.0f, 0.15f,0.25f,0.7f, 220,1.1f,0.10f, 0.8f,-0.2f,1.4f, 0.0f,1.0f),
+                mkLayer(S::Disc, ADD, 0.7f,0.6f,1.0f, 0.2f,0.1f,0.6f, 90,0.9f,0.14f, 0.5f,-0.4f,1.1f, 0.0f,0.8f) }));
+            c.push_back(mkDef("Arcane sigil", C::Arcane, true, 0.0f, {
+                mkLayer(S::Ring, ADD, 0.8f,0.4f,1.0f, 0.4f,0.1f,0.8f, 300,0.9f,0.08f, 0.3f,-0.1f,1.6f, 0.0f,1.0f),
+                mkLayer(S::Ring, ADD, 0.95f,0.7f,1.0f, 0.5f,0.2f,0.9f, 200,0.9f,0.07f, 0.3f,-0.1f,0.9f, 0.0f,0.9f) }));
+            c.push_back(mkDef("Mana burst", C::Arcane, false, 0.07f, {
+                mkLayer(S::Sphere, ADD, 0.5f,0.6f,1.0f, 0.2f,0.3f,0.9f, 1400,0.55f,0.11f, 5.5f,-0.5f,0.2f, 1.5f,1.1f) }));
+            c.push_back(mkDef("Arcane missiles", C::Arcane, false, 0.15f, {
+                mkLayer(S::Cone, ADD, 0.6f,0.5f,1.0f, 0.3f,0.2f,0.9f, 300,0.6f,0.10f, 7.0f,0.0f,0.1f, 1.0f,1.2f, 14.0f) }));
+            c.push_back(mkDef("Teleport flash", C::Arcane, false, 0.06f, {
+                mkLayer(S::Line, ADD, 0.7f,0.6f,1.0f, 0.95f,0.9f,1.0f, 700,0.4f,0.12f, 1.5f,-2.5f,0.25f, 0.5f,1.3f, 25.0f, 2.5f) }));
+            c.push_back(mkDef("Magic shield", C::Arcane, true, 0.0f, {
+                mkLayer(S::Sphere, ADD, 0.4f,0.6f,1.0f, 0.2f,0.4f,0.9f, 260,0.7f,0.07f, 0.2f,0.0f,1.3f, 0.0f,0.8f) }));
+
+            // ===== POISON =====
+            c.push_back(mkDef("Venom burst", C::Poison, false, 0.06f, {
+                mkLayer(S::Sphere, ALP, 0.5f,1.0f,0.25f, 0.1f,0.35f,0.05f, 900,0.7f,0.14f, 4.5f,2.0f,0.2f, 1.0f,0.8f) }));
+            c.push_back(mkDef("Acid splash", C::Poison, false, 0.05f, {
+                mkLayer(S::Shockwave, ALP, 0.55f,0.95f,0.3f, 0.15f,0.4f,0.08f, 1200,0.5f,0.11f, 7.0f,3.0f,0.25f, 1.0f,0.8f) }));
+            c.push_back(mkDef("Poison cloud", C::Poison, true, 0.0f, {
+                mkLayer(S::Disc, ALP, 0.5f,0.9f,0.25f, 0.1f,0.3f,0.05f, 70,2.2f,0.4f, 0.4f,-0.15f,1.3f, 0.8f,0.6f) }));
+            c.push_back(mkDef("Toxic geyser", C::Poison, true, 0.0f, {
+                mkLayer(S::Cone, ALP, 0.5f,1.0f,0.25f, 0.1f,0.35f,0.05f, 200,1.6f,0.22f, 5.0f,6.0f,0.2f, 0.4f,0.7f, 22.0f) }));
+            c.push_back(mkDef("Plague mist", C::Poison, true, 0.0f, {
+                mkLayer(S::Sphere, ALP, 0.45f,0.7f,0.25f, 0.12f,0.28f,0.06f, 90,2.4f,0.30f, 0.5f,-0.1f,1.4f, 0.7f,0.5f) }));
+
+            // ===== NORMAL =====
+            c.push_back(mkDef("Impact", C::Normal, false, 0.06f, {
+                mkLayer(S::Sphere, ADD, 1.0f,0.85f,0.4f, 0.9f,0.2f,0.05f, 1400,0.35f,0.08f, 6.0f,8.0f,0.1f, 2.0f,1.2f),
+                mkLayer(S::Point, ADD, 1.0f,0.95f,0.7f, 1.0f,0.5f,0.1f, 300,0.12f,0.3f, 0.5f,0.0f,0.05f, 0.0f,1.5f) }));
+            c.push_back(mkDef("Shockwave", C::Normal, false, 0.05f, {
+                mkLayer(S::Shockwave, ADD, 1.0f,0.95f,0.8f, 1.0f,0.6f,0.2f, 2000,0.4f,0.12f, 10.0f,0.0f,0.3f, 3.0f,1.2f) }));
+            c.push_back(mkDef("Blood splatter", C::Normal, false, 0.05f, {
+                mkLayer(S::Sphere, ALP, 0.7f,0.05f,0.05f, 0.3f,0.0f,0.0f, 900,0.6f,0.08f, 4.5f,12.0f,0.15f, 1.0f,1.0f) }));
+            c.push_back(mkDef("Smoke plume", C::Normal, true, 0.0f, {
+                mkLayer(S::Disc, ALP, 0.30f,0.30f,0.32f, 0.06f,0.06f,0.07f, 55,2.4f,0.45f, 1.4f,-0.7f,0.3f, 0.5f,0.55f) }));
+            c.push_back(mkDef("Sparkle", C::Normal, true, 0.0f, {
+                mkLayer(S::Sphere, ADD, 1.0f,1.0f,0.9f, 0.8f,0.8f,0.5f, 40,1.5f,0.05f, 0.5f,-0.2f,0.8f, 0.4f,0.9f) }));
+            c.push_back(mkDef("Dust", C::Normal, true, 0.0f, {
+                mkLayer(S::Disc, ALP, 0.55f,0.52f,0.48f, 0.3f,0.28f,0.25f, 40,2.0f,0.25f, 0.6f,-0.2f,0.7f, 0.5f,0.4f) }));
+
+            return c;
+        }
     }
 
-    EffectDefinition preset_portal()
+    const char* category_name(EffectCategory category)
     {
-        EffectDefinition d;
-        d.name = "Portal";
-        d.loop = true;
-        d.layerCount = 2;
-        // Rising ring rim.
-        auto& rim = d.layers[0];
-        rim.shape = EmitterShape::Ring;
-        rim.blend = Blend::Additive;
-        set3(rim.colorStart, 0.55f, 0.45f, 1.0f);
-        set3(rim.colorEnd, 0.15f, 0.25f, 0.7f);
-        rim.intensity = 1.0f; rim.spawnRate = 220.0f; rim.lifetime = 1.1f;
-        rim.size = 0.10f; rim.radius = 1.4f; rim.speed = 0.8f; rim.gravity = -0.2f;
-        // Inner swirl glow (disc).
-        auto& core = d.layers[1];
-        core.shape = EmitterShape::Disc;
-        core.blend = Blend::Additive;
-        set3(core.colorStart, 0.7f, 0.6f, 1.0f);
-        set3(core.colorEnd, 0.2f, 0.1f, 0.6f);
-        core.intensity = 0.8f; core.spawnRate = 90.0f; core.lifetime = 0.9f;
-        core.size = 0.14f; core.radius = 1.1f; core.speed = 0.5f; core.gravity = -0.4f;
-        return d;
+        switch (category)
+        {
+        case EffectCategory::Normal:    return "Normal";
+        case EffectCategory::Fire:      return "Fire";
+        case EffectCategory::Water:     return "Water";
+        case EffectCategory::Ice:       return "Ice";
+        case EffectCategory::Wind:      return "Wind";
+        case EffectCategory::Earth:     return "Earth";
+        case EffectCategory::Rock:      return "Rock";
+        case EffectCategory::Lightning: return "Lightning";
+        case EffectCategory::Holy:      return "Holy";
+        case EffectCategory::Shadow:    return "Shadow";
+        case EffectCategory::Nature:    return "Nature";
+        case EffectCategory::Arcane:    return "Arcane";
+        case EffectCategory::Poison:    return "Poison";
+        default:                        return "?";
+        }
     }
 
-    EffectDefinition preset_fire_pillar()
+    const std::vector<EffectDefinition>& preset_catalog()
     {
-        EffectDefinition d;
-        d.name = "Fire pillar";
-        d.loop = true;
-        d.layerCount = 2;
-        auto& flame = d.layers[0];
-        flame.shape = EmitterShape::Disc;
-        flame.blend = Blend::Additive;
-        set3(flame.colorStart, 1.0f, 0.7f, 0.2f);
-        set3(flame.colorEnd, 0.7f, 0.05f, 0.0f);
-        flame.intensity = 1.0f; flame.spawnRate = 260.0f; flame.lifetime = 0.8f;
-        flame.size = 0.18f; flame.radius = 0.5f; flame.speed = 2.4f; flame.gravity = -1.5f; flame.drag = 1.2f;
-        auto& smoke = d.layers[1];
-        smoke.shape = EmitterShape::Disc;
-        smoke.blend = Blend::Alpha;
-        set3(smoke.colorStart, 0.25f, 0.22f, 0.2f);
-        set3(smoke.colorEnd, 0.05f, 0.05f, 0.05f);
-        smoke.intensity = 0.5f; smoke.spawnRate = 40.0f; smoke.lifetime = 1.6f;
-        smoke.size = 0.35f; smoke.radius = 0.4f; smoke.speed = 1.6f; smoke.gravity = -0.8f; smoke.drag = 0.6f;
-        return d;
-    }
-
-    EffectDefinition preset_holy_column()
-    {
-        EffectDefinition d;
-        d.name = "Holy column";
-        d.loop = true;
-        d.layerCount = 1;
-        auto& l = d.layers[0];
-        l.shape = EmitterShape::Line;
-        l.blend = Blend::Additive;
-        set3(l.colorStart, 1.0f, 0.95f, 0.6f);
-        set3(l.colorEnd, 1.0f, 1.0f, 0.95f);
-        l.intensity = 1.0f; l.spawnRate = 160.0f; l.lifetime = 1.2f;
-        l.size = 0.13f; l.height = 3.0f; l.speed = 1.2f; l.gravity = -0.5f;
-        return d;
-    }
-
-    EffectDefinition preset_poison_cloud()
-    {
-        EffectDefinition d;
-        d.name = "Poison cloud";
-        d.loop = true;
-        d.layerCount = 1;
-        auto& l = d.layers[0];
-        l.shape = EmitterShape::Disc;
-        l.blend = Blend::Alpha;
-        set3(l.colorStart, 0.5f, 0.9f, 0.25f);
-        set3(l.colorEnd, 0.1f, 0.3f, 0.05f);
-        l.intensity = 0.6f; l.spawnRate = 70.0f; l.lifetime = 2.2f;
-        l.size = 0.4f; l.radius = 1.3f; l.speed = 0.4f; l.gravity = -0.15f; l.drag = 0.8f;
-        return d;
+        static const std::vector<EffectDefinition> catalog = build_catalog();
+        return catalog;
     }
 
     EffectDefinition preset_impact()
     {
-        EffectDefinition d;
-        d.name = "Impact";
-        d.loop = false;
-        d.duration = 0.06f;
-        d.layerCount = 2;
-        auto& spark = d.layers[0];
-        spark.shape = EmitterShape::Sphere;
-        spark.blend = Blend::Additive;
-        set3(spark.colorStart, 1.0f, 0.85f, 0.4f);
-        set3(spark.colorEnd, 0.9f, 0.2f, 0.05f);
-        spark.intensity = 1.2f; spark.spawnRate = 1400.0f; spark.lifetime = 0.35f;
-        spark.size = 0.08f; spark.radius = 0.1f; spark.speed = 6.0f; spark.gravity = 8.0f; spark.drag = 2.0f;
-        auto& flash = d.layers[1];
-        flash.shape = EmitterShape::Point;
-        flash.blend = Blend::Additive;
-        set3(flash.colorStart, 1.0f, 0.95f, 0.7f);
-        set3(flash.colorEnd, 1.0f, 0.5f, 0.1f);
-        flash.intensity = 1.5f; flash.spawnRate = 300.0f; flash.lifetime = 0.12f;
-        flash.size = 0.3f; flash.radius = 0.05f; flash.speed = 0.5f;
-        return d;
-    }
-
-    EffectDefinition preset_heal_burst()
-    {
-        EffectDefinition d;
-        d.name = "Heal burst";
-        d.loop = false;
-        d.duration = 0.5f;
-        d.layerCount = 1;
-        auto& l = d.layers[0];
-        l.shape = EmitterShape::Disc;
-        l.blend = Blend::Additive;
-        set3(l.colorStart, 0.4f, 1.0f, 0.5f);
-        set3(l.colorEnd, 0.9f, 1.0f, 0.8f);
-        l.intensity = 1.1f; l.spawnRate = 240.0f; l.lifetime = 1.0f;
-        l.size = 0.12f; l.radius = 0.7f; l.speed = 2.2f; l.gravity = -1.0f; l.drag = 1.0f;
-        return d;
-    }
-
-    EffectDefinition preset_frost_nova()
-    {
-        EffectDefinition d;
-        d.name = "Frost nova";
-        d.loop = false; d.duration = 0.08f; d.layerCount = 2;
-        auto& shard = d.layers[0];
-        shard.shape = EmitterShape::Sphere; shard.blend = Blend::Additive;
-        set3(shard.colorStart, 0.7f, 0.95f, 1.0f); set3(shard.colorEnd, 0.5f, 0.7f, 1.0f);
-        shard.intensity = 1.1f; shard.spawnRate = 1600.0f; shard.lifetime = 0.5f;
-        shard.size = 0.09f; shard.radius = 0.2f; shard.speed = 5.0f; shard.gravity = 1.5f; shard.drag = 2.5f;
-        auto& mist = d.layers[1];
-        mist.shape = EmitterShape::Disc; mist.blend = Blend::Alpha;
-        set3(mist.colorStart, 0.8f, 0.92f, 1.0f); set3(mist.colorEnd, 0.6f, 0.75f, 0.95f);
-        mist.intensity = 0.4f; mist.spawnRate = 200.0f; mist.lifetime = 0.7f;
-        mist.size = 0.3f; mist.radius = 0.6f; mist.speed = 2.0f; mist.drag = 3.0f;
-        return d;
-    }
-
-    EffectDefinition preset_shockwave()
-    {
-        EffectDefinition d;
-        d.name = "Shockwave";
-        d.loop = false; d.duration = 0.05f; d.layerCount = 1;
-        auto& l = d.layers[0];
-        l.shape = EmitterShape::Shockwave; l.blend = Blend::Additive;
-        set3(l.colorStart, 1.0f, 0.95f, 0.8f); set3(l.colorEnd, 1.0f, 0.6f, 0.2f);
-        l.intensity = 1.2f; l.spawnRate = 2000.0f; l.lifetime = 0.4f;
-        l.size = 0.12f; l.radius = 0.3f; l.speed = 10.0f; l.drag = 3.0f;
-        return d;
-    }
-
-    EffectDefinition preset_blood_splatter()
-    {
-        EffectDefinition d;
-        d.name = "Blood splatter";
-        d.loop = false; d.duration = 0.05f; d.layerCount = 1;
-        auto& l = d.layers[0];
-        l.shape = EmitterShape::Sphere; l.blend = Blend::Alpha;
-        set3(l.colorStart, 0.7f, 0.05f, 0.05f); set3(l.colorEnd, 0.3f, 0.0f, 0.0f);
-        l.intensity = 1.0f; l.spawnRate = 900.0f; l.lifetime = 0.6f;
-        l.size = 0.08f; l.radius = 0.15f; l.speed = 4.5f; l.gravity = 12.0f; l.drag = 1.0f;
-        return d;
-    }
-
-    EffectDefinition preset_lightning()
-    {
-        EffectDefinition d;
-        d.name = "Lightning sparks";
-        d.loop = false; d.duration = 0.12f; d.layerCount = 2;
-        auto& arc = d.layers[0];
-        arc.shape = EmitterShape::Point; arc.blend = Blend::Additive;
-        set3(arc.colorStart, 0.8f, 0.9f, 1.0f); set3(arc.colorEnd, 0.4f, 0.5f, 1.0f);
-        arc.intensity = 1.5f; arc.spawnRate = 1200.0f; arc.lifetime = 0.2f;
-        arc.size = 0.07f; arc.speed = 9.0f; arc.gravity = 3.0f; arc.drag = 1.5f;
-        auto& flash = d.layers[1];
-        flash.shape = EmitterShape::Point; flash.blend = Blend::Additive;
-        set3(flash.colorStart, 0.95f, 0.97f, 1.0f); set3(flash.colorEnd, 0.6f, 0.7f, 1.0f);
-        flash.intensity = 1.6f; flash.spawnRate = 200.0f; flash.lifetime = 0.1f;
-        flash.size = 0.35f; flash.speed = 0.5f;
-        return d;
-    }
-
-    EffectDefinition preset_water_fountain()
-    {
-        EffectDefinition d;
-        d.name = "Water fountain";
-        d.loop = true; d.layerCount = 1;
-        auto& l = d.layers[0];
-        l.shape = EmitterShape::Cone; l.blend = Blend::Alpha;
-        set3(l.colorStart, 0.6f, 0.8f, 1.0f); set3(l.colorEnd, 0.85f, 0.95f, 1.0f);
-        l.intensity = 0.7f; l.spawnRate = 300.0f; l.lifetime = 1.4f;
-        l.size = 0.10f; l.speed = 6.0f; l.gravity = 9.0f; l.coneAngleDeg = 14.0f;
-        return d;
-    }
-
-    EffectDefinition preset_smoke_plume()
-    {
-        EffectDefinition d;
-        d.name = "Smoke plume";
-        d.loop = true; d.layerCount = 1;
-        auto& l = d.layers[0];
-        l.shape = EmitterShape::Disc; l.blend = Blend::Alpha;
-        set3(l.colorStart, 0.30f, 0.30f, 0.32f); set3(l.colorEnd, 0.06f, 0.06f, 0.07f);
-        l.intensity = 0.55f; l.spawnRate = 55.0f; l.lifetime = 2.4f;
-        l.size = 0.45f; l.radius = 0.3f; l.speed = 1.4f; l.gravity = -0.7f; l.drag = 0.5f;
-        return d;
-    }
-
-    EffectDefinition preset_embers()
-    {
-        EffectDefinition d;
-        d.name = "Embers";
-        d.loop = true; d.layerCount = 1;
-        auto& l = d.layers[0];
-        l.shape = EmitterShape::Disc; l.blend = Blend::Additive;
-        set3(l.colorStart, 1.0f, 0.6f, 0.15f); set3(l.colorEnd, 0.6f, 0.1f, 0.0f);
-        l.intensity = 1.0f; l.spawnRate = 40.0f; l.lifetime = 2.0f;
-        l.size = 0.05f; l.radius = 0.6f; l.speed = 1.0f; l.gravity = -0.6f; l.drag = 0.4f;
-        return d;
-    }
-
-    EffectDefinition preset_fireflies()
-    {
-        EffectDefinition d;
-        d.name = "Fireflies";
-        d.loop = true; d.layerCount = 1;
-        auto& l = d.layers[0];
-        l.shape = EmitterShape::Sphere; l.blend = Blend::Additive;
-        set3(l.colorStart, 0.9f, 1.0f, 0.5f); set3(l.colorEnd, 0.4f, 0.8f, 0.2f);
-        l.intensity = 0.9f; l.spawnRate = 25.0f; l.lifetime = 3.0f;
-        l.size = 0.05f; l.radius = 2.0f; l.speed = 0.25f; l.gravity = -0.05f; l.drag = 0.3f;
-        return d;
-    }
-
-    EffectDefinition preset_arcane_sigil()
-    {
-        EffectDefinition d;
-        d.name = "Arcane sigil";
-        d.loop = true; d.layerCount = 2;
-        auto& ring = d.layers[0];
-        ring.shape = EmitterShape::Ring; ring.blend = Blend::Additive;
-        set3(ring.colorStart, 0.8f, 0.4f, 1.0f); set3(ring.colorEnd, 0.4f, 0.1f, 0.8f);
-        ring.intensity = 1.0f; ring.spawnRate = 300.0f; ring.lifetime = 0.9f;
-        ring.size = 0.08f; ring.radius = 1.6f; ring.speed = 0.3f; ring.gravity = -0.1f;
-        auto& inner = d.layers[1];
-        inner.shape = EmitterShape::Ring; inner.blend = Blend::Additive;
-        set3(inner.colorStart, 0.95f, 0.7f, 1.0f); set3(inner.colorEnd, 0.5f, 0.2f, 0.9f);
-        inner.intensity = 0.9f; inner.spawnRate = 200.0f; inner.lifetime = 0.9f;
-        inner.size = 0.07f; inner.radius = 0.9f; inner.speed = 0.3f; inner.gravity = -0.1f;
-        return d;
-    }
-
-    EffectDefinition preset_toxic_geyser()
-    {
-        EffectDefinition d;
-        d.name = "Toxic geyser";
-        d.loop = true; d.layerCount = 1;
-        auto& l = d.layers[0];
-        l.shape = EmitterShape::Cone; l.blend = Blend::Alpha;
-        set3(l.colorStart, 0.5f, 1.0f, 0.25f); set3(l.colorEnd, 0.1f, 0.35f, 0.05f);
-        l.intensity = 0.7f; l.spawnRate = 200.0f; l.lifetime = 1.6f;
-        l.size = 0.22f; l.speed = 5.0f; l.gravity = 6.0f; l.coneAngleDeg = 22.0f; l.drag = 0.4f;
-        return d;
-    }
-
-    EffectDefinition preset_shadow_flames()
-    {
-        EffectDefinition d;
-        d.name = "Shadow flames";
-        d.loop = true; d.layerCount = 2;
-        auto& fire = d.layers[0];
-        fire.shape = EmitterShape::Disc; fire.blend = Blend::Additive;
-        set3(fire.colorStart, 0.5f, 0.15f, 0.7f); set3(fire.colorEnd, 0.15f, 0.0f, 0.25f);
-        fire.intensity = 1.0f; fire.spawnRate = 240.0f; fire.lifetime = 0.9f;
-        fire.size = 0.18f; fire.radius = 0.45f; fire.speed = 2.2f; fire.gravity = -1.4f; fire.drag = 1.1f;
-        auto& wisp = d.layers[1];
-        wisp.shape = EmitterShape::Disc; wisp.blend = Blend::Alpha;
-        set3(wisp.colorStart, 0.1f, 0.0f, 0.15f); set3(wisp.colorEnd, 0.0f, 0.0f, 0.0f);
-        wisp.intensity = 0.5f; wisp.spawnRate = 40.0f; wisp.lifetime = 1.5f;
-        wisp.size = 0.3f; wisp.radius = 0.35f; wisp.speed = 1.6f; wisp.gravity = -0.8f; wisp.drag = 0.6f;
-        return d;
-    }
-
-    EffectDefinition preset_rainbow_fountain()
-    {
-        // Three offset-coloured cones for a playful multi-colour spray.
-        EffectDefinition d;
-        d.name = "Rainbow fountain";
-        d.loop = true; d.layerCount = 3;
-        auto cone = [](EffectLayer& l, float r, float g, float b) {
-            l.shape = EmitterShape::Cone; l.blend = Blend::Additive;
-            l.colorStart[0] = r; l.colorStart[1] = g; l.colorStart[2] = b;
-            l.colorEnd[0] = r * 0.4f; l.colorEnd[1] = g * 0.4f; l.colorEnd[2] = b * 0.4f;
-            l.intensity = 1.0f; l.spawnRate = 130.0f; l.lifetime = 1.3f;
-            l.size = 0.10f; l.speed = 5.5f; l.gravity = 8.0f; l.coneAngleDeg = 30.0f;
-        };
-        cone(d.layers[0], 1.0f, 0.2f, 0.2f);
-        cone(d.layers[1], 0.2f, 1.0f, 0.3f);
-        cone(d.layers[2], 0.3f, 0.4f, 1.0f);
-        return d;
-    }
-
-    const std::vector<PresetEntry>& preset_catalog()
-    {
-        static const std::vector<PresetEntry> catalog = {
-            { "Portal",            preset_portal },
-            { "Fire pillar",       preset_fire_pillar },
-            { "Holy column",       preset_holy_column },
-            { "Poison cloud",      preset_poison_cloud },
-            { "Arcane sigil",      preset_arcane_sigil },
-            { "Shadow flames",     preset_shadow_flames },
-            { "Water fountain",    preset_water_fountain },
-            { "Rainbow fountain",  preset_rainbow_fountain },
-            { "Toxic geyser",      preset_toxic_geyser },
-            { "Smoke plume",       preset_smoke_plume },
-            { "Embers",            preset_embers },
-            { "Fireflies",         preset_fireflies },
-            { "Impact (1-shot)",   preset_impact },
-            { "Heal burst (1-shot)", preset_heal_burst },
-            { "Frost nova (1-shot)", preset_frost_nova },
-            { "Shockwave (1-shot)",  preset_shockwave },
-            { "Blood splatter (1-shot)", preset_blood_splatter },
-            { "Lightning (1-shot)",  preset_lightning },
-        };
-        return catalog;
+        return mkDef("Impact", EffectCategory::Normal, false, 0.06f, {
+            mkLayer(EmitterShape::Sphere, Blend::Additive, 1.0f,0.85f,0.4f, 0.9f,0.2f,0.05f,
+                    1400,0.35f,0.08f, 6.0f,8.0f,0.1f, 2.0f,1.2f),
+            mkLayer(EmitterShape::Point, Blend::Additive, 1.0f,0.95f,0.7f, 1.0f,0.5f,0.1f,
+                    300,0.12f,0.3f, 0.5f,0.0f,0.05f, 0.0f,1.5f) });
     }
 }

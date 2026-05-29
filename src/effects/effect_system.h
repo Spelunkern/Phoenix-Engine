@@ -24,6 +24,16 @@ namespace phoenix::effects
 
     enum class Blend { Additive, Alpha };
 
+    // Elemental / thematic family an effect belongs to (for spell kits, map props,
+    // and UI grouping).
+    enum class EffectCategory
+    {
+        Normal, Fire, Water, Ice, Wind, Earth, Rock,
+        Lightning, Holy, Shadow, Nature, Arcane, Poison,
+        Count
+    };
+    const char* category_name(EffectCategory category);
+
     // One particle layer of an effect (purely procedural billboards, no textures).
     struct EffectLayer
     {
@@ -51,6 +61,7 @@ namespace phoenix::effects
     struct EffectDefinition
     {
         std::string name;
+        EffectCategory category{ EffectCategory::Normal };
         std::array<EffectLayer, kMaxEffectLayers> layers{};
         int layerCount{ 1 };
         bool loop{ true };
@@ -126,29 +137,12 @@ namespace phoenix::effects
         std::mt19937 rng_{ 0xEFFEC75u };
     };
 
-    // ---- Built-in presets (code-defined definitions) ----
-    EffectDefinition preset_portal();        // looping ring + glow (blue arcane)
-    EffectDefinition preset_fire_pillar();   // looping rising fire column
-    EffectDefinition preset_holy_column();   // looping golden light shaft
-    EffectDefinition preset_poison_cloud();  // looping low green haze
-    EffectDefinition preset_impact();        // one-shot burst (attack hit)
-    EffectDefinition preset_heal_burst();    // one-shot upward green sparkle
+    // ---- Built-in preset catalog (code-defined definitions) ----
+    // The full library of effects, grouped by category. Each EffectDefinition
+    // carries its own name + category, so the UI can list and filter them.
+    // Spell-oriented one-shots and looping map props live side by side.
+    const std::vector<EffectDefinition>& preset_catalog();
 
-    // More variety:
-    EffectDefinition preset_frost_nova();    // one-shot icy radial burst
-    EffectDefinition preset_shockwave();     // one-shot flat expanding ring
-    EffectDefinition preset_blood_splatter();// one-shot red, falls
-    EffectDefinition preset_lightning();     // one-shot electric sparks
-    EffectDefinition preset_water_fountain();// looping water arc (rises + falls)
-    EffectDefinition preset_smoke_plume();   // looping grey smoke
-    EffectDefinition preset_embers();        // looping ambient rising embers
-    EffectDefinition preset_fireflies();     // looping slow floating motes
-    EffectDefinition preset_arcane_sigil();  // looping flat purple magic ring
-    EffectDefinition preset_toxic_geyser();  // looping green geyser
-    EffectDefinition preset_shadow_flames(); // looping dark purple fire
-    EffectDefinition preset_rainbow_fountain(); // looping multi-colour spray (fun)
-
-    // All presets in panel order, with display names (for the editor UI).
-    struct PresetEntry { const char* name; EffectDefinition (*make)(); };
-    const std::vector<PresetEntry>& preset_catalog();
+    // Convenience used by the demo attack key (G).
+    EffectDefinition preset_impact();
 }

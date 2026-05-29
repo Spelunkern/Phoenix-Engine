@@ -2707,23 +2707,37 @@ int main(int, char**)
                 if (ImGui::Begin("Effects"))
                 {
                     const auto& catalog = preset_catalog();
-                    static int presetIdx = 0;
-                    presetIdx = std::clamp(presetIdx, 0, static_cast<int>(catalog.size()) - 1);
-                    ImGui::SetNextItemWidth(200.0f);
-                    if (ImGui::BeginCombo("Preset", catalog[static_cast<std::size_t>(presetIdx)].name))
+                    const int categoryCount = static_cast<int>(EffectCategory::Count);
+
+                    // Category filter (0 = All, else category index + 1).
+                    static int catFilter = 0;
+                    static int prevCatFilter = 0;
+                    const char* curCat = (catFilter == 0)
+                        ? "All"
+                        : category_name(static_cast<EffectCategory>(catFilter - 1));
+                    ImGui::SetNextItemWidth(120.0f);
+                    if (ImGui::BeginCombo("Category", curCat))
                     {
-                        for (int i = 0; i < static_cast<int>(catalog.size()); ++i)
+                        if (ImGui::Selectable("All", catFilter == 0)) catFilter = 0;
+                        for (int ci = 0; ci < categoryCount; ++ci)
                         {
-                            const bool sel = (i == presetIdx);
-                            if (ImGui::Selectable(catalog[static_cast<std::size_t>(i)].name, sel))
-                                presetIdx = i;
+                            const bool sel = (catFilter == ci + 1);
+                            if (ImGui::Selectable(category_name(static_cast<EffectCategory>(ci)), sel))
+                                catFilter = ci + 1;
                             if (sel) ImGui::SetItemDefaultFocus();
                         }
                         ImGui::EndCombo();
                     }
-                    const auto makeDef = [&catalog](int i) {
-                        return catalog[static_cast<std::size_t>(i)].make();
-                    };
+
+                    // Build the filtered list of catalog indices.
+                    std::vector<int> filtered;
+                    filtered.reserve(catalog.size());
+                    for (int i = 0; i < static_cast<int>(catalog.size()); ++i)
+                        if (catFilter == 0 || static_cast<int>(catalog[static_cast<std::size_t>(i)].category) == catFilter - 1)
+                            filtered.push_back(i);
+
+                    static int selInFiltered = 0;
+                    if (catFilter != prevCatFilter) { selInFiltered = 0; prevCatFilter = catFilter; }
 
                     float sx = cameraX, sy = cameraY, sz = cameraZ;
                     if (playableMode && characterLoaded && characterSystem.ready())
@@ -2733,19 +2747,43 @@ int main(int, char**)
                         sz = characterSystem.world_z();
                     }
 
-                    if (ImGui::Button("Spawn at character"))
-                        effectManager.spawn(makeDef(presetIdx), EffectAnchor::at(sx, sy, sz));
-                    ImGui::SameLine();
-                    if (ImGui::Button("Spawn ahead"))
+                    if (filtered.empty())
                     {
-                        const float fx = std::sin(cameraYaw);
-                        const float fz = std::cos(cameraYaw);
-                        effectManager.spawn(makeDef(presetIdx),
-                            EffectAnchor::at(sx + fx * 4.0f, sy, sz + fz * 4.0f));
+                        ImGui::TextDisabled("(no effects in category)");
                     }
+                    else
+                    {
+                        selInFiltered = std::clamp(selInFiltered, 0, static_cast<int>(filtered.size()) - 1);
+                        const auto curName = catalog[static_cast<std::size_t>(filtered[static_cast<std::size_t>(selInFiltered)])].name.c_str();
+                        ImGui::SetNextItemWidth(200.0f);
+                        if (ImGui::BeginCombo("Effect", curName))
+                        {
+                            for (int k = 0; k < static_cast<int>(filtered.size()); ++k)
+                            {
+                                const bool sel = (k == selInFiltered);
+                                if (ImGui::Selectable(catalog[static_cast<std::size_t>(filtered[static_cast<std::size_t>(k)])].name.c_str(), sel))
+                                    selInFiltered = k;
+                                if (sel) ImGui::SetItemDefaultFocus();
+                            }
+                            ImGui::EndCombo();
+                        }
+                        const auto& def = catalog[static_cast<std::size_t>(filtered[static_cast<std::size_t>(selInFiltered)])];
+
+                        if (ImGui::Button("Spawn at character"))
+                            effectManager.spawn(def, EffectAnchor::at(sx, sy, sz));
+                        ImGui::SameLine();
+                        if (ImGui::Button("Spawn ahead"))
+                        {
+                            const float fx = std::sin(cameraYaw);
+                            const float fz = std::cos(cameraYaw);
+                            effectManager.spawn(def, EffectAnchor::at(sx + fx * 4.0f, sy, sz + fz * 4.0f));
+                        }
+                    }
+
                     if (ImGui::Button("Clear all effects"))
                         effectManager.clear();
-                    ImGui::Text("Active effects: %zu", effectManager.active_count());
+                    ImGui::Text("Active: %zu  |  Library: %zu",
+                        effectManager.active_count(), catalog.size());
                     ImGui::TextDisabled("G: impact at weapon/character");
                 }
                 ImGui::End();
