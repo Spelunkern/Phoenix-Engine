@@ -2216,7 +2216,7 @@ namespace phoenix::character
             && activeAnimation_ == data_.jumpAnimation;
         if (airborneJump)
         {
-            constexpr float kJumpHoldFrameFraction = 0.55f;  // mid-air "falling" pose
+            constexpr float kJumpHoldFrameFraction = 0.80f;  // mid-air "falling" pose
             const float holdFrame = frameCount * kJumpHoldFrameFraction;
             const float raw = animationSeconds_ * kAniFramesPerSecond;
             frame = startFrame + std::min(raw, holdFrame);
@@ -2347,7 +2347,7 @@ namespace phoenix::character
                     && mountActiveAnimation_ == data_.mount.jumpAnimation;
                 if (mountAirborneJump)
                 {
-                    constexpr float kJumpHoldFrameFraction = 0.55f;
+                    constexpr float kJumpHoldFrameFraction = 0.80f;
                     const float holdFrame = mfc * kJumpHoldFrameFraction;
                     mFrame = ms + std::min(mountAnimationSeconds_ * kAniFramesPerSecond, holdFrame);
                 }
