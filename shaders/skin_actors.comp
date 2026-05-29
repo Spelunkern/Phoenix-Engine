@@ -1,0 +1,102 @@
+#version 450
+
+layout(local_size_x = 64) in;
+
+// Source vertex in bind pose (static, uploaded once).
+struct SkinSource
+{
+    float posX, posY, posZ;
+    float nrmX, nrmY, nrmZ;
+    float weight0, weight1, weight2;
+    uint  packedBones;       // bones[0] | (bones[1]<<8) | (bones[2]<<16)
+    uint  meshBoneBase;
+    float outputScale;
+};
+
+// Output vertex matching TerrainVertex layout (48 bytes).
+struct OutputVertex
+{
+    float posX, posY, posZ;
+    float colR, colG, colB;
+    float nrmX, nrmY, nrmZ;
+    float u, v;
+    uint  textureLayer;
+};
+
+layout(push_constant) uniform SkinParams
+{
+    uint firstVertex;        // offset in source + output arrays
+    uint vertexCount;
+    uint boneMatrixOffset;   // offset into skinMatrices for this actor
+};
+
+layout(std430, binding = 0) readonly buffer SourceVertices
+{
+    SkinSource sources[];
+};
+
+layout(std430, binding = 1) readonly buffer SkinMatrices
+{
+    mat4 skinMatrices[];
+};
+
+layout(std430, binding = 2) buffer OutputVertices
+{
+    OutputVertex outputs[];
+};
+
+void main()
+{
+    uint localIdx = gl_GlobalInvocationID.x;
+    if (localIdx >= vertexCount)
+        return;
+
+    uint srcIdx = firstVertex + localIdx;
+    SkinSource src = sources[srcIdx];
+
+    vec3 srcPos = vec3(src.posX, src.posY, src.posZ);
+    vec3 srcNrm = vec3(src.nrmX, src.nrmY, src.nrmZ);
+
+    uint bone0 = src.packedBones & 0xFFu;
+    uint bone1 = (src.packedBones >> 8) & 0xFFu;
+    uint bone2 = (src.packedBones >> 16) & 0xFFu;
+    float weights[3] = float[3](src.weight0, src.weight1, src.weight2);
+    uint  bones[3]   = uint[3](bone0, bone1, bone2);
+
+    vec3 position = vec3(0.0);
+    vec3 normal   = vec3(0.0);
+    float totalWeight = 0.0;
+
+    for (int i = 0; i < 3; ++i)
+    {
+        float w = weights[i];
+        if (w <= 0.0001)
+            continue;
+        uint matIdx = boneMatrixOffset + src.meshBoneBase + bones[i];
+        mat4 skinMat = skinMatrices[matIdx];
+
+        position += (skinMat * vec4(srcPos, 1.0)).xyz * w;
+        normal   += (mat3(skinMat) * srcNrm) * w;
+        totalWeight += w;
+    }
+
+    if (totalWeight <= 0.0001)
+        return;
+
+    float invW = 1.0 / totalWeight;
+    position *= invW;
+    normal *= invW;
+    float nlen = length(normal);
+    if (nlen > 0.0001)
+        normal /= nlen;
+
+    // Write skinned position and normal to output vertex.
+    // color, uv, textureLayer are preserved from the CPU upload.
+    uint outIdx = srcIdx;
+    outputs[outIdx].posX = position.x * src.outputScale;
+    outputs[outIdx].posY = position.y * src.outputScale;
+    outputs[outIdx].posZ = position.z * src.outputScale;
+    outputs[outIdx].nrmX = normal.x;
+    outputs[outIdx].nrmY = normal.y;
+    outputs[outIdx].nrmZ = normal.z;
+}

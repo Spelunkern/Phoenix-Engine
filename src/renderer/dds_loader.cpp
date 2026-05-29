@@ -2,7 +2,11 @@
 #include "renderer/dds_loader.h"
 
 #include <algorithm>
+#include <climits>
+#include <cmath>
+#include <cstddef>
 #include <cstdio>
+#include <cstdint>
 #include <cstring>
 #include <fstream>
 
@@ -10,6 +14,11 @@ namespace phoenix::renderer
 {
     namespace
     {
+        constexpr std::uint32_t kVkFormatR8G8B8A8Unorm = 37;
+        constexpr std::uint32_t kVkFormatBc1RgbaUnormBlock = 133;
+        constexpr std::uint32_t kVkFormatBc2UnormBlock = 135;
+        constexpr std::uint32_t kVkFormatBc3UnormBlock = 137;
+
         std::uint32_t read_u32(const std::uint8_t* ptr)
         {
             std::uint32_t value{};
@@ -77,7 +86,7 @@ namespace phoenix::renderer
                 }
             }
 
-            result.vkFormat = 37;
+            result.vkFormat = kVkFormatR8G8B8A8Unorm;
             result.valid = true;
             return result;
         }
@@ -134,7 +143,7 @@ namespace phoenix::renderer
                 }
             }
 
-            result.vkFormat = 37;
+            result.vkFormat = kVkFormatR8G8B8A8Unorm;
             result.valid = true;
             return result;
         }
@@ -330,15 +339,41 @@ namespace phoenix::renderer
                 }
             }
         }
+
+        std::vector<std::vector<std::uint8_t>> read_bc_mips(
+            const std::vector<std::uint8_t>& data,
+            std::size_t payloadOffset,
+            std::uint32_t width,
+            std::uint32_t height,
+            std::uint32_t mipCount,
+            std::uint32_t blockBytes)
+        {
+            std::vector<std::vector<std::uint8_t>> mips;
+            mipCount = std::max(1u, mipCount);
+            mips.reserve(mipCount);
+            auto offset = payloadOffset;
+            for (std::uint32_t mip = 0; mip < mipCount; ++mip)
+            {
+                const auto mipWidth = std::max(1u, width >> mip);
+                const auto mipHeight = std::max(1u, height >> mip);
+                const auto blocksW = std::max(1u, (mipWidth + 3u) / 4u);
+                const auto blocksH = std::max(1u, (mipHeight + 3u) / 4u);
+                const auto mipSize = static_cast<std::size_t>(blocksW) * blocksH * blockBytes;
+                if (offset + mipSize > data.size())
+                    break;
+                mips.emplace_back(data.begin() + static_cast<std::ptrdiff_t>(offset),
+                    data.begin() + static_cast<std::ptrdiff_t>(offset + mipSize));
+                offset += mipSize;
+            }
+            return mips;
+        }
     }
 
     DdsTexture load_dds(const std::filesystem::path& path)
     {
         const auto extension = path.extension().string();
-        if (extension == ".bmp" || extension == ".BMP")
-            return load_bmp(path);
-        if (extension == ".tga" || extension == ".TGA")
-            return load_tga(path);
+        if (extension != ".dds" && extension != ".DDS")
+            return {};
 
         DdsTexture result{};
 
@@ -354,6 +389,7 @@ namespace phoenix::renderer
         if (result.width == 0 || result.height == 0)
             return result;
 
+        const auto mipCount = std::max(1u, read_u32(data.data() + 28));
         const auto fourCC = read_u32(data.data() + 84);
         constexpr std::size_t kPayloadOffset = 128;
 
@@ -364,7 +400,10 @@ namespace phoenix::renderer
             const auto compressedSize = static_cast<std::size_t>(blocksW) * blocksH * 8;
             if (kPayloadOffset + compressedSize > data.size())
                 return result;
-            decompress_bc1(data.data() + kPayloadOffset, result.width, result.height, result.rgba);
+            result.vkFormat = kVkFormatBc1RgbaUnormBlock;
+            result.blockBytes = 8;
+            result.compressed = true;
+            result.mipData = read_bc_mips(data, kPayloadOffset, result.width, result.height, mipCount, result.blockBytes);
         }
         else if (fourCC == 0x33545844u || fourCC == 0x35545844u) // DXT3 or DXT5
         {
@@ -373,10 +412,10 @@ namespace phoenix::renderer
             const auto compressedSize = static_cast<std::size_t>(blocksW) * blocksH * 16;
             if (kPayloadOffset + compressedSize > data.size())
                 return result;
-            if (fourCC == 0x33545844u)
-                decompress_bc2(data.data() + kPayloadOffset, result.width, result.height, result.rgba);
-            else
-                decompress_bc3(data.data() + kPayloadOffset, result.width, result.height, result.rgba);
+            result.vkFormat = fourCC == 0x33545844u ? kVkFormatBc2UnormBlock : kVkFormatBc3UnormBlock;
+            result.blockBytes = 16;
+            result.compressed = true;
+            result.mipData = read_bc_mips(data, kPayloadOffset, result.width, result.height, mipCount, result.blockBytes);
         }
         else
         {
@@ -411,8 +450,337 @@ namespace phoenix::renderer
             }
         }
 
-        result.vkFormat = 37; // VK_FORMAT_R8G8B8A8_UNORM
-        result.valid = !result.rgba.empty();
+        if (result.vkFormat == 0)
+            result.vkFormat = kVkFormatR8G8B8A8Unorm;
+        result.valid = result.compressed ? !result.mipData.empty() : !result.rgba.empty();
         return result;
+    }
+
+    std::vector<std::uint8_t> decode_texture_rgba(const DdsTexture& texture)
+    {
+        if (!texture.rgba.empty())
+            return texture.rgba;
+        if (!texture.valid || !texture.compressed || texture.mipData.empty())
+            return {};
+
+        std::vector<std::uint8_t> rgba;
+        if (texture.vkFormat == kVkFormatBc1RgbaUnormBlock)
+            decompress_bc1(texture.mipData[0].data(), texture.width, texture.height, rgba);
+        else if (texture.vkFormat == kVkFormatBc2UnormBlock)
+            decompress_bc2(texture.mipData[0].data(), texture.width, texture.height, rgba);
+        else if (texture.vkFormat == kVkFormatBc3UnormBlock)
+            decompress_bc3(texture.mipData[0].data(), texture.width, texture.height, rgba);
+        return rgba;
+    }
+
+    // ── BC1 → BC3 lossless conversion ────────────────────────────────────
+    void convert_bc1_to_bc3(DdsTexture& texture)
+    {
+        if (!texture.compressed || texture.vkFormat != kVkFormatBc1RgbaUnormBlock)
+            return;
+        for (auto& mip : texture.mipData)
+        {
+            const auto bc1Blocks = mip.size() / 8;
+            std::vector<std::uint8_t> bc3(bc1Blocks * 16);
+            for (std::size_t i = 0; i < bc1Blocks; ++i)
+            {
+                auto* dst = bc3.data() + i * 16;
+                // Opaque alpha block: alpha0=255, alpha1=255, all indices 0.
+                dst[0] = 0xFF;
+                dst[1] = 0xFF;
+                std::memset(dst + 2, 0, 6);
+                // Copy the BC1 colour block unchanged.
+                std::memcpy(dst + 8, mip.data() + i * 8, 8);
+            }
+            mip = std::move(bc3);
+        }
+        texture.vkFormat = kVkFormatBc3UnormBlock;
+        texture.blockBytes = 16;
+    }
+
+    // ── Simple BC3 encoder from RGBA ─────────────────────────────────────
+    namespace
+    {
+        std::uint16_t rgb565(std::uint8_t r, std::uint8_t g, std::uint8_t b)
+        {
+            return static_cast<std::uint16_t>(
+                (static_cast<unsigned>(r >> 3) << 11) |
+                (static_cast<unsigned>(g >> 2) << 5) |
+                static_cast<unsigned>(b >> 3));
+        }
+
+        void decode565(std::uint16_t c, std::uint8_t rgb[3])
+        {
+            rgb[0] = static_cast<std::uint8_t>(((c >> 11) * 255 + 15) / 31);
+            rgb[1] = static_cast<std::uint8_t>((((c >> 5) & 63) * 255 + 31) / 63);
+            rgb[2] = static_cast<std::uint8_t>(((c & 31) * 255 + 15) / 31);
+        }
+
+        void encode_one_bc3_block(const std::uint8_t* rgba, std::uint32_t stride, std::uint8_t* out)
+        {
+            // Gather 4×4 pixel block.
+            std::uint8_t px[16][4];
+            for (int y = 0; y < 4; ++y)
+                for (int x = 0; x < 4; ++x)
+                    std::memcpy(px[y * 4 + x], rgba + y * stride + x * 4, 4);
+
+            // ── Alpha block (8 bytes) ──
+            std::uint8_t minA = 255, maxA = 0;
+            for (auto& p : px)
+            {
+                if (p[3] < minA) minA = p[3];
+                if (p[3] > maxA) maxA = p[3];
+            }
+            out[0] = maxA;
+            out[1] = minA;
+            std::uint64_t aBits = 0;
+            if (maxA == minA)
+            {
+                // All same alpha → indices all 0.
+                std::memset(out + 2, 0, 6);
+            }
+            else
+            {
+                for (int i = 0; i < 16; ++i)
+                {
+                    const int a = px[i][3];
+                    int bestDist = INT_MAX, bestIdx = 0;
+                    for (int j = 0; j < 8; ++j)
+                    {
+                        int palA;
+                        if (j == 0) palA = maxA;
+                        else if (j == 1) palA = minA;
+                        else palA = ((8 - j) * maxA + (j - 1) * minA + 3) / 7;
+                        const int d = std::abs(a - palA);
+                        if (d < bestDist) { bestDist = d; bestIdx = j; }
+                    }
+                    aBits |= static_cast<std::uint64_t>(bestIdx) << (i * 3);
+                }
+                for (int i = 0; i < 6; ++i)
+                    out[2 + i] = static_cast<std::uint8_t>((aBits >> (i * 8)) & 0xFF);
+            }
+
+            // ── Colour block / BC1 (8 bytes at out+8) ──
+            std::uint8_t rMin = 255, gMin = 255, bMin = 255;
+            std::uint8_t rMax = 0, gMax = 0, bMax = 0;
+            for (auto& p : px)
+            {
+                if (p[0] < rMin) rMin = p[0]; if (p[0] > rMax) rMax = p[0];
+                if (p[1] < gMin) gMin = p[1]; if (p[1] > gMax) gMax = p[1];
+                if (p[2] < bMin) bMin = p[2]; if (p[2] > bMax) bMax = p[2];
+            }
+
+            auto c0 = rgb565(rMax, gMax, bMax);
+            auto c1 = rgb565(rMin, gMin, bMin);
+            if (c0 < c1) std::swap(c0, c1);
+            if (c0 == c1 && c0 < 0xFFFFu) ++c0;
+
+            out[8]  = static_cast<std::uint8_t>(c0 & 0xFF);
+            out[9]  = static_cast<std::uint8_t>(c0 >> 8);
+            out[10] = static_cast<std::uint8_t>(c1 & 0xFF);
+            out[11] = static_cast<std::uint8_t>(c1 >> 8);
+
+            std::uint8_t pal[4][3];
+            decode565(c0, pal[0]);
+            decode565(c1, pal[1]);
+            for (int j = 0; j < 3; ++j)
+            {
+                pal[2][j] = static_cast<std::uint8_t>((2 * pal[0][j] + pal[1][j] + 1) / 3);
+                pal[3][j] = static_cast<std::uint8_t>((pal[0][j] + 2 * pal[1][j] + 1) / 3);
+            }
+
+            std::uint32_t indices = 0;
+            for (int i = 0; i < 16; ++i)
+            {
+                int bestDist = INT_MAX, bestIdx = 0;
+                for (int j = 0; j < 4; ++j)
+                {
+                    const int dr = px[i][0] - pal[j][0];
+                    const int dg = px[i][1] - pal[j][1];
+                    const int db = px[i][2] - pal[j][2];
+                    const int d = dr * dr + dg * dg + db * db;
+                    if (d < bestDist) { bestDist = d; bestIdx = j; }
+                }
+                indices |= static_cast<std::uint32_t>(bestIdx) << (i * 2);
+            }
+            out[12] = static_cast<std::uint8_t>(indices & 0xFF);
+            out[13] = static_cast<std::uint8_t>((indices >> 8) & 0xFF);
+            out[14] = static_cast<std::uint8_t>((indices >> 16) & 0xFF);
+            out[15] = static_cast<std::uint8_t>((indices >> 24) & 0xFF);
+        }
+    } // anon namespace
+
+    std::vector<std::uint8_t> encode_rgba_to_bc3(const std::uint8_t* rgba,
+                                                  std::uint32_t width,
+                                                  std::uint32_t height)
+    {
+        const auto bw = std::max(1u, (width + 3) / 4);
+        const auto bh = std::max(1u, (height + 3) / 4);
+        const auto pw = bw * 4;
+        const auto ph = bh * 4;
+
+        // Pad to 4-pixel boundary by replicating edges.
+        std::vector<std::uint8_t> padded(static_cast<std::size_t>(pw) * ph * 4, 0);
+        for (std::uint32_t y = 0; y < height; ++y)
+            std::memcpy(padded.data() + y * pw * 4, rgba + y * width * 4, width * 4);
+        for (std::uint32_t y = 0; y < height; ++y)
+            for (std::uint32_t x = width; x < pw; ++x)
+                std::memcpy(padded.data() + (y * pw + x) * 4,
+                            padded.data() + (y * pw + width - 1) * 4, 4);
+        for (std::uint32_t y = height; y < ph; ++y)
+            std::memcpy(padded.data() + y * pw * 4,
+                        padded.data() + (height - 1) * pw * 4, pw * 4);
+
+        std::vector<std::uint8_t> out(static_cast<std::size_t>(bw) * bh * 16);
+        for (std::uint32_t by = 0; by < bh; ++by)
+            for (std::uint32_t bx = 0; bx < bw; ++bx)
+                encode_one_bc3_block(
+                    padded.data() + (by * 4 * pw + bx * 4) * 4,
+                    pw * 4,
+                    out.data() + (by * bw + bx) * 16);
+        return out;
+    }
+
+    // ── Bilinear RGBA resize ─────────────────────────────────────────────
+    std::vector<std::uint8_t> resize_rgba(const std::uint8_t* src,
+                                           std::uint32_t srcW, std::uint32_t srcH,
+                                           std::uint32_t dstW, std::uint32_t dstH)
+    {
+        if (srcW == 0 || srcH == 0 || dstW == 0 || dstH == 0) return {};
+        std::vector<std::uint8_t> out(static_cast<std::size_t>(dstW) * dstH * 4);
+        for (std::uint32_t y = 0; y < dstH; ++y)
+        {
+            const float sy = (static_cast<float>(y) + 0.5f) * static_cast<float>(srcH) / static_cast<float>(dstH) - 0.5f;
+            const auto y0 = static_cast<std::uint32_t>(std::clamp(std::floor(sy), 0.0f, static_cast<float>(srcH - 1)));
+            const auto y1 = std::min(srcH - 1, y0 + 1);
+            const float ty = std::clamp(sy - static_cast<float>(y0), 0.0f, 1.0f);
+            for (std::uint32_t x = 0; x < dstW; ++x)
+            {
+                const float sx = (static_cast<float>(x) + 0.5f) * static_cast<float>(srcW) / static_cast<float>(dstW) - 0.5f;
+                const auto x0 = static_cast<std::uint32_t>(std::clamp(std::floor(sx), 0.0f, static_cast<float>(srcW - 1)));
+                const auto x1 = std::min(srcW - 1, x0 + 1);
+                const float tx = std::clamp(sx - static_cast<float>(x0), 0.0f, 1.0f);
+                const auto dstOff = (static_cast<std::size_t>(y) * dstW + x) * 4;
+                for (int c = 0; c < 4; ++c)
+                {
+                    const float c00 = src[(static_cast<std::size_t>(y0) * srcW + x0) * 4 + c];
+                    const float c10 = src[(static_cast<std::size_t>(y0) * srcW + x1) * 4 + c];
+                    const float c01 = src[(static_cast<std::size_t>(y1) * srcW + x0) * 4 + c];
+                    const float c11 = src[(static_cast<std::size_t>(y1) * srcW + x1) * 4 + c];
+                    const float top = std::lerp(c00, c10, tx);
+                    const float bot = std::lerp(c01, c11, tx);
+                    out[dstOff + c] = static_cast<std::uint8_t>(std::clamp(std::lerp(top, bot, ty), 0.0f, 255.0f));
+                }
+            }
+        }
+        return out;
+    }
+
+    // ── Full texture → BC3 normalisation ─────────────────────────────────
+    void convert_texture_to_bc3(DdsTexture& texture,
+                                std::uint32_t targetWidth,
+                                std::uint32_t targetHeight,
+                                std::uint32_t targetMipCount)
+    {
+        // Already BC3 at target size with enough mips?
+        if (texture.valid && texture.compressed
+            && texture.vkFormat == kVkFormatBc3UnormBlock
+            && texture.width == targetWidth && texture.height == targetHeight
+            && texture.mipData.size() >= targetMipCount)
+        {
+            texture.mipData.resize(targetMipCount);
+            return;
+        }
+
+        // BC1 at target size → lossless convert, then trim mips.
+        if (texture.valid && texture.compressed
+            && texture.vkFormat == kVkFormatBc1RgbaUnormBlock
+            && texture.width == targetWidth && texture.height == targetHeight
+            && texture.mipData.size() >= targetMipCount)
+        {
+            convert_bc1_to_bc3(texture);
+            texture.mipData.resize(targetMipCount);
+            return;
+        }
+
+        // Everything else: decode to RGBA, resize, then encode BC3 mip chain.
+        std::vector<std::uint8_t> rgba;
+        if (texture.valid)
+        {
+            rgba = decode_texture_rgba(texture);
+            if (rgba.empty() && !texture.rgba.empty())
+                rgba = texture.rgba;
+        }
+
+        // Build fallback solid colour if we couldn't decode.
+        if (rgba.empty() || rgba.size() < static_cast<std::size_t>(texture.width) * texture.height * 4)
+        {
+            const auto fallbackSize = static_cast<std::size_t>(targetWidth) * targetHeight * 4;
+            rgba.resize(fallbackSize);
+            for (std::size_t p = 0; p < static_cast<std::size_t>(targetWidth) * targetHeight; ++p)
+            {
+                rgba[p * 4 + 0] = 90;
+                rgba[p * 4 + 1] = 130;
+                rgba[p * 4 + 2] = 60;
+                rgba[p * 4 + 3] = 255;
+            }
+            texture.width = targetWidth;
+            texture.height = targetHeight;
+        }
+
+        // Resize to target dimensions if necessary.
+        if (texture.width != targetWidth || texture.height != targetHeight)
+        {
+            rgba = resize_rgba(rgba.data(), texture.width, texture.height, targetWidth, targetHeight);
+        }
+
+        // Generate BC3 mip chain.
+        texture.mipData.clear();
+        texture.mipData.reserve(targetMipCount);
+        auto mipW = targetWidth;
+        auto mipH = targetHeight;
+        std::vector<std::uint8_t> currentRgba = std::move(rgba);
+
+        for (std::uint32_t mip = 0; mip < targetMipCount; ++mip)
+        {
+            texture.mipData.push_back(encode_rgba_to_bc3(currentRgba.data(), mipW, mipH));
+
+            // Downsample for next mip (box filter).
+            if (mip + 1 < targetMipCount)
+            {
+                const auto nextW = std::max(1u, mipW / 2);
+                const auto nextH = std::max(1u, mipH / 2);
+                std::vector<std::uint8_t> downsampled(static_cast<std::size_t>(nextW) * nextH * 4);
+                for (std::uint32_t y = 0; y < nextH; ++y)
+                {
+                    for (std::uint32_t x = 0; x < nextW; ++x)
+                    {
+                        const auto sx = x * 2, sy = y * 2;
+                        const auto sx1 = std::min(sx + 1, mipW - 1);
+                        const auto sy1 = std::min(sy + 1, mipH - 1);
+                        for (int c = 0; c < 4; ++c)
+                        {
+                            const unsigned v = currentRgba[(sy  * mipW + sx ) * 4 + c]
+                                             + currentRgba[(sy  * mipW + sx1) * 4 + c]
+                                             + currentRgba[(sy1 * mipW + sx ) * 4 + c]
+                                             + currentRgba[(sy1 * mipW + sx1) * 4 + c];
+                            downsampled[(y * nextW + x) * 4 + c] = static_cast<std::uint8_t>((v + 2) / 4);
+                        }
+                    }
+                }
+                currentRgba = std::move(downsampled);
+                mipW = nextW;
+                mipH = nextH;
+            }
+        }
+
+        texture.width = targetWidth;
+        texture.height = targetHeight;
+        texture.vkFormat = kVkFormatBc3UnormBlock;
+        texture.blockBytes = 16;
+        texture.compressed = true;
+        texture.valid = true;
+        // Free RGBA data — we have mipData now.
+        std::vector<std::uint8_t>().swap(texture.rgba);
     }
 }

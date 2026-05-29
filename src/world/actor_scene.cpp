@@ -1,9 +1,12 @@
 #include "world/actor_scene.h"
 
+#include "core/logging.h"
 #include "world/character_loader.h"
 #include "world/mon_loader.h"
 #include "world/sdata_loader.h"
 #include "world/svmap_loader.h"
+
+#include "assets/data_index.h"
 
 #include <algorithm>
 #include <cmath>
@@ -23,7 +26,12 @@ namespace phoenix::world
         constexpr float kActorMeshScale = 0.95f;
         constexpr float kNpcScale = 1.0f;
         constexpr float kCellSize = 512.0f;
-        constexpr float kAniFramesPerSecond = 22.0f;
+        // Native animation frame rate recovered from the retail client
+        // (game-pt-ps0182.exe): the keyframe advancer FUN_00411470 does
+        //   currentFrame += dtSeconds * 30.0f  (DAT_0074c074 == 30.0f),
+        // a single global rate shared by all .ANI — mobs, NPCs, characters and
+        // vehicles alike. Must match character_system.cpp::kAniFramesPerSecond.
+        constexpr float kAniFramesPerSecond = 30.0f;
 
         float svmap_to_world(float value, float halfMap)
         {
@@ -59,10 +67,13 @@ namespace phoenix::world
         {
             if (name.empty())
                 return {};
-            auto path = assets.resolve(name);
+            // Resolve inside the expected folder FIRST (Monster/, Npc/, ...): some
+            // asset filenames are duplicated across folders, and a global lookup
+            // could otherwise grab a same-named file from the wrong category.
+            auto path = assets.resolve((folder / name).generic_string());
             if (!path.empty())
                 return path;
-            path = assets.resolve((folder / name).generic_string());
+            path = assets.resolve(name);
             if (!path.empty())
                 return path;
             return {};
@@ -126,6 +137,8 @@ namespace phoenix::world
             const auto meshBoneBase = static_cast<std::uint32_t>(build.skinData.meshBones.size());
             const auto meshBoneCount = static_cast<std::uint32_t>(model.bones.size());
             build.skinData.meshBones.insert(build.skinData.meshBones.end(), model.bones.begin(), model.bones.end());
+            for (std::uint32_t j = 0; j < static_cast<std::uint32_t>(model.bones.size()); ++j)
+                build.skinData.meshBoneAnimIndex.push_back(static_cast<std::uint8_t>(j));
             for (const auto& src : model.vertices)
             {
                 phoenix::renderer::TerrainVertex v{};
@@ -740,6 +753,77 @@ namespace phoenix::world
         skin_actor_frame_inplace(skin, vertices, animation, frame);
     }
 
+    std::uint32_t compute_skin_matrices(
+        const ActorSkinData& skin,
+        const CharacterAnimation& animation,
+        float frame,
+        std::vector<float>& outMatrices)
+    {
+        if (!animation.parsed || animation.bones.empty() || skin.meshBones.empty())
+            return 0;
+
+        Mat4 clientFinals[kMaxBones];
+        compute_client_finals(animation, frame, clientFinals, kMaxBones);
+
+        const auto meshBoneCount = std::min(skin.meshBones.size(), static_cast<std::size_t>(kMaxBones));
+        const auto startSize = outMatrices.size();
+        outMatrices.resize(startSize + meshBoneCount * 16);
+
+        for (std::size_t i = 0; i < meshBoneCount; ++i)
+        {
+            // Determine which animation bone this mesh bone maps to.
+            const auto animBoneIdx = (i < skin.meshBoneAnimIndex.size())
+                ? static_cast<std::size_t>(skin.meshBoneAnimIndex[i])
+                : i;
+            if (animBoneIdx >= animation.bones.size())
+            {
+                // Identity matrix for unmapped bones.
+                auto* dst = outMatrices.data() + startSize + i * 16;
+                std::memset(dst, 0, 16 * sizeof(float));
+                dst[0] = dst[5] = dst[10] = dst[15] = 1.0f;
+                continue;
+            }
+
+            const Mat4 skinMatrix = mat4_multiply(
+                mat4_from_shaiya_transposed(skin.meshBones[i].matrix),
+                clientFinals[animBoneIdx]);
+
+            // Write column-major (GLSL mat4 layout).
+            auto* dst = outMatrices.data() + startSize + i * 16;
+            for (int row = 0; row < 4; ++row)
+                for (int col = 0; col < 4; ++col)
+                    dst[col * 4 + row] = skinMatrix.m[row][col];
+        }
+
+        return static_cast<std::uint32_t>(meshBoneCount);
+    }
+
+    std::vector<GpuSkinSourceVertex> build_gpu_skin_sources(const ActorSkinData& skin)
+    {
+        std::vector<GpuSkinSourceVertex> result;
+        result.reserve(skin.sourceVertices.size());
+        for (const auto& src : skin.sourceVertices)
+        {
+            GpuSkinSourceVertex gpu{};
+            gpu.posX = src.position[0];
+            gpu.posY = src.position[1];
+            gpu.posZ = src.position[2];
+            gpu.nrmX = src.normal[0];
+            gpu.nrmY = src.normal[1];
+            gpu.nrmZ = src.normal[2];
+            gpu.weight0 = src.weights[0];
+            gpu.weight1 = src.weights[1];
+            gpu.weight2 = src.weights[2];
+            gpu.packedBones = static_cast<std::uint32_t>(src.bones[0])
+                | (static_cast<std::uint32_t>(src.bones[1]) << 8)
+                | (static_cast<std::uint32_t>(src.bones[2]) << 16);
+            gpu.meshBoneBase = src.meshBoneBase;
+            gpu.outputScale = src.outputScale;
+            result.push_back(gpu);
+        }
+        return result;
+    }
+
     ActorScene build_actor_scene(
         const std::filesystem::path& dataRoot,
         const std::string& mapStem,
@@ -749,21 +833,33 @@ namespace phoenix::world
         void* heightUserData)
     {
         ActorScene scene{};
+        // Linux is case-sensitive and the retail dataset mixes cases
+        // (monster.CSV, npc.CSV, ...). Resolve every real table path
+        // case-insensitively before opening it.
+        namespace fsci = phoenix::assets;
+        // NOTE: the ".svmap" path is SYNTHETIC — no such file exists. load_svmap()
+        // only uses it to derive the CSV folder (parent/"svmap"/<mapId>). Passing
+        // it through a file-existence resolver would wrongly yield an empty path,
+        // so it must be handed over verbatim.
         const auto svmap = load_svmap(dataRoot / "World" / (mapStem + ".svmap"));
         if (!svmap.parsed)
         {
-            std::ofstream log("PhoenixEngine.log", std::ios::app);
+            std::ofstream log(phoenix::core::engine_log_path(), std::ios::app);
             log << "Actor scene: failed to parse svmap " << (dataRoot / "World" / (mapStem + ".svmap")).string() << "\n";
             return scene;
         }
 
-        const auto monsterTable = load_monster_table(dataRoot / "Monster" / "mob.csv");
-        const auto npcTable = load_monster_table(dataRoot / "Npc" / "npc.csv");
-        const auto monsterSData = load_monster_sdata(dataRoot / "Monster" / "monster.csv");
-        const auto npcQuestSData = load_npcquest_sdata(dataRoot / "Npc" / "NpcQuest.csv");
+        const auto monsterTable = load_monster_table(
+            fsci::resolve_existing_path_case_insensitive(dataRoot / "Monster" / "mob.csv"));
+        const auto npcTable = load_monster_table(
+            fsci::resolve_existing_path_case_insensitive(dataRoot / "Npc" / "npc.csv"));
+        const auto monsterSData = load_monster_sdata(
+            fsci::resolve_existing_path_case_insensitive(dataRoot / "Monster" / "monster.csv"));
+        const auto npcQuestSData = load_npcquest_sdata(
+            fsci::resolve_existing_path_case_insensitive(dataRoot / "Npc" / "NpcQuest.csv"));
         if (!monsterTable.parsed && !npcTable.parsed)
         {
-            std::ofstream log("PhoenixEngine.log", std::ios::app);
+            std::ofstream log(phoenix::core::engine_log_path(), std::ios::app);
             log << "Actor scene: MON tables unavailable monster=" << monsterTable.monsters.size()
                 << " npc=" << npcTable.monsters.size() << "\n";
             return scene;
@@ -1072,7 +1168,7 @@ namespace phoenix::world
             animMemBytes += va.skinData.sourceVertices.size() * sizeof(ActorSourceVertex);
             animMemBytes += va.skinData.meshBones.size() * sizeof(CharacterBone);
         }
-        std::ofstream log("PhoenixEngine.log", std::ios::app);
+        std::ofstream log(phoenix::core::engine_log_path(), std::ios::app);
         log << "Actor scene: svmap=" << mapStem
             << " npcs=" << scene.npcCount
             << " monsters=" << scene.monsterCount

@@ -177,6 +177,75 @@ namespace phoenix::world
         return model;
     }
 
+    CharacterModel load_cloak_3dc(const std::filesystem::path& path)
+    {
+        CharacterModel model{};
+
+        std::vector<std::uint8_t> data;
+        if (!read_file(path, data) || data.size() < 8)
+            return model;
+
+        std::size_t offset = 0;
+
+        // Cloak 3DC: no version field. First uint32 = boneCount (always 0).
+        const auto boneCount = read_u32(data, offset);
+        offset += 4;
+        if (boneCount != 0)
+            return model; // Not a boneless cloak mesh.
+
+        const auto vertexCount = read_u32(data, offset);
+        offset += 4;
+        if (vertexCount == 0 || vertexCount > 1'000'000)
+            return model;
+
+        // Vertices are 40 bytes: position(12) + weight(4) + boneIdx+pad(4) + normal(12) + uv(8).
+        constexpr std::size_t kVertexBytes = 40;
+        if (offset + static_cast<std::size_t>(vertexCount) * kVertexBytes + 4 > data.size())
+            return model;
+
+        model.vertices.reserve(vertexCount);
+        for (std::uint32_t i = 0; i < vertexCount; ++i)
+        {
+            CharacterVertex v{};
+            v.position[0] = read_f32(data, offset);
+            v.position[1] = read_f32(data, offset + 4);
+            v.position[2] = read_f32(data, offset + 8);
+            offset += 12;
+            // weight(4) + boneIdx(1) + unknown(3) = 8 bytes — skip.
+            offset += 8;
+            v.normal[0] = read_f32(data, offset);
+            v.normal[1] = read_f32(data, offset + 4);
+            v.normal[2] = read_f32(data, offset + 8);
+            offset += 12;
+            v.uv[0] = read_f32(data, offset);
+            v.uv[1] = read_f32(data, offset + 4);
+            offset += 8;
+            model.vertices.push_back(v);
+        }
+
+        if (offset + 4 > data.size())
+            return model;
+
+        const auto faceCount = read_u32(data, offset);
+        offset += 4;
+        if (faceCount > 1'000'000 || offset + static_cast<std::size_t>(faceCount) * 6 > data.size())
+            return model;
+
+        model.faces.reserve(faceCount);
+        for (std::uint32_t i = 0; i < faceCount; ++i)
+        {
+            CharacterFace face{};
+            face.indices[0] = read_u16(data, offset);
+            face.indices[1] = read_u16(data, offset + 2);
+            face.indices[2] = read_u16(data, offset + 4);
+            offset += 6;
+            model.faces.push_back(face);
+        }
+
+        model.parsed = true;
+        return model;
+    }
+
     CharacterAnimation load_character_ani(const std::filesystem::path& path)
     {
         CharacterAnimation animation{};
@@ -259,5 +328,70 @@ namespace phoenix::world
 
         animation.parsed = true;
         return animation;
+    }
+
+    ItemModel load_item_3do(const std::filesystem::path& path)
+    {
+        ItemModel model{};
+
+        std::vector<std::uint8_t> data;
+        if (!read_file(path, data) || data.size() < 4)
+            return model;
+
+        std::size_t offset = 0;
+
+        // Texture name: int32 length + char[length].
+        const auto nameLen = read_u32(data, offset);
+        offset += 4;
+        if (nameLen > 256 || offset + nameLen > data.size())
+            return {};
+        model.textureName.assign(reinterpret_cast<const char*>(data.data() + offset), nameLen);
+        offset += nameLen;
+
+        // Vertices: int32 count + vertex data (3 float pos + 3 float normal + 2 float uv = 32 bytes).
+        if (offset + 4 > data.size())
+            return {};
+        const auto vertexCount = read_u32(data, offset);
+        offset += 4;
+        if (vertexCount > 1'000'000 || offset + static_cast<std::size_t>(vertexCount) * 32 > data.size())
+            return {};
+
+        model.vertices.reserve(vertexCount);
+        for (std::uint32_t i = 0; i < vertexCount; ++i)
+        {
+            ItemVertex v{};
+            v.position[0] = read_f32(data, offset);
+            v.position[1] = read_f32(data, offset + 4);
+            v.position[2] = read_f32(data, offset + 8);
+            v.normal[0] = read_f32(data, offset + 12);
+            v.normal[1] = read_f32(data, offset + 16);
+            v.normal[2] = read_f32(data, offset + 20);
+            v.uv[0] = read_f32(data, offset + 24);
+            v.uv[1] = read_f32(data, offset + 28);
+            offset += 32;
+            model.vertices.push_back(v);
+        }
+
+        // Faces: int32 count + 3×uint16 per face.
+        if (offset + 4 > data.size())
+            return {};
+        const auto faceCount = read_u32(data, offset);
+        offset += 4;
+        if (faceCount > 1'000'000 || offset + static_cast<std::size_t>(faceCount) * 6 > data.size())
+            return {};
+
+        model.faces.reserve(faceCount);
+        for (std::uint32_t i = 0; i < faceCount; ++i)
+        {
+            CharacterFace face{};
+            face.indices[0] = read_u16(data, offset);
+            face.indices[1] = read_u16(data, offset + 2);
+            face.indices[2] = read_u16(data, offset + 4);
+            offset += 6;
+            model.faces.push_back(face);
+        }
+
+        model.parsed = true;
+        return model;
     }
 }

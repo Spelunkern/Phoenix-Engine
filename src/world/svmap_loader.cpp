@@ -1,5 +1,7 @@
 #include "world/svmap_loader.h"
 
+#include "assets/data_index.h"
+
 #include <cstdlib>
 #include <fstream>
 #include <string>
@@ -25,10 +27,13 @@ namespace phoenix::world
         SvmapFile svmap{};
 
         // Resolve CSV folder: Data/World/svmap/{mapId}/
-        // path is e.g. Data/World/1.svmap — extract stem as map ID.
+        // path is e.g. Data/World/1.svmap (synthetic) — extract stem as map ID.
+        // Resolved case-insensitively so the folder works on Linux whether it is
+        // named "svmap" or "Svmap".
         const auto mapId = path.stem().string();
-        const auto csvDir = path.parent_path() / "svmap" / mapId;
-        if (!std::filesystem::exists(csvDir))
+        auto csvDir = assets::resolve_existing_path_case_insensitive(
+            path.parent_path() / "svmap" / mapId);
+        if (csvDir.empty())
             return svmap;
 
         // metadata.csv: MapFile,MapSize,MapMaskBytes,CellSize

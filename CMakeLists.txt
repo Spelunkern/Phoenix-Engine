@@ -13,6 +13,8 @@ set(ENGINE_SOURCES
     src/assets/data_index.cpp
     src/audio/audio_system.cpp
     src/character/character_system.cpp
+    src/character/weapon_effect.cpp
+    src/core/logging.cpp
     src/platform/sdl_window.cpp
     src/renderer/dds_loader.cpp
     src/renderer/vulkan_renderer.cpp

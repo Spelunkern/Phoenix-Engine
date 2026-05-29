@@ -24,10 +24,24 @@ namespace phoenix::world
         float outputScale{ 1.0f };
     };
 
+    // GPU-friendly source vertex for compute skinning (48 bytes, std430 aligned).
+    struct GpuSkinSourceVertex
+    {
+        float posX{}, posY{}, posZ{};
+        float nrmX{}, nrmY{}, nrmZ{};
+        float weight0{}, weight1{}, weight2{};
+        std::uint32_t packedBones{};   // bones[0] | (bones[1]<<8) | (bones[2]<<16)
+        std::uint32_t meshBoneBase{};
+        float outputScale{ 1.0f };
+    };
+
     struct ActorSkinData
     {
         std::vector<ActorSourceVertex> sourceVertices;
         std::vector<CharacterBone> meshBones;
+        // For each mesh bone: the animation bone index it maps to.
+        // Enables eager computation of all skin matrices on CPU for GPU upload.
+        std::vector<std::uint8_t> meshBoneAnimIndex;
     };
 
     struct ActorAnimationSet
@@ -98,6 +112,18 @@ namespace phoenix::world
         std::span<phoenix::renderer::TerrainVertex> vertices,
         const CharacterAnimation& animation,
         float frame);
+
+    // Compute all skin matrices for an actor at a given animation frame.
+    // Output: 16 floats (column-major mat4) per mesh bone, appended to outMatrices.
+    // Returns the number of matrices written.
+    std::uint32_t compute_skin_matrices(
+        const ActorSkinData& skin,
+        const CharacterAnimation& animation,
+        float frame,
+        std::vector<float>& outMatrices);
+
+    // Build GPU-friendly source vertex array from ActorSkinData.
+    std::vector<GpuSkinSourceVertex> build_gpu_skin_sources(const ActorSkinData& skin);
 
     ActorScene build_actor_scene(
         const std::filesystem::path& dataRoot,

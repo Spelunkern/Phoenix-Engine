@@ -42,8 +42,6 @@ namespace phoenix::runtime
         std::vector<phoenix::renderer::TerrainVertex> previewVertices;
         std::vector<std::uint32_t> previewIndices;
         std::vector<std::vector<phoenix::renderer::TerrainVertex>> animationFrames;
-        std::vector<phoenix::renderer::TerrainVertex> lodVertices;
-        std::vector<std::uint32_t> lodIndices;
         // Collision mesh in model-local space.
         bool hasCollision{};
         std::vector<float> collisionVertices; // flat x,y,z per vertex
@@ -272,7 +270,8 @@ namespace phoenix::runtime
         AnimatedObjectScene build_animated_object_scene() const;
         void update_animated_object_scene(AnimatedObjectScene& scene, float totalTime, float deltaSeconds,
             float cameraX, float cameraY, float cameraZ,
-            std::size_t actorVertexAnimationStart = std::numeric_limits<std::size_t>::max()) const;
+            std::size_t actorVertexAnimationStart = std::numeric_limits<std::size_t>::max(),
+            bool skipActorSkinning = false) const;
         std::vector<std::filesystem::path> terrain_texture_paths() const;
         std::vector<std::filesystem::path> asset_texture_paths() const;
         std::filesystem::path texture_path_for(std::string_view fileName) const;

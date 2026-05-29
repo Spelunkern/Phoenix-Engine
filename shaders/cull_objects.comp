@@ -1,0 +1,97 @@
+#version 450
+
+layout(local_size_x = 64) in;
+
+// Matches VkDrawIndexedIndirectCommand layout.
+struct DrawCommand
+{
+    uint indexCount;
+    uint instanceCount;
+    uint firstIndex;
+    int  vertexOffset;
+    uint firstInstance;
+};
+
+struct BoundingSphere
+{
+    float x;
+    float y;
+    float z;
+    float radius;
+};
+
+layout(push_constant) uniform CullParams
+{
+    float camX;
+    float camY;
+    float camZ;
+    float camYaw;
+    float camPitch;
+    float aspect;
+    float tanHalfFov;
+    float maxDistance;
+    uint  batchCount;
+};
+
+layout(std430, binding = 0) readonly buffer TemplateCommands
+{
+    DrawCommand templateCmds[];
+};
+
+layout(std430, binding = 1) readonly buffer Bounds
+{
+    BoundingSphere bounds[];
+};
+
+layout(std430, binding = 2) writeonly buffer OutputCommands
+{
+    DrawCommand outputCmds[];
+};
+
+void main()
+{
+    uint idx = gl_GlobalInvocationID.x;
+    if (idx >= batchCount)
+        return;
+
+    DrawCommand cmd = templateCmds[idx];
+    BoundingSphere b = bounds[idx];
+
+    // ── Frustum culling (mirrors CPU sphere_visible) ──
+
+    float dx = b.x - camX;
+    float dy = b.y - camY;
+    float dz = b.z - camZ;
+    float r  = b.radius;
+
+    // 1. Distance check.
+    float distSq = dx * dx + dy * dy + dz * dz;
+    float maxDist = maxDistance + r;
+    bool visible = distSq <= maxDist * maxDist;
+
+    // 2. Transform to camera-local space.
+    float cy = cos(camYaw);
+    float sy = sin(camYaw);
+    float cp = cos(camPitch);
+    float sp = sin(camPitch);
+
+    float cameraX = cy * dx - sy * dz;
+    float yawZ    = sy * dx + cy * dz;
+    float cameraY = cp * dy - sp * yawZ;
+    float cameraZ = sp * dy + cp * yawZ;
+
+    // 3. Behind camera check.
+    visible = visible && (cameraZ >= -r);
+
+    // 4. Horizontal/vertical frustum bounds.
+    float zb = max(cameraZ, 1.0);
+    float horizontal = zb * tanHalfFov * aspect + r;
+    float vertical   = zb * tanHalfFov + r;
+    visible = visible && (abs(cameraX) <= horizontal) && (abs(cameraY) <= vertical);
+
+    // Write command; zero instanceCount when culled (GPU skips 0-instance draws).
+    if (!visible)
+        cmd.instanceCount = 0;
+
+    outputCmds[idx] = cmd;
+}

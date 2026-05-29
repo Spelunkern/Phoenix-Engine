@@ -1,6 +1,7 @@
 #define _CRT_SECURE_NO_WARNINGS
 #include "runtime/phoenix_runtime.h"
 
+#include "core/logging.h"
 #include "world/dg_loader.h"
 #include "world/eft_loader.h"
 #include "world/mani_loader.h"
@@ -11,6 +12,7 @@
 #include <array>
 #include <cmath>
 #include <cstdlib>
+#include <cstring>
 #include <format>
 #include <fstream>
 #include <limits>
@@ -202,41 +204,6 @@ namespace phoenix::runtime
             vertices.push_back(vertex);
         }
 
-        void build_asset_lod(LoadedWorldAsset& asset)
-        {
-            asset.lodVertices.clear();
-            asset.lodIndices.clear();
-            if (asset.previewVertices.empty() || asset.previewIndices.size() < 3)
-                return;
-
-            const auto sourceTriangleCount = asset.previewIndices.size() / 3u;
-            const auto targetTriangleCount = asset.radius > 80.0f ? 18u : asset.radius > 32.0f ? 12u : 6u;
-            const auto triangleCount = std::min<std::size_t>(sourceTriangleCount, targetTriangleCount);
-            if (triangleCount == 0)
-                return;
-
-            asset.lodVertices.reserve(triangleCount * 3u);
-            asset.lodIndices.reserve(triangleCount * 3u);
-            const auto step = std::max<std::size_t>(1, sourceTriangleCount / triangleCount);
-            for (std::size_t triangle = 0; triangle < sourceTriangleCount && asset.lodIndices.size() / 3u < triangleCount; triangle += step)
-            {
-                const auto sourceBase = triangle * 3u;
-                const auto a = asset.previewIndices[sourceBase + 0u];
-                const auto b = asset.previewIndices[sourceBase + 1u];
-                const auto c = asset.previewIndices[sourceBase + 2u];
-                if (a >= asset.previewVertices.size() || b >= asset.previewVertices.size() || c >= asset.previewVertices.size())
-                    continue;
-
-                const auto base = static_cast<std::uint32_t>(asset.lodVertices.size());
-                asset.lodVertices.push_back(asset.previewVertices[a]);
-                asset.lodVertices.push_back(asset.previewVertices[b]);
-                asset.lodVertices.push_back(asset.previewVertices[c]);
-                asset.lodIndices.push_back(base + 0u);
-                asset.lodIndices.push_back(base + 1u);
-                asset.lodIndices.push_back(base + 2u);
-            }
-        }
-
         std::uint32_t read_le_u32(const std::vector<std::uint8_t>& data, std::size_t offset)
         {
             if (offset + 4 > data.size())
@@ -400,7 +367,7 @@ namespace phoenix::runtime
         else
             update_status();
 
-        std::ofstream log("PhoenixEngine.log", std::ios::app);
+        std::ofstream log(phoenix::core::engine_log_path(), std::ios::app);
         log << "Phoenix Engine\n";
         log << "Data root: " << state_.dataRoot.string() << " exists=" << std::filesystem::exists(state_.dataRoot) << "\n";
         log << "Indexed files: " << state_.assets.indexedFiles << "\n";
@@ -523,7 +490,7 @@ namespace phoenix::runtime
             camera_.speed = 40.0f;
         }
 
-        std::ofstream log("PhoenixEngine.log", std::ios::app);
+        std::ofstream log(phoenix::core::engine_log_path(), std::ios::app);
         log << "Loaded map: " << state_.worldMapPaths[mapIndex].string()
             << " parsed=" << state_.world.parsed
             << " isDungeon=" << state_.world.isDungeon
@@ -621,7 +588,7 @@ namespace phoenix::runtime
                 continue;
 
             const auto extension = phoenix::assets::lower_ascii(entry.path().extension().string());
-            if (extension != ".bmp" && extension != ".dds" && extension != ".tga")
+            if (extension != ".dds")
                 continue;
 
             state_.skyFileNames.push_back(entry.path().filename().string());
@@ -646,7 +613,7 @@ namespace phoenix::runtime
                 continue;
 
             const auto extension = phoenix::assets::lower_ascii(entry.path().extension().string());
-            if (extension != ".dds" && extension != ".bmp" && extension != ".tga")
+            if (extension != ".dds")
                 continue;
 
             state_.terrainTextureNames.push_back(entry.path().filename().string());
@@ -864,7 +831,6 @@ namespace phoenix::runtime
                     asset.collisionIndices = asset.previewIndices;
                     asset.hasCollision = true;
                 }
-                build_asset_lod(asset);
                 state_.worldAssets.push_back(std::move(asset));
             }
         }
@@ -1429,7 +1395,7 @@ namespace phoenix::runtime
         state_.waterAnimation.frameFileNames = std::move(uniqueNames);
         state_.waterAnimation.frameCount = static_cast<std::uint32_t>(state_.waterAnimation.framePaths.size());
 
-        std::ofstream log("PhoenixEngine.log", std::ios::app);
+        std::ofstream log(phoenix::core::engine_log_path(), std::ios::app);
         log << "Water animation: " << wtrPath.filename().string()
             << " tileSize=" << state_.waterAnimation.tileSize
             << " frames=" << state_.waterAnimation.frameCount << "\n";
@@ -1589,7 +1555,7 @@ namespace phoenix::runtime
         }
 
         {
-            std::ofstream log("PhoenixEngine.log", std::ios::app);
+            std::ofstream log(phoenix::core::engine_log_path(), std::ios::app);
             log << "Terrain mesh build: terrain_water_only vertices=" << vertices.size()
                 << " indices=" << indices.size()
                 << "\n";
@@ -1607,7 +1573,6 @@ namespace phoenix::runtime
         });
         std::vector<std::uint8_t> meshRendered(state_.sceneObjects.size());
         std::uint32_t highObjectCount{};
-        std::uint32_t lodObjectCount{};
 
         const auto appendTransformedMesh = [this, &vertices, &indices](
             const SceneObject& object,
@@ -1685,27 +1650,6 @@ namespace phoenix::runtime
             }
         }
 
-        for (const auto objectIndex : objectOrder)
-        {
-            if (meshRendered[objectIndex])
-                continue;
-            const auto& object = state_.sceneObjects[objectIndex];
-            constexpr std::size_t kMaxTotalObjectVertices = 8000000;
-            const auto useLod = object.assetSlot >= 0
-                && static_cast<std::size_t>(object.assetSlot) < state_.worldAssets.size()
-                && !state_.worldAssets[static_cast<std::size_t>(object.assetSlot)].lodVertices.empty()
-                && !state_.worldAssets[static_cast<std::size_t>(object.assetSlot)].lodIndices.empty()
-                && vertices.size() + state_.worldAssets[static_cast<std::size_t>(object.assetSlot)].lodVertices.size() < kMaxTotalObjectVertices;
-
-            if (useLod)
-            {
-                const auto& asset = state_.worldAssets[static_cast<std::size_t>(object.assetSlot)];
-                appendTransformedMesh(object, asset.lodVertices, asset.lodIndices);
-                meshRendered[objectIndex] = 1;
-                ++lodObjectCount;
-            }
-        }
-
         std::uint32_t loadedPlaceholders{};
         std::uint32_t missingPlaceholders{};
         for (std::size_t objectIndex = 0; objectIndex < state_.sceneObjects.size(); ++objectIndex)
@@ -1754,10 +1698,9 @@ namespace phoenix::runtime
             indices.push_back(base + 3);
         }
 
-        std::ofstream log("PhoenixEngine.log", std::ios::app);
+        std::ofstream log(phoenix::core::engine_log_path(), std::ios::app);
         log << "Terrain mesh build: high_objects=" << highObjectCount
-            << " lod_objects=" << lodObjectCount
-            << " placeholders=" << (state_.sceneObjects.size() - highObjectCount - lodObjectCount)
+            << " placeholders=" << (state_.sceneObjects.size() - highObjectCount)
             << " loaded_placeholders=" << loadedPlaceholders
             << " missing_placeholders=" << missingPlaceholders
             << " vertices=" << vertices.size()
@@ -2000,11 +1943,9 @@ namespace phoenix::runtime
             const auto& asset = state_.worldAssets[assetSlot];
             vertexCount += asset.previewVertices.size();
             indexCount += asset.previewIndices.size();
+            ++batchCount; // one merged batch per unique asset
             for (const auto& group : groupsByAsset[assetSlot])
-            {
                 instanceCount += group.objectIndices.size();
-                ++batchCount;
-            }
         }
 
         scene.vertices.reserve(vertexCount);
@@ -2071,27 +2012,29 @@ namespace phoenix::runtime
             });
 
             const auto& asset = state_.worldAssets[assetSlot];
+
             const auto baseVertex = static_cast<std::uint32_t>(scene.vertices.size());
             const auto firstIndex = static_cast<std::uint32_t>(scene.indices.size());
             scene.vertices.insert(scene.vertices.end(), asset.previewVertices.begin(), asset.previewVertices.end());
             for (const auto index : asset.previewIndices)
                 scene.indices.push_back(baseVertex + index);
 
+            // Merge all spatial groups of this asset into ONE batch.
+            // Instances are contiguous per asset, so a single draw call
+            // covers all instances — trading per-cell frustum culling for
+            // dramatically fewer draw calls (GPU clips off-screen instances
+            // after vertex shading, which is cheap).
+            const auto firstInstance = static_cast<std::uint32_t>(scene.instances.size());
+
+            float minX = std::numeric_limits<float>::max();
+            float minY = std::numeric_limits<float>::max();
+            float minZ = std::numeric_limits<float>::max();
+            float maxX = -std::numeric_limits<float>::max();
+            float maxY = -std::numeric_limits<float>::max();
+            float maxZ = -std::numeric_limits<float>::max();
+
             for (const auto& group : groups)
             {
-                phoenix::renderer::ObjectBatch batch{};
-                batch.firstIndex = firstIndex;
-                batch.indexCount = static_cast<std::uint32_t>(asset.previewIndices.size());
-                batch.firstInstance = static_cast<std::uint32_t>(scene.instances.size());
-                batch.instanceCount = static_cast<std::uint32_t>(group.objectIndices.size());
-
-                float minX = std::numeric_limits<float>::max();
-                float minY = std::numeric_limits<float>::max();
-                float minZ = std::numeric_limits<float>::max();
-                float maxX = -std::numeric_limits<float>::max();
-                float maxY = -std::numeric_limits<float>::max();
-                float maxZ = -std::numeric_limits<float>::max();
-
                 for (const auto objectIndex : group.objectIndices)
                 {
                     const auto& object = state_.sceneObjects[objectIndex];
@@ -2104,23 +2047,31 @@ namespace phoenix::runtime
                     maxY = std::max(maxY, object.y + radius);
                     maxZ = std::max(maxZ, object.z + radius);
                 }
-
-                StaticObjectScene::BatchBounds bounds{};
-                bounds.x = (minX + maxX) * 0.5f;
-                bounds.y = (minY + maxY) * 0.5f;
-                bounds.z = (minZ + maxZ) * 0.5f;
-                const auto extentX = (maxX - minX) * 0.5f;
-                const auto extentY = (maxY - minY) * 0.5f;
-                const auto extentZ = (maxZ - minZ) * 0.5f;
-                bounds.radius = std::sqrt(extentX * extentX + extentY * extentY + extentZ * extentZ);
-
-                scene.batches.push_back(batch);
-                scene.batchBounds.push_back(bounds);
             }
+
+            const auto totalInstances = static_cast<std::uint32_t>(scene.instances.size()) - firstInstance;
+
+            StaticObjectScene::BatchBounds bounds{};
+            bounds.x = (minX + maxX) * 0.5f;
+            bounds.y = (minY + maxY) * 0.5f;
+            bounds.z = (minZ + maxZ) * 0.5f;
+            const auto extentX = (maxX - minX) * 0.5f;
+            const auto extentY = (maxY - minY) * 0.5f;
+            const auto extentZ = (maxZ - minZ) * 0.5f;
+            bounds.radius = std::sqrt(extentX * extentX + extentY * extentY + extentZ * extentZ);
+
+            phoenix::renderer::ObjectBatch batch{};
+            batch.firstIndex = firstIndex;
+            batch.indexCount = static_cast<std::uint32_t>(asset.previewIndices.size());
+            batch.firstInstance = firstInstance;
+            batch.instanceCount = totalInstances;
+            scene.batches.push_back(batch);
+
+            scene.batchBounds.push_back(bounds);
         }
 
-        std::ofstream log("PhoenixEngine.log", std::ios::app);
-        log << "Static object scene build: spatial_batches=" << scene.batches.size()
+        std::ofstream log(phoenix::core::engine_log_path(), std::ios::app);
+        log << "Static object scene build: merged_batches=" << scene.batches.size()
             << " instances=" << scene.instances.size()
             << " vertices=" << scene.vertices.size()
             << " indices=" << scene.indices.size()
@@ -2273,7 +2224,7 @@ namespace phoenix::runtime
             scene.batchBounds.push_back(bounds);
         }
 
-        std::ofstream log("PhoenixEngine.log", std::ios::app);
+        std::ofstream log(phoenix::core::engine_log_path(), std::ios::app);
         log << "Animated object scene build: batches=" << scene.batches.size()
             << " instances=" << scene.instances.size()
             << " vertexAnimations=" << scene.vertexAnimations.size()
@@ -2284,7 +2235,8 @@ namespace phoenix::runtime
 
     void PhoenixRuntime::update_animated_object_scene(AnimatedObjectScene& scene, float totalTime, float deltaSeconds,
         float cameraX, float cameraY, float cameraZ,
-        std::size_t actorVertexAnimationStart) const
+        std::size_t actorVertexAnimationStart,
+        bool skipActorSkinning) const
     {
         constexpr float kAnimationRange = 180.0f;
         // NPC gesture timing.
@@ -2471,6 +2423,8 @@ namespace phoenix::runtime
             const auto& runAnim = animation.animations.run;
 
             auto skinCached = [&](const phoenix::world::CharacterAnimation& anim, float frameF) {
+                if (skipActorSkinning)
+                    return; // GPU compute shader handles skinning.
                 const auto discreteFrame = static_cast<std::int32_t>(frameF);
                 if (discreteFrame == animation.cachedFrame && &anim == animation.cachedAnim)
                     return;
@@ -2731,7 +2685,7 @@ namespace phoenix::runtime
         state_.effectInstanceTextureSlot.clear();
 
         {
-            std::ofstream log("PhoenixEngine.log", std::ios::app);
+            std::ofstream log(phoenix::core::engine_log_path(), std::ios::app);
             log << "EFT: effectFileName='" << state_.world.effectFileName
                 << "' instances=" << state_.world.effectInstances.size()
                 << " dataRoot='" << state_.dataRoot.string() << "'\n";
@@ -2839,7 +2793,7 @@ namespace phoenix::runtime
         }
 
         {
-            std::ofstream log("PhoenixEngine.log", std::ios::app);
+            std::ofstream log(phoenix::core::engine_log_path(), std::ios::app);
             std::size_t resolvedCount = 0;
             for (const auto& p : state_.effectTexturePaths)
                 if (!p.empty()) ++resolvedCount;
@@ -3560,7 +3514,7 @@ namespace phoenix::runtime
         mesh.build_grid();
 
         {
-            std::ofstream log("PhoenixEngine.log", std::ios::app);
+            std::ofstream log(phoenix::core::engine_log_path(), std::ios::app);
             log << "World collision mesh: " << mesh.triangles.size()
                 << " triangles, " << mesh.grid.size() << " grid cells\n";
         }

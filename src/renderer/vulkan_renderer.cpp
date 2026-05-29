@@ -1,4 +1,5 @@
 #include "renderer/vulkan_renderer.h"
+#include "core/logging.h"
 #include "renderer/dds_loader.h"
 #include "platform/sdl_window.h"
 
@@ -27,8 +28,76 @@ namespace phoenix::renderer
 
         void log_line(const char* message)
         {
-            std::ofstream log("PhoenixEngine.log", std::ios::app);
-            log << message << "\n";
+            phoenix::core::write_log_line("Renderer", message);
+        }
+
+        // Directory containing the running executable. Used so shaders resolve
+        // whether the binary is launched from the repo root, the build folder,
+        // or an install dir — and on Linux, where the CWD is rarely the repo.
+        std::filesystem::path executable_dir()
+        {
+            std::error_code ec;
+#if defined(__linux__)
+            // On Linux the working directory is rarely the repo, so resolve the
+            // real binary location. (Windows already resolves shaders fine via the
+            // current-directory candidates, so we avoid pulling in <windows.h>.)
+            std::filesystem::path self = std::filesystem::canonical("/proc/self/exe", ec);
+            if (!ec)
+                return self.parent_path();
+#endif
+            return std::filesystem::current_path(ec);
+        }
+
+        bool is_bc_format(VkFormat format)
+        {
+            return format == VK_FORMAT_BC1_RGBA_UNORM_BLOCK
+                || format == VK_FORMAT_BC2_UNORM_BLOCK
+                || format == VK_FORMAT_BC3_UNORM_BLOCK;
+        }
+
+        std::uint32_t bc_block_bytes(VkFormat format)
+        {
+            return format == VK_FORMAT_BC1_RGBA_UNORM_BLOCK ? 8u : 16u;
+        }
+
+        std::vector<std::uint8_t> make_bc_fallback_mip(VkFormat format, std::uint32_t width, std::uint32_t height)
+        {
+            const auto blockBytes = bc_block_bytes(format);
+            const auto blocksW = std::max(1u, (width + 3u) / 4u);
+            const auto blocksH = std::max(1u, (height + 3u) / 4u);
+            std::vector<std::uint8_t> data(static_cast<std::size_t>(blocksW) * blocksH * blockBytes);
+
+            // Solid muted green in BC form; only used for missing/invalid layers.
+            constexpr std::uint16_t c0 = 0x03E0; // green RGB565
+            constexpr std::uint16_t c1 = 0x0000;
+            for (std::size_t offset = 0; offset < data.size(); offset += blockBytes)
+            {
+                if (format == VK_FORMAT_BC2_UNORM_BLOCK)
+                {
+                    std::memset(data.data() + offset, 0xFF, 8);
+                    data[offset + 8] = static_cast<std::uint8_t>(c0 & 0xFF);
+                    data[offset + 9] = static_cast<std::uint8_t>(c0 >> 8);
+                    data[offset + 10] = static_cast<std::uint8_t>(c1 & 0xFF);
+                    data[offset + 11] = static_cast<std::uint8_t>(c1 >> 8);
+                }
+                else if (format == VK_FORMAT_BC3_UNORM_BLOCK)
+                {
+                    data[offset + 0] = 255;
+                    data[offset + 1] = 255;
+                    data[offset + 8] = static_cast<std::uint8_t>(c0 & 0xFF);
+                    data[offset + 9] = static_cast<std::uint8_t>(c0 >> 8);
+                    data[offset + 10] = static_cast<std::uint8_t>(c1 & 0xFF);
+                    data[offset + 11] = static_cast<std::uint8_t>(c1 >> 8);
+                }
+                else
+                {
+                    data[offset + 0] = static_cast<std::uint8_t>(c0 & 0xFF);
+                    data[offset + 1] = static_cast<std::uint8_t>(c0 >> 8);
+                    data[offset + 2] = static_cast<std::uint8_t>(c1 & 0xFF);
+                    data[offset + 3] = static_cast<std::uint8_t>(c1 >> 8);
+                }
+            }
+            return data;
         }
     }
 
@@ -51,6 +120,21 @@ namespace phoenix::renderer
         VkPipeline staticObjectPipeline{};
         VkPipelineLayout skyPipelineLayout{};
         VkPipeline skyPipeline{};
+
+        // Procedural weapon-effect particle resources (separate from terrain).
+        VkDescriptorSetLayout particleSetLayout{};
+        VkDescriptorPool particleDescriptorPool{};
+        VkDescriptorSet particleDescriptorSet{};
+        VkPipelineLayout particlePipelineLayout{};
+        VkPipeline particlePipelineAlpha{};
+        VkPipeline particlePipelineAdditive{};
+        VkBuffer particleInstanceBuffer{};
+        VkDeviceMemory particleInstanceMemory{};
+        std::size_t particleInstanceCapacity{};   // bytes
+        std::uint32_t particleInstanceCount{};
+        std::uint32_t particleAdditiveStart{};
+        bool particlePipelineReady{};
+
         VkCommandPool commandPool{};
         std::vector<VkImage> swapchainImages;
         std::vector<VkImageView> swapchainImageViews;
@@ -108,6 +192,8 @@ namespace phoenix::renderer
         VkDeviceMemory characterIndexMemory{};
         std::uint32_t characterIndexCount{};
         std::size_t characterVertexBytes{};
+        std::size_t characterVertexCapacity{};   // allocated capacity for vertex buffer
+        std::size_t characterIndexCapacity{};    // allocated capacity for index buffer (bytes)
         bool characterReady{};
         bool characterVisible{};
 
@@ -119,12 +205,57 @@ namespace phoenix::renderer
         VkDeviceMemory terrainTextureArrayMemory{};
         VkImageView terrainTextureArrayView{};
         std::uint32_t terrainTextureLayerCount{};
+        std::uint32_t terrainTextureWidth{};
+        std::uint32_t terrainTextureHeight{};
+        std::uint32_t terrainTextureMipLevels{};
+        VkFormat terrainTextureFormat{ VK_FORMAT_UNDEFINED };
+        bool terrainTextureCompressed{};
         bool terrainTexturesReady{};
         bool samplerAnisotropySupported{};
         float maxSamplerAnisotropy{ 1.0f };
         VkBuffer terrainMapBuffer{};
         VkDeviceMemory terrainMapMemory{};
         bool terrainMapReady{};
+
+        // GPU frustum culling + indirect draw resources.
+        VkPipelineLayout cullPipelineLayout{};
+        VkPipeline cullPipeline{};
+        VkDescriptorSetLayout cullDescriptorSetLayout{};
+        VkDescriptorPool cullDescriptorPool{};
+        VkDescriptorSet cullDescriptorSet{};
+        VkBuffer indirectTemplateBuffer{};   // readonly: original draw commands
+        VkDeviceMemory indirectTemplateMemory{};
+        VkBuffer indirectBoundsBuffer{};     // readonly: bounding spheres
+        VkDeviceMemory indirectBoundsMemory{};
+        VkBuffer indirectDrawBuffer{};       // compute output: filtered commands
+        VkDeviceMemory indirectDrawMemory{};
+        std::uint32_t indirectBatchCount{};
+        bool indirectReady{};
+        bool multiDrawIndirectSupported{};
+
+        // GPU compute skinning resources.
+        VkPipelineLayout skinPipelineLayout{};
+        VkPipeline skinPipeline{};
+        VkDescriptorSetLayout skinDescriptorSetLayout{};
+        VkDescriptorPool skinDescriptorPool{};
+        VkDescriptorSet skinDescriptorSet{};
+        VkBuffer skinSourceBuffer{};            // readonly: bind-pose source vertices
+        VkDeviceMemory skinSourceMemory{};
+        VkBuffer skinMatrixBuffer{};            // readonly: per-frame bone matrices
+        VkDeviceMemory skinMatrixMemory{};
+        std::size_t skinMatrixBufferBytes{};
+        std::uint32_t skinSourceVertexCount{};
+        bool skinPipelineReady{};
+        bool skinSourceReady{};
+
+        // Per-frame skin dispatch queue.
+        struct SkinDispatch
+        {
+            std::uint32_t firstVertex;
+            std::uint32_t vertexCount;
+            std::uint32_t boneMatrixOffset;
+        };
+        std::vector<SkinDispatch> skinDispatches;
 
         VkPhysicalDeviceMemoryProperties memoryProperties{};
         VkPipelineCache pipelineCache{};
@@ -173,7 +304,10 @@ namespace phoenix::renderer
             || (log_line("Vulkan: creating descriptors"), !create_descriptor_resources())
             || (log_line("Vulkan: creating terrain pipeline"), !create_terrain_pipeline())
             || (log_line("Vulkan: creating static object pipeline"), !create_static_object_pipeline())
+            || (log_line("Vulkan: creating cull compute pipeline"), !create_cull_compute_pipeline())
+            || (log_line("Vulkan: creating skin compute pipeline"), !create_skin_compute_pipeline())
             || (log_line("Vulkan: creating sky pipeline"), !create_sky_pipeline())
+            || (log_line("Vulkan: creating particle pipeline"), !create_particle_pipeline())
             || (log_line("Vulkan: creating sync"), !create_sync()))
         {
             shutdown();
@@ -203,6 +337,17 @@ namespace phoenix::renderer
 
         if (!ImGui_ImplSDL2_InitForVulkan(window))
             return false;
+
+        // The engine builds with VK_NO_PROTOTYPES and loads Vulkan through volk,
+        // so the ImGui Vulkan backend has no global function symbols to link
+        // against. Feed it volk's loader explicitly, or its internal calls hit
+        // null pointers and segfault inside ImGui_ImplVulkan_Init (seen on Linux).
+        ImGui_ImplVulkan_LoadFunctions(
+            VK_API_VERSION_1_2,
+            [](const char* functionName, void* userData) -> PFN_vkVoidFunction {
+                return vkGetInstanceProcAddr(reinterpret_cast<VkInstance>(userData), functionName);
+            },
+            impl_->instance);
 
         ImGui_ImplVulkan_InitInfo initInfo{};
         initInfo.ApiVersion = VK_API_VERSION_1_2;
@@ -342,7 +487,9 @@ namespace phoenix::renderer
         VkPhysicalDeviceFeatures features{};
         features.shaderSampledImageArrayDynamicIndexing = supportedFeatures.shaderSampledImageArrayDynamicIndexing;
         features.samplerAnisotropy = supportedFeatures.samplerAnisotropy;
+        features.multiDrawIndirect = supportedFeatures.multiDrawIndirect;
         impl_->samplerAnisotropySupported = supportedFeatures.samplerAnisotropy == VK_TRUE;
+        impl_->multiDrawIndirectSupported = supportedFeatures.multiDrawIndirect == VK_TRUE;
 
         const char* extensions[] = { VK_KHR_SWAPCHAIN_EXTENSION_NAME };
         VkDeviceCreateInfo createInfo{ VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO };
@@ -692,9 +839,14 @@ namespace phoenix::renderer
 
     bool VulkanRenderer::load_shader_module(const char* relativePath, VkShaderModule& moduleOut)
     {
+        const auto cwd = std::filesystem::current_path();
+        const auto exeDir = executable_dir();
         const std::filesystem::path candidates[] = {
-            std::filesystem::current_path() / relativePath,
-            std::filesystem::current_path().parent_path().parent_path().parent_path() / relativePath,
+            cwd / relativePath,
+            cwd.parent_path() / relativePath,
+            cwd.parent_path().parent_path().parent_path() / relativePath,
+            exeDir / relativePath,
+            exeDir.parent_path() / relativePath,
         };
 
         std::vector<char> bytes;
@@ -844,8 +996,8 @@ namespace phoenix::renderer
     {
         VkShaderModule vertexShader{};
         VkShaderModule fragmentShader{};
-        if (!load_shader_module("shaders\\compiled\\terrain.vert.spv", vertexShader)
-            || !load_shader_module("shaders\\compiled\\terrain.frag.spv", fragmentShader))
+        if (!load_shader_module("shaders/compiled/terrain.vert.spv", vertexShader)
+            || !load_shader_module("shaders/compiled/terrain.frag.spv", fragmentShader))
         {
             log_line("Vulkan: could not load terrain shaders");
             return false;
@@ -979,12 +1131,12 @@ namespace phoenix::renderer
     {
         VkShaderModule vertexShader{};
         VkShaderModule fragmentShader{};
-        if (!load_shader_module("shaders\\compiled\\static_object.vert.spv", vertexShader))
+        if (!load_shader_module("shaders/compiled/static_object.vert.spv", vertexShader))
         {
             log_line("Vulkan: could not load static object vertex shader");
             return false;
         }
-        if (!load_shader_module("shaders\\compiled\\static_object.frag.spv", fragmentShader))
+        if (!load_shader_module("shaders/compiled/static_object.frag.spv", fragmentShader))
         {
             vkDestroyShaderModule(impl_->device, vertexShader, nullptr);
             log_line("Vulkan: could not load static object fragment shader");
@@ -1083,12 +1235,205 @@ namespace phoenix::renderer
         return ok;
     }
 
+    bool VulkanRenderer::create_cull_compute_pipeline()
+    {
+        if (!impl_->multiDrawIndirectSupported)
+        {
+            log_line("Vulkan: multiDrawIndirect not supported — GPU culling disabled");
+            return true; // not fatal, we fall back to direct draw
+        }
+
+        VkShaderModule computeShader{};
+        if (!load_shader_module("shaders/compiled/cull_objects.comp.spv", computeShader))
+        {
+            log_line("Vulkan: cull compute shader not found — GPU culling disabled");
+            return true; // not fatal
+        }
+
+        // Descriptor set layout: 3 SSBOs (template, bounds, output).
+        VkDescriptorSetLayoutBinding bindings[3]{};
+        bindings[0].binding = 0;
+        bindings[0].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+        bindings[0].descriptorCount = 1;
+        bindings[0].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+        bindings[1].binding = 1;
+        bindings[1].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+        bindings[1].descriptorCount = 1;
+        bindings[1].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+        bindings[2].binding = 2;
+        bindings[2].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+        bindings[2].descriptorCount = 1;
+        bindings[2].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+
+        VkDescriptorSetLayoutCreateInfo layoutInfo{ VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO };
+        layoutInfo.bindingCount = 3;
+        layoutInfo.pBindings = bindings;
+        if (vkCreateDescriptorSetLayout(impl_->device, &layoutInfo, nullptr, &impl_->cullDescriptorSetLayout) != VK_SUCCESS)
+        {
+            vkDestroyShaderModule(impl_->device, computeShader, nullptr);
+            return false;
+        }
+
+        // Push constant range: 9 floats (camX,camY,camZ,camYaw,camPitch,aspect,tanHalfFov,maxDistance) + 1 uint (batchCount).
+        VkPushConstantRange pushRange{};
+        pushRange.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+        pushRange.offset = 0;
+        pushRange.size = 9 * sizeof(float); // 8 floats + 1 uint (same size)
+
+        VkPipelineLayoutCreateInfo pipelineLayoutInfo{ VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO };
+        pipelineLayoutInfo.setLayoutCount = 1;
+        pipelineLayoutInfo.pSetLayouts = &impl_->cullDescriptorSetLayout;
+        pipelineLayoutInfo.pushConstantRangeCount = 1;
+        pipelineLayoutInfo.pPushConstantRanges = &pushRange;
+        if (vkCreatePipelineLayout(impl_->device, &pipelineLayoutInfo, nullptr, &impl_->cullPipelineLayout) != VK_SUCCESS)
+        {
+            vkDestroyShaderModule(impl_->device, computeShader, nullptr);
+            return false;
+        }
+
+        // Descriptor pool.
+        VkDescriptorPoolSize poolSize{};
+        poolSize.type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+        poolSize.descriptorCount = 3;
+        VkDescriptorPoolCreateInfo poolInfo{ VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO };
+        poolInfo.maxSets = 1;
+        poolInfo.poolSizeCount = 1;
+        poolInfo.pPoolSizes = &poolSize;
+        if (vkCreateDescriptorPool(impl_->device, &poolInfo, nullptr, &impl_->cullDescriptorPool) != VK_SUCCESS)
+        {
+            vkDestroyShaderModule(impl_->device, computeShader, nullptr);
+            return false;
+        }
+
+        // Allocate descriptor set.
+        VkDescriptorSetAllocateInfo allocInfo{ VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO };
+        allocInfo.descriptorPool = impl_->cullDescriptorPool;
+        allocInfo.descriptorSetCount = 1;
+        allocInfo.pSetLayouts = &impl_->cullDescriptorSetLayout;
+        if (vkAllocateDescriptorSets(impl_->device, &allocInfo, &impl_->cullDescriptorSet) != VK_SUCCESS)
+        {
+            vkDestroyShaderModule(impl_->device, computeShader, nullptr);
+            return false;
+        }
+
+        // Compute pipeline.
+        VkPipelineShaderStageCreateInfo stage{ VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO };
+        stage.stage = VK_SHADER_STAGE_COMPUTE_BIT;
+        stage.module = computeShader;
+        stage.pName = "main";
+
+        VkComputePipelineCreateInfo computeInfo{ VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO };
+        computeInfo.stage = stage;
+        computeInfo.layout = impl_->cullPipelineLayout;
+        const auto ok = vkCreateComputePipelines(impl_->device, impl_->pipelineCache, 1, &computeInfo, nullptr, &impl_->cullPipeline) == VK_SUCCESS;
+        vkDestroyShaderModule(impl_->device, computeShader, nullptr);
+
+        if (ok)
+            log_line("Vulkan: GPU frustum culling compute pipeline created");
+        return ok;
+    }
+
+    bool VulkanRenderer::create_skin_compute_pipeline()
+    {
+        VkShaderModule computeShader{};
+        if (!load_shader_module("shaders/compiled/skin_actors.comp.spv", computeShader))
+        {
+            log_line("Vulkan: skin compute shader not found — GPU skinning disabled");
+            return true; // not fatal
+        }
+
+        // Descriptor set layout: 3 SSBOs (source vertices, bone matrices, output vertices).
+        VkDescriptorSetLayoutBinding bindings[3]{};
+        bindings[0].binding = 0;
+        bindings[0].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+        bindings[0].descriptorCount = 1;
+        bindings[0].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+        bindings[1].binding = 1;
+        bindings[1].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+        bindings[1].descriptorCount = 1;
+        bindings[1].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+        bindings[2].binding = 2;
+        bindings[2].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+        bindings[2].descriptorCount = 1;
+        bindings[2].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+
+        VkDescriptorSetLayoutCreateInfo layoutInfo{ VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO };
+        layoutInfo.bindingCount = 3;
+        layoutInfo.pBindings = bindings;
+        if (vkCreateDescriptorSetLayout(impl_->device, &layoutInfo, nullptr, &impl_->skinDescriptorSetLayout) != VK_SUCCESS)
+        {
+            vkDestroyShaderModule(impl_->device, computeShader, nullptr);
+            return false;
+        }
+
+        // Push constant range: firstVertex(uint) + vertexCount(uint) + boneMatrixOffset(uint) = 12 bytes.
+        VkPushConstantRange pushRange{};
+        pushRange.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+        pushRange.offset = 0;
+        pushRange.size = 3 * sizeof(std::uint32_t);
+
+        VkPipelineLayoutCreateInfo pipelineLayoutInfo{ VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO };
+        pipelineLayoutInfo.setLayoutCount = 1;
+        pipelineLayoutInfo.pSetLayouts = &impl_->skinDescriptorSetLayout;
+        pipelineLayoutInfo.pushConstantRangeCount = 1;
+        pipelineLayoutInfo.pPushConstantRanges = &pushRange;
+        if (vkCreatePipelineLayout(impl_->device, &pipelineLayoutInfo, nullptr, &impl_->skinPipelineLayout) != VK_SUCCESS)
+        {
+            vkDestroyShaderModule(impl_->device, computeShader, nullptr);
+            return false;
+        }
+
+        // Descriptor pool.
+        VkDescriptorPoolSize poolSize{};
+        poolSize.type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+        poolSize.descriptorCount = 3;
+        VkDescriptorPoolCreateInfo poolInfo{ VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO };
+        poolInfo.maxSets = 1;
+        poolInfo.poolSizeCount = 1;
+        poolInfo.pPoolSizes = &poolSize;
+        if (vkCreateDescriptorPool(impl_->device, &poolInfo, nullptr, &impl_->skinDescriptorPool) != VK_SUCCESS)
+        {
+            vkDestroyShaderModule(impl_->device, computeShader, nullptr);
+            return false;
+        }
+
+        // Allocate descriptor set.
+        VkDescriptorSetAllocateInfo allocInfo{ VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO };
+        allocInfo.descriptorPool = impl_->skinDescriptorPool;
+        allocInfo.descriptorSetCount = 1;
+        allocInfo.pSetLayouts = &impl_->skinDescriptorSetLayout;
+        if (vkAllocateDescriptorSets(impl_->device, &allocInfo, &impl_->skinDescriptorSet) != VK_SUCCESS)
+        {
+            vkDestroyShaderModule(impl_->device, computeShader, nullptr);
+            return false;
+        }
+
+        // Compute pipeline.
+        VkPipelineShaderStageCreateInfo stage{ VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO };
+        stage.stage = VK_SHADER_STAGE_COMPUTE_BIT;
+        stage.module = computeShader;
+        stage.pName = "main";
+
+        VkComputePipelineCreateInfo computeInfo{ VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO };
+        computeInfo.stage = stage;
+        computeInfo.layout = impl_->skinPipelineLayout;
+        const auto ok = vkCreateComputePipelines(impl_->device, impl_->pipelineCache, 1, &computeInfo, nullptr, &impl_->skinPipeline) == VK_SUCCESS;
+        vkDestroyShaderModule(impl_->device, computeShader, nullptr);
+
+        if (ok)
+        {
+            impl_->skinPipelineReady = true;
+            log_line("Vulkan: GPU compute skinning pipeline created");
+        }
+        return ok;
+    }
+
     bool VulkanRenderer::create_sky_pipeline()
     {
         VkShaderModule vertexShader{};
         VkShaderModule fragmentShader{};
-        if (!load_shader_module("shaders\\compiled\\sky.vert.spv", vertexShader)
-            || !load_shader_module("shaders\\compiled\\sky.frag.spv", fragmentShader))
+        if (!load_shader_module("shaders/compiled/sky.vert.spv", vertexShader)
+            || !load_shader_module("shaders/compiled/sky.frag.spv", fragmentShader))
         {
             log_line("Vulkan: sky shaders not found, sky will be clear color only");
             return true;
@@ -1175,6 +1520,226 @@ namespace phoenix::renderer
         return ok;
     }
 
+    bool VulkanRenderer::create_particle_pipeline()
+    {
+        VkShaderModule vertexShader{};
+        VkShaderModule fragmentShader{};
+        if (!load_shader_module("shaders/compiled/particle.vert.spv", vertexShader)
+            || !load_shader_module("shaders/compiled/particle.frag.spv", fragmentShader))
+        {
+            log_line("Vulkan: particle shaders not found, weapon effects disabled");
+            return true; // non-fatal
+        }
+
+        // Dedicated descriptor layout: binding 0 = per-particle instance storage
+        // buffer (vertex). Particles are drawn with a fully procedural soft sprite
+        // (no textures). Separate from the terrain set so terrain is never touched.
+        VkDescriptorSetLayoutBinding bindings[1]{};
+        bindings[0].binding = 0;
+        bindings[0].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+        bindings[0].descriptorCount = 1;
+        bindings[0].stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
+
+        VkDescriptorSetLayoutCreateInfo layoutInfo{ VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO };
+        layoutInfo.bindingCount = 1;
+        layoutInfo.pBindings = bindings;
+        if (vkCreateDescriptorSetLayout(impl_->device, &layoutInfo, nullptr, &impl_->particleSetLayout) != VK_SUCCESS)
+        {
+            vkDestroyShaderModule(impl_->device, vertexShader, nullptr);
+            vkDestroyShaderModule(impl_->device, fragmentShader, nullptr);
+            return false;
+        }
+
+        VkDescriptorPoolSize poolSizes[1]{};
+        poolSizes[0].type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+        poolSizes[0].descriptorCount = 1;
+        VkDescriptorPoolCreateInfo poolInfo{ VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO };
+        poolInfo.maxSets = 1;
+        poolInfo.poolSizeCount = 1;
+        poolInfo.pPoolSizes = poolSizes;
+        if (vkCreateDescriptorPool(impl_->device, &poolInfo, nullptr, &impl_->particleDescriptorPool) != VK_SUCCESS)
+        {
+            vkDestroyShaderModule(impl_->device, vertexShader, nullptr);
+            vkDestroyShaderModule(impl_->device, fragmentShader, nullptr);
+            return false;
+        }
+
+        VkDescriptorSetAllocateInfo allocInfo{ VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO };
+        allocInfo.descriptorPool = impl_->particleDescriptorPool;
+        allocInfo.descriptorSetCount = 1;
+        allocInfo.pSetLayouts = &impl_->particleSetLayout;
+        if (vkAllocateDescriptorSets(impl_->device, &allocInfo, &impl_->particleDescriptorSet) != VK_SUCCESS)
+        {
+            vkDestroyShaderModule(impl_->device, vertexShader, nullptr);
+            vkDestroyShaderModule(impl_->device, fragmentShader, nullptr);
+            return false;
+        }
+
+        VkPushConstantRange pushRange{};
+        pushRange.stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
+        pushRange.offset = 0;
+        pushRange.size = sizeof(float) * 36;
+
+        VkPipelineLayoutCreateInfo pipeLayoutInfo{ VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO };
+        pipeLayoutInfo.setLayoutCount = 1;
+        pipeLayoutInfo.pSetLayouts = &impl_->particleSetLayout;
+        pipeLayoutInfo.pushConstantRangeCount = 1;
+        pipeLayoutInfo.pPushConstantRanges = &pushRange;
+        if (vkCreatePipelineLayout(impl_->device, &pipeLayoutInfo, nullptr, &impl_->particlePipelineLayout) != VK_SUCCESS)
+        {
+            vkDestroyShaderModule(impl_->device, vertexShader, nullptr);
+            vkDestroyShaderModule(impl_->device, fragmentShader, nullptr);
+            return false;
+        }
+
+        VkPipelineShaderStageCreateInfo stages[2]{};
+        stages[0].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+        stages[0].stage = VK_SHADER_STAGE_VERTEX_BIT;
+        stages[0].module = vertexShader;
+        stages[0].pName = "VSMain";
+        stages[1].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+        stages[1].stage = VK_SHADER_STAGE_FRAGMENT_BIT;
+        stages[1].module = fragmentShader;
+        stages[1].pName = "PSMain";
+
+        VkPipelineVertexInputStateCreateInfo vertexInput{ VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO };
+
+        VkPipelineInputAssemblyStateCreateInfo inputAssembly{ VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO };
+        inputAssembly.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+
+        VkViewport viewport{};
+        viewport.width = static_cast<float>(impl_->swapchainExtent.width);
+        viewport.height = static_cast<float>(impl_->swapchainExtent.height);
+        viewport.maxDepth = 1.0f;
+        VkRect2D scissor{};
+        scissor.extent = impl_->swapchainExtent;
+        VkPipelineViewportStateCreateInfo viewportState{ VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO };
+        viewportState.viewportCount = 1;
+        viewportState.scissorCount = 1;
+        VkDynamicState dynamicStates[]{ VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR };
+        VkPipelineDynamicStateCreateInfo dynamicState{ VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO };
+        dynamicState.dynamicStateCount = static_cast<std::uint32_t>(std::size(dynamicStates));
+        dynamicState.pDynamicStates = dynamicStates;
+
+        VkPipelineRasterizationStateCreateInfo raster{ VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO };
+        raster.polygonMode = VK_POLYGON_MODE_FILL;
+        raster.cullMode = VK_CULL_MODE_NONE;
+        raster.frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE;
+        raster.lineWidth = 1.0f;
+
+        VkPipelineMultisampleStateCreateInfo multisample{ VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO };
+        multisample.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
+
+        // Particles test against scene depth but never write it (transparent overlay).
+        VkPipelineDepthStencilStateCreateInfo depth{ VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO };
+        depth.depthTestEnable = VK_TRUE;
+        depth.depthWriteEnable = VK_FALSE;
+        depth.depthCompareOp = VK_COMPARE_OP_LESS;
+
+        // Alpha-blended attachment (TextureBlendMode 0 = Normal).
+        VkPipelineColorBlendAttachmentState alphaAttachment{};
+        alphaAttachment.colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT | VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
+        alphaAttachment.blendEnable = VK_TRUE;
+        alphaAttachment.srcColorBlendFactor = VK_BLEND_FACTOR_SRC_ALPHA;
+        alphaAttachment.dstColorBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
+        alphaAttachment.colorBlendOp = VK_BLEND_OP_ADD;
+        alphaAttachment.srcAlphaBlendFactor = VK_BLEND_FACTOR_ONE;
+        alphaAttachment.dstAlphaBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
+        alphaAttachment.alphaBlendOp = VK_BLEND_OP_ADD;
+        VkPipelineColorBlendStateCreateInfo alphaBlend{ VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO };
+        alphaBlend.attachmentCount = 1;
+        alphaBlend.pAttachments = &alphaAttachment;
+
+        // Additive attachment (TextureBlendMode > 0 = glow/light accumulation).
+        VkPipelineColorBlendAttachmentState additiveAttachment = alphaAttachment;
+        additiveAttachment.srcColorBlendFactor = VK_BLEND_FACTOR_SRC_ALPHA;
+        additiveAttachment.dstColorBlendFactor = VK_BLEND_FACTOR_ONE;
+        additiveAttachment.srcAlphaBlendFactor = VK_BLEND_FACTOR_ONE;
+        additiveAttachment.dstAlphaBlendFactor = VK_BLEND_FACTOR_ONE;
+        VkPipelineColorBlendStateCreateInfo additiveBlend{ VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO };
+        additiveBlend.attachmentCount = 1;
+        additiveBlend.pAttachments = &additiveAttachment;
+
+        VkGraphicsPipelineCreateInfo createInfo{ VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO };
+        createInfo.stageCount = 2;
+        createInfo.pStages = stages;
+        createInfo.pVertexInputState = &vertexInput;
+        createInfo.pInputAssemblyState = &inputAssembly;
+        createInfo.pViewportState = &viewportState;
+        createInfo.pRasterizationState = &raster;
+        createInfo.pMultisampleState = &multisample;
+        createInfo.pDepthStencilState = &depth;
+        createInfo.pColorBlendState = &alphaBlend;
+        createInfo.pDynamicState = &dynamicState;
+        createInfo.layout = impl_->particlePipelineLayout;
+        createInfo.renderPass = impl_->renderPass;
+        createInfo.subpass = 0;
+
+        bool ok = vkCreateGraphicsPipelines(impl_->device, impl_->pipelineCache, 1, &createInfo, nullptr, &impl_->particlePipelineAlpha) == VK_SUCCESS;
+        createInfo.pColorBlendState = &additiveBlend;
+        ok = ok && vkCreateGraphicsPipelines(impl_->device, impl_->pipelineCache, 1, &createInfo, nullptr, &impl_->particlePipelineAdditive) == VK_SUCCESS;
+
+        vkDestroyShaderModule(impl_->device, vertexShader, nullptr);
+        vkDestroyShaderModule(impl_->device, fragmentShader, nullptr);
+        impl_->particlePipelineReady = ok;
+        return ok;
+    }
+
+
+    void VulkanRenderer::set_particle_instances(const std::vector<ParticleInstance>& instances, std::uint32_t additiveStart)
+    {
+        if (!ready_ || !impl_->particlePipelineReady)
+            return;
+
+        impl_->particleInstanceCount = static_cast<std::uint32_t>(instances.size());
+        impl_->particleAdditiveStart = std::min(additiveStart, impl_->particleInstanceCount);
+        if (instances.empty())
+            return;
+
+        const std::size_t byteSize = instances.size() * sizeof(ParticleInstance);
+
+        // Grow (or first-allocate) the host-visible storage buffer when needed.
+        if (byteSize > impl_->particleInstanceCapacity || !impl_->particleInstanceBuffer)
+        {
+            vkDeviceWaitIdle(impl_->device);
+            if (impl_->particleInstanceBuffer)
+                vkDestroyBuffer(impl_->device, impl_->particleInstanceBuffer, nullptr);
+            if (impl_->particleInstanceMemory)
+                vkFreeMemory(impl_->device, impl_->particleInstanceMemory, nullptr);
+            impl_->particleInstanceBuffer = {};
+            impl_->particleInstanceMemory = {};
+            impl_->particleInstanceCapacity = 0;
+
+            const std::size_t newCapacity = byteSize + byteSize / 2 + 4096;
+            if (!create_host_buffer(nullptr, newCapacity, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
+                impl_->particleInstanceBuffer, impl_->particleInstanceMemory))
+            {
+                impl_->particleInstanceCount = 0;
+                return;
+            }
+            impl_->particleInstanceCapacity = newCapacity;
+
+            VkDescriptorBufferInfo bufInfo{};
+            bufInfo.buffer = impl_->particleInstanceBuffer;
+            bufInfo.offset = 0;
+            bufInfo.range = VK_WHOLE_SIZE;
+            VkWriteDescriptorSet write{ VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET };
+            write.dstSet = impl_->particleDescriptorSet;
+            write.dstBinding = 0;
+            write.descriptorCount = 1;
+            write.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+            write.pBufferInfo = &bufInfo;
+            vkUpdateDescriptorSets(impl_->device, 1, &write, 0, nullptr);
+        }
+
+        void* mapped{};
+        if (vkMapMemory(impl_->device, impl_->particleInstanceMemory, 0, byteSize, 0, &mapped) == VK_SUCCESS)
+        {
+            std::memcpy(mapped, instances.data(), byteSize);
+            vkUnmapMemory(impl_->device, impl_->particleInstanceMemory);
+        }
+    }
+
     bool VulkanRenderer::upload_terrain_textures(const std::vector<DdsTexture>& textures)
     {
         if (!ready_)
@@ -1191,6 +1756,11 @@ namespace phoenix::renderer
         impl_->terrainTextureArray = {};
         impl_->terrainTextureArrayMemory = {};
         impl_->terrainTextureLayerCount = 0;
+        impl_->terrainTextureWidth = 0;
+        impl_->terrainTextureHeight = 0;
+        impl_->terrainTextureMipLevels = 0;
+        impl_->terrainTextureFormat = VK_FORMAT_UNDEFINED;
+        impl_->terrainTextureCompressed = false;
         impl_->terrainTexturesReady = false;
 
         if (textures.empty())
@@ -1211,11 +1781,235 @@ namespace phoenix::renderer
             return false;
 
         const auto layerCount = static_cast<std::uint32_t>(textures.size());
-        const auto layerSize = static_cast<std::size_t>(texWidth) * texHeight * 4;
         const auto maxDim = std::max(texWidth, texHeight);
-        // Cap mip chain: stop at 4x4 to avoid cross-layer bleeding at tiny mip levels.
         const auto fullMips = static_cast<std::uint32_t>(std::floor(std::log2(static_cast<float>(maxDim)))) + 1u;
         const auto mipLevels = std::min(fullMips, static_cast<std::uint32_t>(std::max(1.0, std::log2(static_cast<double>(maxDim)) - 1.0)));
+
+        // ── Try BC-native upload (all textures uniform compressed format) ──
+        VkFormat nativeFormat = VK_FORMAT_UNDEFINED;
+        std::uint32_t nativeMips = UINT32_MAX;
+        bool canUploadBc = true;
+        for (const auto& tex : textures)
+        {
+            if (!tex.valid) continue;
+            if (!tex.compressed || !is_bc_format(static_cast<VkFormat>(tex.vkFormat))
+                || tex.mipData.empty()
+                || tex.width != texWidth || tex.height != texHeight)
+            {
+                canUploadBc = false;
+                break;
+            }
+            const auto fmt = static_cast<VkFormat>(tex.vkFormat);
+            if (nativeFormat == VK_FORMAT_UNDEFINED)
+                nativeFormat = fmt;
+            else if (fmt != nativeFormat)
+            {
+                canUploadBc = false;
+                break;
+            }
+            nativeMips = std::min(nativeMips, static_cast<std::uint32_t>(tex.mipData.size()));
+        }
+
+        if (canUploadBc && nativeFormat != VK_FORMAT_UNDEFINED && nativeMips != UINT32_MAX)
+        {
+            VkFormatProperties fmtProps{};
+            vkGetPhysicalDeviceFormatProperties(impl_->physicalDevice, nativeFormat, &fmtProps);
+            if (!(fmtProps.optimalTilingFeatures & VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT)
+                || !(fmtProps.optimalTilingFeatures & VK_FORMAT_FEATURE_TRANSFER_DST_BIT))
+                canUploadBc = false;
+        }
+
+        if (canUploadBc && nativeFormat != VK_FORMAT_UNDEFINED && nativeMips > 0)
+        {
+            nativeMips = std::min(nativeMips, mipLevels);
+            std::vector<std::uint32_t> mipWidths(nativeMips);
+            std::vector<std::uint32_t> mipHeights(nativeMips);
+            for (std::uint32_t mip = 0; mip < nativeMips; ++mip)
+            {
+                mipWidths[mip] = std::max(1u, texWidth >> mip);
+                mipHeights[mip] = std::max(1u, texHeight >> mip);
+            }
+
+            // Build staging buffer with all layers × mip levels.
+            std::vector<std::uint8_t> stagingPixels;
+            std::vector<VkBufferImageCopy> copyRegions;
+            copyRegions.reserve(static_cast<std::size_t>(layerCount) * nativeMips);
+            for (std::uint32_t layer = 0; layer < layerCount; ++layer)
+            {
+                for (std::uint32_t mip = 0; mip < nativeMips; ++mip)
+                {
+                    const std::vector<std::uint8_t>* src{};
+                    std::vector<std::uint8_t> fallback;
+                    if (textures[layer].valid && mip < textures[layer].mipData.size())
+                        src = &textures[layer].mipData[mip];
+                    else
+                    {
+                        fallback = make_bc_fallback_mip(nativeFormat, mipWidths[mip], mipHeights[mip]);
+                        src = &fallback;
+                    }
+                    const auto offset = stagingPixels.size();
+                    stagingPixels.insert(stagingPixels.end(), src->begin(), src->end());
+
+                    VkBufferImageCopy region{};
+                    region.bufferOffset = static_cast<VkDeviceSize>(offset);
+                    region.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+                    region.imageSubresource.mipLevel = mip;
+                    region.imageSubresource.baseArrayLayer = layer;
+                    region.imageSubresource.layerCount = 1;
+                    region.imageExtent = { mipWidths[mip], mipHeights[mip], 1 };
+                    copyRegions.push_back(region);
+                }
+            }
+
+            VkBuffer stagingBuffer{};
+            VkDeviceMemory stagingMemory{};
+            VkBufferCreateInfo bufferInfo{ VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO };
+            bufferInfo.size = static_cast<VkDeviceSize>(stagingPixels.size());
+            bufferInfo.usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
+            if (vkCreateBuffer(impl_->device, &bufferInfo, nullptr, &stagingBuffer) != VK_SUCCESS)
+                return false;
+
+            VkMemoryRequirements bufReqs{};
+            vkGetBufferMemoryRequirements(impl_->device, stagingBuffer, &bufReqs);
+            auto memType = find_memory_type(bufReqs.memoryTypeBits,
+                VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+            if (memType == UINT32_MAX)
+            {
+                vkDestroyBuffer(impl_->device, stagingBuffer, nullptr);
+                return false;
+            }
+
+            VkMemoryAllocateInfo bufAlloc{ VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO };
+            bufAlloc.allocationSize = bufReqs.size;
+            bufAlloc.memoryTypeIndex = memType;
+            if (vkAllocateMemory(impl_->device, &bufAlloc, nullptr, &stagingMemory) != VK_SUCCESS)
+            {
+                vkDestroyBuffer(impl_->device, stagingBuffer, nullptr);
+                return false;
+            }
+            vkBindBufferMemory(impl_->device, stagingBuffer, stagingMemory, 0);
+
+            void* mapped{};
+            vkMapMemory(impl_->device, stagingMemory, 0, static_cast<VkDeviceSize>(stagingPixels.size()), 0, &mapped);
+            std::memcpy(mapped, stagingPixels.data(), stagingPixels.size());
+            vkUnmapMemory(impl_->device, stagingMemory);
+
+            VkImageCreateInfo imageInfo{ VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO };
+            imageInfo.imageType = VK_IMAGE_TYPE_2D;
+            imageInfo.format = nativeFormat;
+            imageInfo.extent = { texWidth, texHeight, 1 };
+            imageInfo.mipLevels = nativeMips;
+            imageInfo.arrayLayers = layerCount;
+            imageInfo.samples = VK_SAMPLE_COUNT_1_BIT;
+            imageInfo.tiling = VK_IMAGE_TILING_OPTIMAL;
+            imageInfo.usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
+            imageInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+            if (vkCreateImage(impl_->device, &imageInfo, nullptr, &impl_->terrainTextureArray) != VK_SUCCESS)
+            {
+                vkDestroyBuffer(impl_->device, stagingBuffer, nullptr);
+                vkFreeMemory(impl_->device, stagingMemory, nullptr);
+                return false;
+            }
+
+            VkMemoryRequirements imgReqs{};
+            vkGetImageMemoryRequirements(impl_->device, impl_->terrainTextureArray, &imgReqs);
+            memType = find_memory_type(imgReqs.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+            if (memType == UINT32_MAX)
+            {
+                vkDestroyImage(impl_->device, impl_->terrainTextureArray, nullptr);
+                impl_->terrainTextureArray = {};
+                vkDestroyBuffer(impl_->device, stagingBuffer, nullptr);
+                vkFreeMemory(impl_->device, stagingMemory, nullptr);
+                return false;
+            }
+
+            VkMemoryAllocateInfo imgAlloc{ VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO };
+            imgAlloc.allocationSize = imgReqs.size;
+            imgAlloc.memoryTypeIndex = memType;
+            if (vkAllocateMemory(impl_->device, &imgAlloc, nullptr, &impl_->terrainTextureArrayMemory) != VK_SUCCESS)
+            {
+                vkDestroyImage(impl_->device, impl_->terrainTextureArray, nullptr);
+                impl_->terrainTextureArray = {};
+                vkDestroyBuffer(impl_->device, stagingBuffer, nullptr);
+                vkFreeMemory(impl_->device, stagingMemory, nullptr);
+                return false;
+            }
+            vkBindImageMemory(impl_->device, impl_->terrainTextureArray, impl_->terrainTextureArrayMemory, 0);
+
+            auto cmd = begin_single_command();
+            VkImageMemoryBarrier toTransfer{ VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER };
+            toTransfer.srcAccessMask = 0;
+            toTransfer.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+            toTransfer.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+            toTransfer.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+            toTransfer.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+            toTransfer.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+            toTransfer.image = impl_->terrainTextureArray;
+            toTransfer.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+            toTransfer.subresourceRange.levelCount = nativeMips;
+            toTransfer.subresourceRange.layerCount = layerCount;
+            vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
+                0, 0, nullptr, 0, nullptr, 1, &toTransfer);
+
+            vkCmdCopyBufferToImage(cmd, stagingBuffer, impl_->terrainTextureArray,
+                VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                static_cast<std::uint32_t>(copyRegions.size()),
+                copyRegions.data());
+
+            VkImageMemoryBarrier toShader{ VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER };
+            toShader.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+            toShader.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+            toShader.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+            toShader.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+            toShader.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+            toShader.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+            toShader.image = impl_->terrainTextureArray;
+            toShader.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+            toShader.subresourceRange.levelCount = nativeMips;
+            toShader.subresourceRange.layerCount = layerCount;
+            vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+                0, 0, nullptr, 0, nullptr, 1, &toShader);
+            end_single_command(cmd);
+
+            vkDestroyBuffer(impl_->device, stagingBuffer, nullptr);
+            vkFreeMemory(impl_->device, stagingMemory, nullptr);
+
+            VkImageViewCreateInfo viewInfo{ VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO };
+            viewInfo.image = impl_->terrainTextureArray;
+            viewInfo.viewType = VK_IMAGE_VIEW_TYPE_2D_ARRAY;
+            viewInfo.format = nativeFormat;
+            viewInfo.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+            viewInfo.subresourceRange.levelCount = nativeMips;
+            viewInfo.subresourceRange.layerCount = layerCount;
+            if (vkCreateImageView(impl_->device, &viewInfo, nullptr, &impl_->terrainTextureArrayView) != VK_SUCCESS)
+                return false;
+
+            VkDescriptorImageInfo imageDescInfo{};
+            imageDescInfo.sampler = impl_->terrainSampler;
+            imageDescInfo.imageView = impl_->terrainTextureArrayView;
+            imageDescInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+
+            VkWriteDescriptorSet write{ VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET };
+            write.dstSet = impl_->descriptorSet;
+            write.dstBinding = 0;
+            write.descriptorCount = 1;
+            write.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+            write.pImageInfo = &imageDescInfo;
+            vkUpdateDescriptorSets(impl_->device, 1, &write, 0, nullptr);
+
+            impl_->terrainTextureLayerCount = layerCount;
+            impl_->terrainTextureWidth = texWidth;
+            impl_->terrainTextureHeight = texHeight;
+            impl_->terrainTextureMipLevels = nativeMips;
+            impl_->terrainTextureFormat = nativeFormat;
+            impl_->terrainTextureCompressed = true;
+            impl_->terrainTexturesReady = true;
+            log_line("Vulkan: BC terrain textures uploaded (initial)");
+            return true;
+        }
+
+        // ── RGBA fallback path (when BC-native is not possible) ──
+        const auto layerSize = static_cast<std::size_t>(texWidth) * texHeight * 4;
         std::vector<std::uint32_t> mipWidths(mipLevels);
         std::vector<std::uint32_t> mipHeights(mipLevels);
         for (std::uint32_t mip = 0; mip < mipLevels; ++mip)
@@ -1229,13 +2023,17 @@ namespace phoenix::renderer
         for (std::uint32_t i = 0; i < layerCount; ++i)
         {
             auto* dst = basePixels.data() + static_cast<std::size_t>(i) * layerSize;
+            const auto sourceRgba = i < textures.size() && textures[i].valid
+                ? decode_texture_rgba(textures[i])
+                : std::vector<std::uint8_t>{};
             if (i < textures.size() && textures[i].valid
+                && !sourceRgba.empty()
                 && textures[i].width == texWidth && textures[i].height == texHeight)
             {
-                std::memcpy(dst, textures[i].rgba.data(),
-                    std::min(layerSize, textures[i].rgba.size()));
+                std::memcpy(dst, sourceRgba.data(),
+                    std::min(layerSize, sourceRgba.size()));
             }
-            else if (i < textures.size() && textures[i].valid)
+            else if (i < textures.size() && textures[i].valid && !sourceRgba.empty())
             {
                 for (std::uint32_t y = 0; y < texHeight; ++y)
                 {
@@ -1394,7 +2192,6 @@ namespace phoenix::renderer
 
         for (std::uint32_t mip = 1; mip < mipLevels; ++mip)
         {
-            // Transition previous mip level to TRANSFER_SRC for all layers.
             VkImageMemoryBarrier mipBarrier{ VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER };
             mipBarrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
             mipBarrier.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
@@ -1410,7 +2207,6 @@ namespace phoenix::renderer
             vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
                 0, 0, nullptr, 0, nullptr, 1, &mipBarrier);
 
-            // Blit each layer individually to prevent cross-layer bleeding.
             for (std::uint32_t layer = 0; layer < layerCount; ++layer)
             {
             VkImageBlit blit{};
@@ -1434,7 +2230,7 @@ namespace phoenix::renderer
                 impl_->terrainTextureArray, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
                 impl_->terrainTextureArray, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
                 1, &blit, VK_FILTER_LINEAR);
-            } // end per-layer blit
+            }
         }
 
         {
@@ -1505,8 +2301,597 @@ namespace phoenix::renderer
         vkUpdateDescriptorSets(impl_->device, 1, &write, 0, nullptr);
 
         impl_->terrainTextureLayerCount = layerCount;
+        impl_->terrainTextureWidth = texWidth;
+        impl_->terrainTextureHeight = texHeight;
+        impl_->terrainTextureMipLevels = mipLevels;
+        impl_->terrainTextureFormat = VK_FORMAT_R8G8B8A8_UNORM;
+        impl_->terrainTextureCompressed = false;
         impl_->terrainTexturesReady = true;
-        log_line("Vulkan: terrain textures uploaded");
+        log_line("Vulkan: terrain textures uploaded (RGBA fallback)");
+        return true;
+    }
+
+    bool VulkanRenderer::upload_terrain_texture_layers(std::uint32_t firstLayer, const std::vector<DdsTexture>& textures)
+    {
+        if (!ready_ || !impl_->terrainTexturesReady || !impl_->terrainTextureArray || textures.empty())
+            return false;
+        if (firstLayer >= impl_->terrainTextureLayerCount
+            || textures.size() > impl_->terrainTextureLayerCount - firstLayer)
+            return false;
+
+        const auto texWidth = impl_->terrainTextureWidth;
+        const auto texHeight = impl_->terrainTextureHeight;
+        const auto mipLevels = impl_->terrainTextureMipLevels;
+        if (texWidth == 0 || texHeight == 0 || mipLevels == 0)
+            return false;
+
+        vkDeviceWaitIdle(impl_->device);
+
+        if (impl_->terrainTextureCompressed)
+        {
+            const auto textureFormat = impl_->terrainTextureFormat;
+            for (const auto& texture : textures)
+            {
+                if (!texture.valid || !texture.compressed
+                    || static_cast<VkFormat>(texture.vkFormat) != textureFormat
+                    || texture.width != texWidth || texture.height != texHeight
+                    || texture.mipData.size() < mipLevels)
+                    return false;
+            }
+
+            std::vector<std::uint32_t> mipWidths(mipLevels);
+            std::vector<std::uint32_t> mipHeights(mipLevels);
+            for (std::uint32_t mip = 0; mip < mipLevels; ++mip)
+            {
+                mipWidths[mip] = std::max(1u, texWidth >> mip);
+                mipHeights[mip] = std::max(1u, texHeight >> mip);
+            }
+
+            const auto layerCount = static_cast<std::uint32_t>(textures.size());
+            std::vector<std::uint8_t> stagingPixels;
+            std::vector<VkBufferImageCopy> copyRegions;
+            copyRegions.reserve(static_cast<std::size_t>(layerCount) * mipLevels);
+            for (std::uint32_t layer = 0; layer < layerCount; ++layer)
+            {
+                for (std::uint32_t mip = 0; mip < mipLevels; ++mip)
+                {
+                    const auto offset = stagingPixels.size();
+                    const auto& mipData = textures[layer].mipData[mip];
+                    stagingPixels.insert(stagingPixels.end(), mipData.begin(), mipData.end());
+
+                    VkBufferImageCopy region{};
+                    region.bufferOffset = static_cast<VkDeviceSize>(offset);
+                    region.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+                    region.imageSubresource.mipLevel = mip;
+                    region.imageSubresource.baseArrayLayer = firstLayer + layer;
+                    region.imageSubresource.layerCount = 1;
+                    region.imageExtent = { mipWidths[mip], mipHeights[mip], 1 };
+                    copyRegions.push_back(region);
+                }
+            }
+
+            VkBuffer stagingBuffer{};
+            VkDeviceMemory stagingMemory{};
+            VkBufferCreateInfo bufferInfo{ VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO };
+            bufferInfo.size = static_cast<VkDeviceSize>(stagingPixels.size());
+            bufferInfo.usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
+            if (vkCreateBuffer(impl_->device, &bufferInfo, nullptr, &stagingBuffer) != VK_SUCCESS)
+                return false;
+
+            VkMemoryRequirements bufReqs{};
+            vkGetBufferMemoryRequirements(impl_->device, stagingBuffer, &bufReqs);
+            auto memType = find_memory_type(bufReqs.memoryTypeBits,
+                VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+            if (memType == UINT32_MAX)
+            {
+                vkDestroyBuffer(impl_->device, stagingBuffer, nullptr);
+                return false;
+            }
+
+            VkMemoryAllocateInfo bufAlloc{ VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO };
+            bufAlloc.allocationSize = bufReqs.size;
+            bufAlloc.memoryTypeIndex = memType;
+            if (vkAllocateMemory(impl_->device, &bufAlloc, nullptr, &stagingMemory) != VK_SUCCESS)
+            {
+                vkDestroyBuffer(impl_->device, stagingBuffer, nullptr);
+                return false;
+            }
+            vkBindBufferMemory(impl_->device, stagingBuffer, stagingMemory, 0);
+
+            void* mapped{};
+            vkMapMemory(impl_->device, stagingMemory, 0, static_cast<VkDeviceSize>(stagingPixels.size()), 0, &mapped);
+            std::memcpy(mapped, stagingPixels.data(), stagingPixels.size());
+            vkUnmapMemory(impl_->device, stagingMemory);
+
+            auto cmd = begin_single_command();
+            VkImageMemoryBarrier toTransfer{ VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER };
+            toTransfer.srcAccessMask = VK_ACCESS_SHADER_READ_BIT;
+            toTransfer.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+            toTransfer.oldLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+            toTransfer.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+            toTransfer.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+            toTransfer.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+            toTransfer.image = impl_->terrainTextureArray;
+            toTransfer.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+            toTransfer.subresourceRange.baseMipLevel = 0;
+            toTransfer.subresourceRange.levelCount = mipLevels;
+            toTransfer.subresourceRange.baseArrayLayer = firstLayer;
+            toTransfer.subresourceRange.layerCount = layerCount;
+            vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
+                0, 0, nullptr, 0, nullptr, 1, &toTransfer);
+
+            vkCmdCopyBufferToImage(cmd, stagingBuffer, impl_->terrainTextureArray,
+                VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                static_cast<std::uint32_t>(copyRegions.size()),
+                copyRegions.data());
+
+            VkImageMemoryBarrier toShader{ VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER };
+            toShader.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+            toShader.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+            toShader.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+            toShader.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+            toShader.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+            toShader.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+            toShader.image = impl_->terrainTextureArray;
+            toShader.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+            toShader.subresourceRange.baseMipLevel = 0;
+            toShader.subresourceRange.levelCount = mipLevels;
+            toShader.subresourceRange.baseArrayLayer = firstLayer;
+            toShader.subresourceRange.layerCount = layerCount;
+            vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+                0, 0, nullptr, 0, nullptr, 1, &toShader);
+            end_single_command(cmd);
+
+            vkDestroyBuffer(impl_->device, stagingBuffer, nullptr);
+            vkFreeMemory(impl_->device, stagingMemory, nullptr);
+            log_line("Vulkan: BC terrain texture layers updated");
+            return true;
+        }
+
+        const auto layerCount = static_cast<std::uint32_t>(textures.size());
+        VkFormat nativeFormat = VK_FORMAT_UNDEFINED;
+        std::uint32_t nativeMipLevels = UINT32_MAX;
+        bool canUploadCompressed = true;
+        for (const auto& tex : textures)
+        {
+            if (!tex.valid)
+                continue;
+            const auto format = static_cast<VkFormat>(tex.vkFormat);
+            if (!tex.compressed || !is_bc_format(format)
+                || tex.width != texWidth || tex.height != texHeight
+                || tex.mipData.empty())
+            {
+                canUploadCompressed = false;
+                break;
+            }
+            if (nativeFormat == VK_FORMAT_UNDEFINED)
+                nativeFormat = format;
+            else if (nativeFormat != format)
+            {
+                canUploadCompressed = false;
+                break;
+            }
+            nativeMipLevels = std::min(nativeMipLevels, static_cast<std::uint32_t>(tex.mipData.size()));
+        }
+
+        if (canUploadCompressed && nativeFormat != VK_FORMAT_UNDEFINED && nativeMipLevels != UINT32_MAX)
+        {
+            VkFormatProperties formatProperties{};
+            vkGetPhysicalDeviceFormatProperties(impl_->physicalDevice, nativeFormat, &formatProperties);
+            canUploadCompressed =
+                (formatProperties.optimalTilingFeatures & VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT) != 0
+                && (formatProperties.optimalTilingFeatures & VK_FORMAT_FEATURE_TRANSFER_DST_BIT) != 0;
+        }
+
+        if (canUploadCompressed && nativeFormat != VK_FORMAT_UNDEFINED && nativeMipLevels > 0)
+        {
+            nativeMipLevels = std::max(1u, nativeMipLevels);
+            std::vector<std::uint32_t> mipWidths(nativeMipLevels);
+            std::vector<std::uint32_t> mipHeights(nativeMipLevels);
+            for (std::uint32_t mip = 0; mip < nativeMipLevels; ++mip)
+            {
+                mipWidths[mip] = std::max(1u, texWidth >> mip);
+                mipHeights[mip] = std::max(1u, texHeight >> mip);
+            }
+
+            std::vector<std::uint8_t> stagingPixels;
+            std::vector<VkBufferImageCopy> copyRegions;
+            copyRegions.reserve(static_cast<std::size_t>(layerCount) * nativeMipLevels);
+            for (std::uint32_t layer = 0; layer < layerCount; ++layer)
+            {
+                for (std::uint32_t mip = 0; mip < nativeMipLevels; ++mip)
+                {
+                    const std::vector<std::uint8_t>* src{};
+                    std::vector<std::uint8_t> fallback;
+                    if (layer < textures.size() && textures[layer].valid)
+                        src = &textures[layer].mipData[mip];
+                    else
+                    {
+                        fallback = make_bc_fallback_mip(nativeFormat, mipWidths[mip], mipHeights[mip]);
+                        src = &fallback;
+                    }
+
+                    const auto offset = stagingPixels.size();
+                    stagingPixels.insert(stagingPixels.end(), src->begin(), src->end());
+
+                    VkBufferImageCopy region{};
+                    region.bufferOffset = static_cast<VkDeviceSize>(offset);
+                    region.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+                    region.imageSubresource.mipLevel = mip;
+                    region.imageSubresource.baseArrayLayer = layer;
+                    region.imageSubresource.layerCount = 1;
+                    region.imageExtent = { mipWidths[mip], mipHeights[mip], 1 };
+                    copyRegions.push_back(region);
+                }
+            }
+
+            VkBuffer stagingBuffer{};
+            VkDeviceMemory stagingMemory{};
+            VkBufferCreateInfo bufferInfo{ VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO };
+            bufferInfo.size = static_cast<VkDeviceSize>(stagingPixels.size());
+            bufferInfo.usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
+            if (vkCreateBuffer(impl_->device, &bufferInfo, nullptr, &stagingBuffer) != VK_SUCCESS)
+                return false;
+
+            VkMemoryRequirements bufReqs{};
+            vkGetBufferMemoryRequirements(impl_->device, stagingBuffer, &bufReqs);
+            auto memType = find_memory_type(bufReqs.memoryTypeBits,
+                VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+            if (memType == UINT32_MAX)
+            {
+                vkDestroyBuffer(impl_->device, stagingBuffer, nullptr);
+                return false;
+            }
+
+            VkMemoryAllocateInfo bufAlloc{ VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO };
+            bufAlloc.allocationSize = bufReqs.size;
+            bufAlloc.memoryTypeIndex = memType;
+            if (vkAllocateMemory(impl_->device, &bufAlloc, nullptr, &stagingMemory) != VK_SUCCESS)
+            {
+                vkDestroyBuffer(impl_->device, stagingBuffer, nullptr);
+                return false;
+            }
+            vkBindBufferMemory(impl_->device, stagingBuffer, stagingMemory, 0);
+
+            void* mapped{};
+            vkMapMemory(impl_->device, stagingMemory, 0, static_cast<VkDeviceSize>(stagingPixels.size()), 0, &mapped);
+            std::memcpy(mapped, stagingPixels.data(), stagingPixels.size());
+            vkUnmapMemory(impl_->device, stagingMemory);
+
+            VkImageCreateInfo imageInfo{ VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO };
+            imageInfo.imageType = VK_IMAGE_TYPE_2D;
+            imageInfo.format = nativeFormat;
+            imageInfo.extent = { texWidth, texHeight, 1 };
+            imageInfo.mipLevels = nativeMipLevels;
+            imageInfo.arrayLayers = layerCount;
+            imageInfo.samples = VK_SAMPLE_COUNT_1_BIT;
+            imageInfo.tiling = VK_IMAGE_TILING_OPTIMAL;
+            imageInfo.usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
+            imageInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+            if (vkCreateImage(impl_->device, &imageInfo, nullptr, &impl_->terrainTextureArray) != VK_SUCCESS)
+            {
+                vkDestroyBuffer(impl_->device, stagingBuffer, nullptr);
+                vkFreeMemory(impl_->device, stagingMemory, nullptr);
+                return false;
+            }
+
+            VkMemoryRequirements imgReqs{};
+            vkGetImageMemoryRequirements(impl_->device, impl_->terrainTextureArray, &imgReqs);
+            memType = find_memory_type(imgReqs.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+            if (memType == UINT32_MAX)
+            {
+                vkDestroyImage(impl_->device, impl_->terrainTextureArray, nullptr);
+                impl_->terrainTextureArray = {};
+                vkDestroyBuffer(impl_->device, stagingBuffer, nullptr);
+                vkFreeMemory(impl_->device, stagingMemory, nullptr);
+                return false;
+            }
+
+            VkMemoryAllocateInfo imgAlloc{ VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO };
+            imgAlloc.allocationSize = imgReqs.size;
+            imgAlloc.memoryTypeIndex = memType;
+            if (vkAllocateMemory(impl_->device, &imgAlloc, nullptr, &impl_->terrainTextureArrayMemory) != VK_SUCCESS)
+            {
+                vkDestroyImage(impl_->device, impl_->terrainTextureArray, nullptr);
+                impl_->terrainTextureArray = {};
+                vkDestroyBuffer(impl_->device, stagingBuffer, nullptr);
+                vkFreeMemory(impl_->device, stagingMemory, nullptr);
+                return false;
+            }
+            vkBindImageMemory(impl_->device, impl_->terrainTextureArray, impl_->terrainTextureArrayMemory, 0);
+
+            auto cmd = begin_single_command();
+            VkImageMemoryBarrier toTransfer{ VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER };
+            toTransfer.srcAccessMask = 0;
+            toTransfer.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+            toTransfer.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+            toTransfer.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+            toTransfer.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+            toTransfer.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+            toTransfer.image = impl_->terrainTextureArray;
+            toTransfer.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+            toTransfer.subresourceRange.levelCount = nativeMipLevels;
+            toTransfer.subresourceRange.layerCount = layerCount;
+            vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
+                0, 0, nullptr, 0, nullptr, 1, &toTransfer);
+
+            vkCmdCopyBufferToImage(cmd, stagingBuffer, impl_->terrainTextureArray,
+                VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                static_cast<std::uint32_t>(copyRegions.size()),
+                copyRegions.data());
+
+            VkImageMemoryBarrier toShader{ VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER };
+            toShader.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+            toShader.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+            toShader.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+            toShader.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+            toShader.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+            toShader.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+            toShader.image = impl_->terrainTextureArray;
+            toShader.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+            toShader.subresourceRange.levelCount = nativeMipLevels;
+            toShader.subresourceRange.layerCount = layerCount;
+            vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+                0, 0, nullptr, 0, nullptr, 1, &toShader);
+            end_single_command(cmd);
+
+            vkDestroyBuffer(impl_->device, stagingBuffer, nullptr);
+            vkFreeMemory(impl_->device, stagingMemory, nullptr);
+
+            VkImageViewCreateInfo viewInfo{ VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO };
+            viewInfo.image = impl_->terrainTextureArray;
+            viewInfo.viewType = VK_IMAGE_VIEW_TYPE_2D_ARRAY;
+            viewInfo.format = nativeFormat;
+            viewInfo.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+            viewInfo.subresourceRange.levelCount = nativeMipLevels;
+            viewInfo.subresourceRange.layerCount = layerCount;
+            if (vkCreateImageView(impl_->device, &viewInfo, nullptr, &impl_->terrainTextureArrayView) != VK_SUCCESS)
+                return false;
+
+            VkDescriptorImageInfo imageDescInfo{};
+            imageDescInfo.sampler = impl_->terrainSampler;
+            imageDescInfo.imageView = impl_->terrainTextureArrayView;
+            imageDescInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+
+            VkWriteDescriptorSet write{ VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET };
+            write.dstSet = impl_->descriptorSet;
+            write.dstBinding = 0;
+            write.descriptorCount = 1;
+            write.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+            write.pImageInfo = &imageDescInfo;
+            vkUpdateDescriptorSets(impl_->device, 1, &write, 0, nullptr);
+
+            impl_->terrainTextureLayerCount = layerCount;
+            impl_->terrainTextureWidth = texWidth;
+            impl_->terrainTextureHeight = texHeight;
+            impl_->terrainTextureMipLevels = nativeMipLevels;
+            impl_->terrainTextureFormat = nativeFormat;
+            impl_->terrainTextureCompressed = true;
+            impl_->terrainTexturesReady = true;
+            log_line("Vulkan: BC terrain textures uploaded");
+            return true;
+        }
+
+        const auto layerSize = static_cast<std::size_t>(texWidth) * texHeight * 4;
+        std::vector<std::uint32_t> mipWidths(mipLevels);
+        std::vector<std::uint32_t> mipHeights(mipLevels);
+        for (std::uint32_t mip = 0; mip < mipLevels; ++mip)
+        {
+            mipWidths[mip] = std::max(1u, texWidth >> mip);
+            mipHeights[mip] = std::max(1u, texHeight >> mip);
+        }
+
+        std::vector<std::uint8_t> basePixels(layerSize * layerCount);
+        for (std::uint32_t i = 0; i < layerCount; ++i)
+        {
+            auto* dst = basePixels.data() + static_cast<std::size_t>(i) * layerSize;
+            const auto sourceRgba = textures[i].valid
+                ? decode_texture_rgba(textures[i])
+                : std::vector<std::uint8_t>{};
+            if (textures[i].valid && !sourceRgba.empty() && textures[i].width == texWidth && textures[i].height == texHeight)
+            {
+                std::memcpy(dst, sourceRgba.data(), std::min(layerSize, sourceRgba.size()));
+            }
+            else if (textures[i].valid && !sourceRgba.empty() && textures[i].width > 0 && textures[i].height > 0)
+            {
+                for (std::uint32_t y = 0; y < texHeight; ++y)
+                {
+                    const auto sourceY = texHeight > 1
+                        ? (static_cast<float>(y) + 0.5f) * static_cast<float>(textures[i].height) / static_cast<float>(texHeight) - 0.5f
+                        : 0.0f;
+                    const auto y0 = static_cast<std::uint32_t>(std::clamp(std::floor(sourceY), 0.0f, static_cast<float>(textures[i].height - 1)));
+                    const auto y1 = std::min(textures[i].height - 1, y0 + 1);
+                    const auto ty = std::clamp(sourceY - static_cast<float>(y0), 0.0f, 1.0f);
+                    for (std::uint32_t x = 0; x < texWidth; ++x)
+                    {
+                        const auto sourceX = texWidth > 1
+                            ? (static_cast<float>(x) + 0.5f) * static_cast<float>(textures[i].width) / static_cast<float>(texWidth) - 0.5f
+                            : 0.0f;
+                        const auto x0 = static_cast<std::uint32_t>(std::clamp(std::floor(sourceX), 0.0f, static_cast<float>(textures[i].width - 1)));
+                        const auto x1 = std::min(textures[i].width - 1, x0 + 1);
+                        const auto tx = std::clamp(sourceX - static_cast<float>(x0), 0.0f, 1.0f);
+                        const auto out = (static_cast<std::size_t>(y) * texWidth + x) * 4;
+                        for (std::size_t channel = 0; channel < 4; ++channel)
+                        {
+                            const auto c00 = sourceRgba[(static_cast<std::size_t>(y0) * textures[i].width + x0) * 4 + channel];
+                            const auto c10 = sourceRgba[(static_cast<std::size_t>(y0) * textures[i].width + x1) * 4 + channel];
+                            const auto c01 = sourceRgba[(static_cast<std::size_t>(y1) * textures[i].width + x0) * 4 + channel];
+                            const auto c11 = sourceRgba[(static_cast<std::size_t>(y1) * textures[i].width + x1) * 4 + channel];
+                            const auto top = std::lerp(static_cast<float>(c00), static_cast<float>(c10), tx);
+                            const auto bottom = std::lerp(static_cast<float>(c01), static_cast<float>(c11), tx);
+                            dst[out + channel] = static_cast<std::uint8_t>(std::clamp(std::lerp(top, bottom, ty), 0.0f, 255.0f));
+                        }
+                    }
+                }
+            }
+            else
+            {
+                for (std::size_t p = 0; p < static_cast<std::size_t>(texWidth) * texHeight; ++p)
+                {
+                    dst[p * 4 + 0] = 90;
+                    dst[p * 4 + 1] = 130;
+                    dst[p * 4 + 2] = 60;
+                    dst[p * 4 + 3] = 255;
+                }
+            }
+        }
+
+        const auto stagingSize = static_cast<VkDeviceSize>(basePixels.size());
+        VkBuffer stagingBuffer{};
+        VkDeviceMemory stagingMemory{};
+        VkBufferCreateInfo bufferInfo{ VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO };
+        bufferInfo.size = stagingSize;
+        bufferInfo.usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
+        if (vkCreateBuffer(impl_->device, &bufferInfo, nullptr, &stagingBuffer) != VK_SUCCESS)
+            return false;
+
+        VkMemoryRequirements bufReqs{};
+        vkGetBufferMemoryRequirements(impl_->device, stagingBuffer, &bufReqs);
+        auto memType = find_memory_type(bufReqs.memoryTypeBits,
+            VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+        if (memType == UINT32_MAX)
+        {
+            vkDestroyBuffer(impl_->device, stagingBuffer, nullptr);
+            return false;
+        }
+
+        VkMemoryAllocateInfo bufAlloc{ VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO };
+        bufAlloc.allocationSize = bufReqs.size;
+        bufAlloc.memoryTypeIndex = memType;
+        if (vkAllocateMemory(impl_->device, &bufAlloc, nullptr, &stagingMemory) != VK_SUCCESS)
+        {
+            vkDestroyBuffer(impl_->device, stagingBuffer, nullptr);
+            return false;
+        }
+        vkBindBufferMemory(impl_->device, stagingBuffer, stagingMemory, 0);
+
+        void* mapped{};
+        vkMapMemory(impl_->device, stagingMemory, 0, stagingSize, 0, &mapped);
+        std::memcpy(mapped, basePixels.data(), basePixels.size());
+        vkUnmapMemory(impl_->device, stagingMemory);
+
+        auto cmd = begin_single_command();
+
+        {
+            VkImageMemoryBarrier toTransfer{ VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER };
+            toTransfer.srcAccessMask = VK_ACCESS_SHADER_READ_BIT;
+            toTransfer.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+            toTransfer.oldLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+            toTransfer.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+            toTransfer.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+            toTransfer.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+            toTransfer.image = impl_->terrainTextureArray;
+            toTransfer.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+            toTransfer.subresourceRange.baseMipLevel = 0;
+            toTransfer.subresourceRange.levelCount = mipLevels;
+            toTransfer.subresourceRange.baseArrayLayer = firstLayer;
+            toTransfer.subresourceRange.layerCount = layerCount;
+            vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
+                0, 0, nullptr, 0, nullptr, 1, &toTransfer);
+        }
+
+        for (std::uint32_t i = 0; i < layerCount; ++i)
+        {
+            VkBufferImageCopy region{};
+            region.bufferOffset = static_cast<VkDeviceSize>(i) * layerSize;
+            region.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+            region.imageSubresource.mipLevel = 0;
+            region.imageSubresource.layerCount = 1;
+            region.imageSubresource.baseArrayLayer = firstLayer + i;
+            region.imageExtent = { texWidth, texHeight, 1 };
+            vkCmdCopyBufferToImage(cmd, stagingBuffer, impl_->terrainTextureArray,
+                VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
+        }
+
+        for (std::uint32_t mip = 1; mip < mipLevels; ++mip)
+        {
+            VkImageMemoryBarrier mipBarrier{ VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER };
+            mipBarrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+            mipBarrier.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+            mipBarrier.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+            mipBarrier.newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+            mipBarrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+            mipBarrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+            mipBarrier.image = impl_->terrainTextureArray;
+            mipBarrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+            mipBarrier.subresourceRange.baseMipLevel = mip - 1;
+            mipBarrier.subresourceRange.levelCount = 1;
+            mipBarrier.subresourceRange.baseArrayLayer = firstLayer;
+            mipBarrier.subresourceRange.layerCount = layerCount;
+            vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
+                0, 0, nullptr, 0, nullptr, 1, &mipBarrier);
+
+            for (std::uint32_t layer = 0; layer < layerCount; ++layer)
+            {
+                VkImageBlit blit{};
+                blit.srcSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+                blit.srcSubresource.mipLevel = mip - 1;
+                blit.srcSubresource.baseArrayLayer = firstLayer + layer;
+                blit.srcSubresource.layerCount = 1;
+                blit.srcOffsets[1] = {
+                    static_cast<std::int32_t>(mipWidths[mip - 1]),
+                    static_cast<std::int32_t>(mipHeights[mip - 1]),
+                    1 };
+                blit.dstSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+                blit.dstSubresource.mipLevel = mip;
+                blit.dstSubresource.baseArrayLayer = firstLayer + layer;
+                blit.dstSubresource.layerCount = 1;
+                blit.dstOffsets[1] = {
+                    static_cast<std::int32_t>(mipWidths[mip]),
+                    static_cast<std::int32_t>(mipHeights[mip]),
+                    1 };
+                vkCmdBlitImage(cmd,
+                    impl_->terrainTextureArray, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                    impl_->terrainTextureArray, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                    1, &blit, VK_FILTER_LINEAR);
+            }
+        }
+
+        {
+            std::array<VkImageMemoryBarrier, 2> finalBarriers{};
+            std::uint32_t barrierCount = 0;
+            if (mipLevels > 1)
+            {
+                auto& srcToShader = finalBarriers[barrierCount++];
+                srcToShader.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+                srcToShader.srcAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+                srcToShader.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+                srcToShader.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+                srcToShader.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+                srcToShader.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+                srcToShader.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+                srcToShader.image = impl_->terrainTextureArray;
+                srcToShader.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+                srcToShader.subresourceRange.baseMipLevel = 0;
+                srcToShader.subresourceRange.levelCount = mipLevels - 1;
+                srcToShader.subresourceRange.baseArrayLayer = firstLayer;
+                srcToShader.subresourceRange.layerCount = layerCount;
+            }
+
+            auto& dstToShader = finalBarriers[barrierCount++];
+            dstToShader.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+            dstToShader.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+            dstToShader.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+            dstToShader.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+            dstToShader.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+            dstToShader.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+            dstToShader.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+            dstToShader.image = impl_->terrainTextureArray;
+            dstToShader.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+            dstToShader.subresourceRange.baseMipLevel = mipLevels - 1;
+            dstToShader.subresourceRange.levelCount = 1;
+            dstToShader.subresourceRange.baseArrayLayer = firstLayer;
+            dstToShader.subresourceRange.layerCount = layerCount;
+
+            vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+                0, 0, nullptr, 0, nullptr, barrierCount, finalBarriers.data());
+        }
+
+        end_single_command(cmd);
+        vkDestroyBuffer(impl_->device, stagingBuffer, nullptr);
+        vkFreeMemory(impl_->device, stagingMemory, nullptr);
+
+        log_line("Vulkan: terrain texture layers updated");
         return true;
     }
 
@@ -1681,12 +3066,15 @@ namespace phoenix::renderer
         if (vkAllocateMemory(impl_->device, &allocInfo, nullptr, &memoryOut) != VK_SUCCESS)
             return false;
 
-        void* mapped{};
-        if (vkMapMemory(impl_->device, memoryOut, 0, byteSize, 0, &mapped) != VK_SUCCESS)
-            return false;
-        std::memcpy(mapped, data, byteSize);
-        vkUnmapMemory(impl_->device, memoryOut);
         vkBindBufferMemory(impl_->device, bufferOut, memoryOut, 0);
+        if (data)
+        {
+            void* mapped{};
+            if (vkMapMemory(impl_->device, memoryOut, 0, byteSize, 0, &mapped) != VK_SUCCESS)
+                return false;
+            std::memcpy(mapped, data, byteSize);
+            vkUnmapMemory(impl_->device, memoryOut);
+        }
         return true;
     }
 
@@ -1924,6 +3312,152 @@ namespace phoenix::renderer
             && impl_->objectInstanceBuffer;
     }
 
+    bool VulkanRenderer::upload_indirect_draw_data(
+        const std::vector<ObjectBatch>& batches,
+        const std::vector<BatchBoundsGpu>& bounds)
+    {
+        if (!impl_ || !impl_->cullPipeline || batches.empty() || bounds.size() != batches.size())
+            return false;
+
+        vkDeviceWaitIdle(impl_->device);
+
+        // Destroy previous buffers.
+        auto destroy = [&](VkBuffer& b, VkDeviceMemory& m) {
+            if (b) { vkDestroyBuffer(impl_->device, b, nullptr); b = {}; }
+            if (m) { vkFreeMemory(impl_->device, m, nullptr); m = {}; }
+        };
+        destroy(impl_->indirectTemplateBuffer, impl_->indirectTemplateMemory);
+        destroy(impl_->indirectBoundsBuffer, impl_->indirectBoundsMemory);
+        destroy(impl_->indirectDrawBuffer, impl_->indirectDrawMemory);
+        impl_->indirectReady = false;
+
+        // Convert ObjectBatch → VkDrawIndexedIndirectCommand.
+        struct IndirectCmd { std::uint32_t indexCount, instanceCount, firstIndex; std::int32_t vertexOffset; std::uint32_t firstInstance; };
+        std::vector<IndirectCmd> cmds(batches.size());
+        for (std::size_t i = 0; i < batches.size(); ++i)
+        {
+            cmds[i].indexCount = batches[i].indexCount;
+            cmds[i].instanceCount = batches[i].instanceCount;
+            cmds[i].firstIndex = batches[i].firstIndex;
+            cmds[i].vertexOffset = 0;
+            cmds[i].firstInstance = batches[i].firstInstance;
+        }
+
+        const auto cmdBytes = cmds.size() * sizeof(IndirectCmd);
+        const auto boundsBytes = bounds.size() * sizeof(BatchBoundsGpu);
+
+        // Template buffer (readonly SSBO).
+        if (!create_device_local_buffer(cmds.data(), cmdBytes,
+            VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
+            impl_->indirectTemplateBuffer, impl_->indirectTemplateMemory))
+        {
+            log_line("Vulkan: indirect template buffer upload failed");
+            return false;
+        }
+
+        // Bounds buffer (readonly SSBO).
+        if (!create_device_local_buffer(bounds.data(), boundsBytes,
+            VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
+            impl_->indirectBoundsBuffer, impl_->indirectBoundsMemory))
+        {
+            log_line("Vulkan: indirect bounds buffer upload failed");
+            return false;
+        }
+
+        // Output draw buffer (writable SSBO + indirect draw source).
+        if (!create_device_local_buffer(cmds.data(), cmdBytes,
+            VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT,
+            impl_->indirectDrawBuffer, impl_->indirectDrawMemory))
+        {
+            log_line("Vulkan: indirect draw buffer upload failed");
+            return false;
+        }
+
+        // Update descriptor set.
+        VkDescriptorBufferInfo bufferInfos[3]{};
+        bufferInfos[0].buffer = impl_->indirectTemplateBuffer;
+        bufferInfos[0].range = VK_WHOLE_SIZE;
+        bufferInfos[1].buffer = impl_->indirectBoundsBuffer;
+        bufferInfos[1].range = VK_WHOLE_SIZE;
+        bufferInfos[2].buffer = impl_->indirectDrawBuffer;
+        bufferInfos[2].range = VK_WHOLE_SIZE;
+
+        VkWriteDescriptorSet writes[3]{};
+        for (int i = 0; i < 3; ++i)
+        {
+            writes[i].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+            writes[i].dstSet = impl_->cullDescriptorSet;
+            writes[i].dstBinding = static_cast<std::uint32_t>(i);
+            writes[i].descriptorCount = 1;
+            writes[i].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+            writes[i].pBufferInfo = &bufferInfos[i];
+        }
+        vkUpdateDescriptorSets(impl_->device, 3, writes, 0, nullptr);
+
+        impl_->indirectBatchCount = static_cast<std::uint32_t>(batches.size());
+        impl_->indirectReady = true;
+        log_line("Vulkan: indirect draw data uploaded (GPU culling active)");
+        return true;
+    }
+
+    void VulkanRenderer::update_indirect_draw_data(
+        const std::vector<ObjectBatch>& batches,
+        const std::vector<BatchBoundsGpu>& bounds)
+    {
+        if (!impl_ || !impl_->indirectReady)
+            return;
+
+        // Re-upload if batch count changed (actor grid rebuild).
+        if (batches.size() != impl_->indirectBatchCount || bounds.size() != batches.size())
+        {
+            upload_indirect_draw_data(batches, bounds);
+            return;
+        }
+
+        // Same count — update template and bounds in-place via staging.
+        struct IndirectCmd { std::uint32_t indexCount, instanceCount, firstIndex; std::int32_t vertexOffset; std::uint32_t firstInstance; };
+        std::vector<IndirectCmd> cmds(batches.size());
+        for (std::size_t i = 0; i < batches.size(); ++i)
+        {
+            cmds[i].indexCount = batches[i].indexCount;
+            cmds[i].instanceCount = batches[i].instanceCount;
+            cmds[i].firstIndex = batches[i].firstIndex;
+            cmds[i].vertexOffset = 0;
+            cmds[i].firstInstance = batches[i].firstInstance;
+        }
+
+        const auto cmdBytes = cmds.size() * sizeof(IndirectCmd);
+        const auto boundsBytes = bounds.size() * sizeof(BatchBoundsGpu);
+
+        VkBuffer stagingCmd{}, stagingBounds{};
+        VkDeviceMemory stagingCmdMem{}, stagingBoundsMem{};
+        if (!create_host_buffer(cmds.data(), cmdBytes, VK_BUFFER_USAGE_TRANSFER_SRC_BIT, stagingCmd, stagingCmdMem)
+            || !create_host_buffer(bounds.data(), boundsBytes, VK_BUFFER_USAGE_TRANSFER_SRC_BIT, stagingBounds, stagingBoundsMem))
+        {
+            if (stagingCmd) vkDestroyBuffer(impl_->device, stagingCmd, nullptr);
+            if (stagingCmdMem) vkFreeMemory(impl_->device, stagingCmdMem, nullptr);
+            return;
+        }
+
+        auto cmd = begin_single_command();
+        VkBufferCopy region{};
+        region.size = cmdBytes;
+        vkCmdCopyBuffer(cmd, stagingCmd, impl_->indirectTemplateBuffer, 1, &region);
+        region.size = boundsBytes;
+        vkCmdCopyBuffer(cmd, stagingBounds, impl_->indirectBoundsBuffer, 1, &region);
+        end_single_command(cmd);
+
+        vkDestroyBuffer(impl_->device, stagingCmd, nullptr);
+        vkFreeMemory(impl_->device, stagingCmdMem, nullptr);
+        vkDestroyBuffer(impl_->device, stagingBounds, nullptr);
+        vkFreeMemory(impl_->device, stagingBoundsMem, nullptr);
+    }
+
+    bool VulkanRenderer::indirect_draw_ready() const
+    {
+        return impl_ && impl_->indirectReady;
+    }
+
     void VulkanRenderer::set_animated_object_batches(const std::vector<ObjectBatch>& batches)
     {
         if (!impl_)
@@ -2015,7 +3549,10 @@ namespace phoenix::renderer
         const auto vertexBytes = vertices.size() * sizeof(TerrainVertex);
         const auto indexBytes = indices.size() * sizeof(std::uint32_t);
         const auto instanceBytes = instances.size() * sizeof(ObjectInstance);
-        if (!create_host_buffer(vertices.data(), vertexBytes, VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
+        // Add STORAGE_BUFFER_BIT to vertex buffer so the GPU skinning compute shader can write to it.
+        const auto vertexUsage = VK_BUFFER_USAGE_VERTEX_BUFFER_BIT
+            | (impl_->skinPipelineReady ? VK_BUFFER_USAGE_STORAGE_BUFFER_BIT : 0u);
+        if (!create_host_buffer(vertices.data(), vertexBytes, vertexUsage,
                 impl_->animatedObjectVertexBuffer, impl_->animatedObjectVertexMemory)
             || !create_device_local_buffer(indices.data(), indexBytes, VK_BUFFER_USAGE_INDEX_BUFFER_BIT,
                 impl_->animatedObjectIndexBuffer, impl_->animatedObjectIndexMemory)
@@ -2062,6 +3599,132 @@ namespace phoenix::renderer
             vkUnmapMemory(impl_->device, impl_->animatedObjectInstanceMemory);
         }
         return true;
+    }
+
+    bool VulkanRenderer::upload_skin_source_vertices(const void* data, std::size_t count)
+    {
+        if (!impl_ || !impl_->skinPipelineReady || count == 0 || !data)
+            return false;
+
+        // Destroy previous source buffer.
+        if (impl_->skinSourceBuffer)
+        {
+            vkDeviceWaitIdle(impl_->device);
+            vkDestroyBuffer(impl_->device, impl_->skinSourceBuffer, nullptr);
+            vkFreeMemory(impl_->device, impl_->skinSourceMemory, nullptr);
+            impl_->skinSourceBuffer = {};
+            impl_->skinSourceMemory = {};
+        }
+
+        // GpuSkinSourceVertex is 48 bytes (12 floats).
+        const auto byteSize = count * 48;
+        if (!create_host_buffer(data, byteSize, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
+                impl_->skinSourceBuffer, impl_->skinSourceMemory))
+        {
+            log_line("Vulkan: skin source vertex upload failed");
+            return false;
+        }
+
+        impl_->skinSourceVertexCount = static_cast<std::uint32_t>(count);
+        impl_->skinSourceReady = true;
+
+        // Update descriptor set bindings 0 (source vertices).
+        // Binding 2 (output vertices = animated vertex buffer) is updated when we know the output buffer.
+        VkDescriptorBufferInfo srcInfo{};
+        srcInfo.buffer = impl_->skinSourceBuffer;
+        srcInfo.offset = 0;
+        srcInfo.range = VK_WHOLE_SIZE;
+
+        VkWriteDescriptorSet write{ VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET };
+        write.dstSet = impl_->skinDescriptorSet;
+        write.dstBinding = 0;
+        write.descriptorCount = 1;
+        write.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+        write.pBufferInfo = &srcInfo;
+        vkUpdateDescriptorSets(impl_->device, 1, &write, 0, nullptr);
+
+        {
+            const auto msg = "Vulkan: skin source vertices uploaded (" + std::to_string(count) + " vertices)";
+            log_line(msg.c_str());
+        }
+        return true;
+    }
+
+    bool VulkanRenderer::upload_skin_matrices(const float* data, std::uint32_t matrixCount)
+    {
+        if (!impl_ || !impl_->skinPipelineReady || !impl_->skinSourceReady || matrixCount == 0)
+            return false;
+
+        const auto byteSize = static_cast<std::size_t>(matrixCount) * 16 * sizeof(float);
+
+        // Reuse existing buffer if large enough; otherwise recreate.
+        if (byteSize > impl_->skinMatrixBufferBytes)
+        {
+            if (impl_->skinMatrixBuffer)
+            {
+                vkDestroyBuffer(impl_->device, impl_->skinMatrixBuffer, nullptr);
+                vkFreeMemory(impl_->device, impl_->skinMatrixMemory, nullptr);
+            }
+            // Allocate with headroom; use nullptr for initial data so we don't read beyond the source.
+            const auto allocSize = byteSize + byteSize / 2;
+            if (!create_host_buffer(nullptr, allocSize, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
+                    impl_->skinMatrixBuffer, impl_->skinMatrixMemory))
+                return false;
+            impl_->skinMatrixBufferBytes = allocSize;
+
+            // Update descriptor binding 1.
+            VkDescriptorBufferInfo matInfo{};
+            matInfo.buffer = impl_->skinMatrixBuffer;
+            matInfo.offset = 0;
+            matInfo.range = VK_WHOLE_SIZE;
+            VkWriteDescriptorSet write{ VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET };
+            write.dstSet = impl_->skinDescriptorSet;
+            write.dstBinding = 1;
+            write.descriptorCount = 1;
+            write.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+            write.pBufferInfo = &matInfo;
+            vkUpdateDescriptorSets(impl_->device, 1, &write, 0, nullptr);
+        }
+        {
+            // Map + copy actual data.
+            void* mapped = nullptr;
+            if (vkMapMemory(impl_->device, impl_->skinMatrixMemory, 0, byteSize, 0, &mapped) != VK_SUCCESS)
+                return false;
+            std::memcpy(mapped, data, byteSize);
+            vkUnmapMemory(impl_->device, impl_->skinMatrixMemory);
+        }
+
+        // Ensure output buffer descriptor (binding 2) points to the animated vertex buffer.
+        if (impl_->animatedObjectVertexBuffer)
+        {
+            VkDescriptorBufferInfo outInfo{};
+            outInfo.buffer = impl_->animatedObjectVertexBuffer;
+            outInfo.offset = 0;
+            outInfo.range = VK_WHOLE_SIZE;
+            VkWriteDescriptorSet write{ VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET };
+            write.dstSet = impl_->skinDescriptorSet;
+            write.dstBinding = 2;
+            write.descriptorCount = 1;
+            write.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+            write.pBufferInfo = &outInfo;
+            vkUpdateDescriptorSets(impl_->device, 1, &write, 0, nullptr);
+        }
+
+        return true;
+    }
+
+    void VulkanRenderer::dispatch_skin_compute(std::uint32_t firstVertex, std::uint32_t vertexCount, std::uint32_t boneMatrixOffset)
+    {
+        if (!impl_ || !impl_->skinPipelineReady || !impl_->skinSourceReady || !impl_->skinMatrixBuffer
+            || !impl_->animatedObjectVertexBuffer || vertexCount == 0)
+            return;
+
+        impl_->skinDispatches.push_back({ firstVertex, vertexCount, boneMatrixOffset });
+    }
+
+    bool VulkanRenderer::gpu_skinning_ready() const
+    {
+        return impl_ && impl_->skinPipelineReady && impl_->skinSourceReady && impl_->skinMatrixBuffer;
     }
 
     bool VulkanRenderer::set_debug_mesh(
@@ -2137,6 +3800,8 @@ namespace phoenix::renderer
         impl_->characterIndexMemory = {};
         impl_->characterIndexCount = 0;
         impl_->characterVertexBytes = 0;
+        impl_->characterVertexCapacity = 0;
+        impl_->characterIndexCapacity = 0;
         impl_->characterReady = false;
 
         if (vertices.empty() || indices.empty())
@@ -2145,25 +3810,50 @@ namespace phoenix::renderer
         const auto vertexBytes = vertices.size() * sizeof(TerrainVertex);
         const auto indexBytes = indices.size() * sizeof(std::uint32_t);
 
+        // Over-allocate 4× so appearance swaps can reuse without recreating.
+        const auto vertexCapacity = vertexBytes * 4;
+        const auto indexCapacity = indexBytes * 4;
+
         // Use host-visible buffer for vertices (updated every frame for animation).
-        if (!create_host_buffer(vertices.data(), vertexBytes,
+        if (!create_host_buffer(nullptr, vertexCapacity,
             VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
             impl_->characterVertexBuffer, impl_->characterVertexMemory))
         {
             log_line("Vulkan: character vertex buffer creation failed");
             return false;
         }
-        // Index buffer is static — use device-local.
-        if (!create_device_local_buffer(indices.data(), indexBytes,
+        // Copy initial data.
+        {
+            void* mapped = nullptr;
+            if (vkMapMemory(impl_->device, impl_->characterVertexMemory, 0, vertexBytes, 0, &mapped) == VK_SUCCESS)
+            {
+                std::memcpy(mapped, vertices.data(), vertexBytes);
+                vkUnmapMemory(impl_->device, impl_->characterVertexMemory);
+            }
+        }
+
+        // Index buffer — host-visible so update_character_mesh can write without staging.
+        if (!create_host_buffer(nullptr, indexCapacity,
             VK_BUFFER_USAGE_INDEX_BUFFER_BIT,
             impl_->characterIndexBuffer, impl_->characterIndexMemory))
         {
             log_line("Vulkan: character index buffer creation failed");
             return false;
         }
+        // Copy initial index data.
+        {
+            void* mapped = nullptr;
+            if (vkMapMemory(impl_->device, impl_->characterIndexMemory, 0, indexBytes, 0, &mapped) == VK_SUCCESS)
+            {
+                std::memcpy(mapped, indices.data(), indexBytes);
+                vkUnmapMemory(impl_->device, impl_->characterIndexMemory);
+            }
+        }
 
         impl_->characterIndexCount = static_cast<std::uint32_t>(indices.size());
         impl_->characterVertexBytes = vertexBytes;
+        impl_->characterVertexCapacity = vertexCapacity;
+        impl_->characterIndexCapacity = indexCapacity;
         impl_->characterReady = true;
         impl_->characterVisible = true;
         return true;
@@ -2175,7 +3865,7 @@ namespace phoenix::renderer
             return false;
 
         const auto byteSize = vertices.size() * sizeof(TerrainVertex);
-        if (byteSize > impl_->characterVertexBytes)
+        if (byteSize > impl_->characterVertexCapacity)
             return false;
 
         void* mapped = nullptr;
@@ -2183,6 +3873,44 @@ namespace phoenix::renderer
             return false;
         std::memcpy(mapped, vertices.data(), byteSize);
         vkUnmapMemory(impl_->device, impl_->characterVertexMemory);
+        return true;
+    }
+
+    bool VulkanRenderer::update_character_mesh(
+        const std::vector<TerrainVertex>& vertices,
+        const std::vector<std::uint32_t>& indices)
+    {
+        if (!impl_ || vertices.empty() || indices.empty())
+            return false;
+
+        // If buffers don't exist or are too small, fall back to full set_character_mesh.
+        const auto vertexBytes = vertices.size() * sizeof(TerrainVertex);
+        const auto indexBytes = indices.size() * sizeof(std::uint32_t);
+        if (!impl_->characterReady
+            || vertexBytes > impl_->characterVertexCapacity
+            || indexBytes > impl_->characterIndexCapacity)
+        {
+            return set_character_mesh(vertices, indices);
+        }
+
+        // Fast path: map + copy, no vkDeviceWaitIdle, no buffer recreation.
+        {
+            void* mapped = nullptr;
+            if (vkMapMemory(impl_->device, impl_->characterVertexMemory, 0, vertexBytes, 0, &mapped) != VK_SUCCESS)
+                return false;
+            std::memcpy(mapped, vertices.data(), vertexBytes);
+            vkUnmapMemory(impl_->device, impl_->characterVertexMemory);
+        }
+        {
+            void* mapped = nullptr;
+            if (vkMapMemory(impl_->device, impl_->characterIndexMemory, 0, indexBytes, 0, &mapped) != VK_SUCCESS)
+                return false;
+            std::memcpy(mapped, indices.data(), indexBytes);
+            vkUnmapMemory(impl_->device, impl_->characterIndexMemory);
+        }
+
+        impl_->characterIndexCount = static_cast<std::uint32_t>(indices.size());
+        impl_->characterVertexBytes = vertexBytes;
         return true;
     }
 
@@ -2367,6 +4095,70 @@ namespace phoenix::renderer
             renderPassInfo.clearValueCount = static_cast<std::uint32_t>(std::size(clears));
             renderPassInfo.pClearValues = clears;
 
+            // ── GPU frustum culling compute pass (before render pass) ──
+            if (impl_->indirectReady && impl_->objectsReady)
+            {
+                vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, impl_->cullPipeline);
+                vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE,
+                    impl_->cullPipelineLayout, 0, 1, &impl_->cullDescriptorSet, 0, nullptr);
+
+                struct CullPushConstants {
+                    float camX, camY, camZ, camYaw;
+                    float camPitch, aspect, tanHalfFov, maxDistance;
+                    std::uint32_t batchCount;
+                } cullPc{};
+                cullPc.camX = impl_->cameraConstants[0];
+                cullPc.camY = impl_->cameraConstants[1];
+                cullPc.camZ = impl_->cameraConstants[2];
+                cullPc.camYaw = impl_->cameraConstants[3];
+                cullPc.camPitch = impl_->cameraConstants[4];
+                cullPc.aspect = impl_->cameraConstants[5];
+                cullPc.tanHalfFov = impl_->cameraConstants[6];
+                cullPc.maxDistance = impl_->cameraConstants[7];
+                cullPc.batchCount = impl_->indirectBatchCount;
+
+                vkCmdPushConstants(commandBuffer, impl_->cullPipelineLayout,
+                    VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(cullPc), &cullPc);
+                vkCmdDispatch(commandBuffer, (impl_->indirectBatchCount + 63) / 64, 1, 1);
+
+                // Barrier: compute write → indirect draw read.
+                VkMemoryBarrier barrier{ VK_STRUCTURE_TYPE_MEMORY_BARRIER };
+                barrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+                barrier.dstAccessMask = VK_ACCESS_INDIRECT_COMMAND_READ_BIT;
+                vkCmdPipelineBarrier(commandBuffer,
+                    VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                    VK_PIPELINE_STAGE_DRAW_INDIRECT_BIT,
+                    0, 1, &barrier, 0, nullptr, 0, nullptr);
+            }
+
+            // GPU skinning dispatches.
+            if (!impl_->skinDispatches.empty() && impl_->skinPipelineReady && impl_->skinSourceReady
+                && impl_->skinMatrixBuffer && impl_->animatedObjectVertexBuffer)
+            {
+                vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, impl_->skinPipeline);
+                vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, impl_->skinPipelineLayout,
+                    0, 1, &impl_->skinDescriptorSet, 0, nullptr);
+
+                for (const auto& dispatch : impl_->skinDispatches)
+                {
+                    std::uint32_t pushData[3]{ dispatch.firstVertex, dispatch.vertexCount, dispatch.boneMatrixOffset };
+                    vkCmdPushConstants(commandBuffer, impl_->skinPipelineLayout,
+                        VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(pushData), pushData);
+                    vkCmdDispatch(commandBuffer, (dispatch.vertexCount + 63) / 64, 1, 1);
+                }
+
+                // Barrier: compute write → vertex attribute read.
+                VkMemoryBarrier skinBarrier{ VK_STRUCTURE_TYPE_MEMORY_BARRIER };
+                skinBarrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+                skinBarrier.dstAccessMask = VK_ACCESS_VERTEX_ATTRIBUTE_READ_BIT;
+                vkCmdPipelineBarrier(commandBuffer,
+                    VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                    VK_PIPELINE_STAGE_VERTEX_INPUT_BIT,
+                    0, 1, &skinBarrier, 0, nullptr, 0, nullptr);
+
+                impl_->skinDispatches.clear();
+            }
+
             vkCmdBeginRenderPass(commandBuffer, &renderPassInfo, VK_SUBPASS_CONTENTS_INLINE);
             VkViewport viewport{};
             viewport.width = static_cast<float>(impl_->swapchainExtent.width);
@@ -2429,9 +4221,18 @@ namespace phoenix::renderer
                     kPushStages, 0, sizeof(constants), constants);
                 vkCmdBindVertexBuffers(commandBuffer, 0, 2, buffers, offsets);
                 vkCmdBindIndexBuffer(commandBuffer, impl_->objectIndexBuffer, 0, VK_INDEX_TYPE_UINT32);
-                for (const auto& batch : impl_->objectBatches)
+
+                if (impl_->indirectReady)
                 {
-                    vkCmdDrawIndexed(commandBuffer, batch.indexCount, batch.instanceCount, batch.firstIndex, 0, batch.firstInstance);
+                    // Indirect draw: all batches in one call; compute shader already
+                    // zeroed instanceCount for culled batches before the render pass.
+                    vkCmdDrawIndexedIndirect(commandBuffer, impl_->indirectDrawBuffer, 0,
+                        impl_->indirectBatchCount, sizeof(VkDrawIndexedIndirectCommand));
+                }
+                else
+                {
+                    for (const auto& batch : impl_->objectBatches)
+                        vkCmdDrawIndexed(commandBuffer, batch.indexCount, batch.instanceCount, batch.firstIndex, 0, batch.firstInstance);
                 }
             }
             if (impl_->animatedObjectsReady && impl_->staticObjectPipeline)
@@ -2475,6 +4276,30 @@ namespace phoenix::renderer
                 vkCmdBindVertexBuffers(commandBuffer, 0, 1, &impl_->terrainVertexBuffer, &offset);
                 vkCmdBindIndexBuffer(commandBuffer, impl_->terrainIndexBuffer, 0, VK_INDEX_TYPE_UINT32);
                 vkCmdDrawIndexed(commandBuffer, impl_->waterDrawRange.indexCount, 1, impl_->waterDrawRange.firstIndex, 0, 0);
+            }
+            // ── Procedural weapon-effect particles (transparent overlay, after opaque) ──
+            if (impl_->particlePipelineReady
+                && impl_->particleInstanceCount > 0 && impl_->particleInstanceBuffer)
+            {
+                vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                    impl_->particlePipelineLayout, 0, 1, &impl_->particleDescriptorSet, 0, nullptr);
+
+                const std::uint32_t additiveStart = impl_->particleAdditiveStart;
+                const std::uint32_t total = impl_->particleInstanceCount;
+                if (additiveStart > 0)
+                {
+                    vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, impl_->particlePipelineAlpha);
+                    vkCmdPushConstants(commandBuffer, impl_->particlePipelineLayout,
+                        kPushStages, 0, sizeof(constants), constants);
+                    vkCmdDraw(commandBuffer, 6, additiveStart, 0, 0);
+                }
+                if (total > additiveStart)
+                {
+                    vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, impl_->particlePipelineAdditive);
+                    vkCmdPushConstants(commandBuffer, impl_->particlePipelineLayout,
+                        kPushStages, 0, sizeof(constants), constants);
+                    vkCmdDraw(commandBuffer, 6, total - additiveStart, 0, additiveStart);
+                }
             }
             if (imguiReady_ && imguiFrameStarted_)
             {
@@ -2748,12 +4573,65 @@ namespace phoenix::renderer
             vkDestroyPipeline(impl_->device, impl_->terrainPipeline, nullptr);
         if (impl_->staticObjectPipeline)
             vkDestroyPipeline(impl_->device, impl_->staticObjectPipeline, nullptr);
+        // GPU culling resources.
+        if (impl_->indirectTemplateBuffer)
+            vkDestroyBuffer(impl_->device, impl_->indirectTemplateBuffer, nullptr);
+        if (impl_->indirectTemplateMemory)
+            vkFreeMemory(impl_->device, impl_->indirectTemplateMemory, nullptr);
+        if (impl_->indirectBoundsBuffer)
+            vkDestroyBuffer(impl_->device, impl_->indirectBoundsBuffer, nullptr);
+        if (impl_->indirectBoundsMemory)
+            vkFreeMemory(impl_->device, impl_->indirectBoundsMemory, nullptr);
+        if (impl_->indirectDrawBuffer)
+            vkDestroyBuffer(impl_->device, impl_->indirectDrawBuffer, nullptr);
+        if (impl_->indirectDrawMemory)
+            vkFreeMemory(impl_->device, impl_->indirectDrawMemory, nullptr);
+        if (impl_->cullPipeline)
+            vkDestroyPipeline(impl_->device, impl_->cullPipeline, nullptr);
+        if (impl_->cullPipelineLayout)
+            vkDestroyPipelineLayout(impl_->device, impl_->cullPipelineLayout, nullptr);
+        if (impl_->cullDescriptorPool)
+            vkDestroyDescriptorPool(impl_->device, impl_->cullDescriptorPool, nullptr);
+        if (impl_->cullDescriptorSetLayout)
+            vkDestroyDescriptorSetLayout(impl_->device, impl_->cullDescriptorSetLayout, nullptr);
+        // GPU skinning cleanup.
+        if (impl_->skinSourceBuffer)
+            vkDestroyBuffer(impl_->device, impl_->skinSourceBuffer, nullptr);
+        if (impl_->skinSourceMemory)
+            vkFreeMemory(impl_->device, impl_->skinSourceMemory, nullptr);
+        if (impl_->skinMatrixBuffer)
+            vkDestroyBuffer(impl_->device, impl_->skinMatrixBuffer, nullptr);
+        if (impl_->skinMatrixMemory)
+            vkFreeMemory(impl_->device, impl_->skinMatrixMemory, nullptr);
+        if (impl_->skinPipeline)
+            vkDestroyPipeline(impl_->device, impl_->skinPipeline, nullptr);
+        if (impl_->skinPipelineLayout)
+            vkDestroyPipelineLayout(impl_->device, impl_->skinPipelineLayout, nullptr);
+        if (impl_->skinDescriptorPool)
+            vkDestroyDescriptorPool(impl_->device, impl_->skinDescriptorPool, nullptr);
+        if (impl_->skinDescriptorSetLayout)
+            vkDestroyDescriptorSetLayout(impl_->device, impl_->skinDescriptorSetLayout, nullptr);
         if (impl_->terrainPipelineLayout)
             vkDestroyPipelineLayout(impl_->device, impl_->terrainPipelineLayout, nullptr);
         if (impl_->skyPipeline)
             vkDestroyPipeline(impl_->device, impl_->skyPipeline, nullptr);
         if (impl_->skyPipelineLayout)
             vkDestroyPipelineLayout(impl_->device, impl_->skyPipelineLayout, nullptr);
+        // Particle resources.
+        if (impl_->particleInstanceBuffer)
+            vkDestroyBuffer(impl_->device, impl_->particleInstanceBuffer, nullptr);
+        if (impl_->particleInstanceMemory)
+            vkFreeMemory(impl_->device, impl_->particleInstanceMemory, nullptr);
+        if (impl_->particlePipelineAlpha)
+            vkDestroyPipeline(impl_->device, impl_->particlePipelineAlpha, nullptr);
+        if (impl_->particlePipelineAdditive)
+            vkDestroyPipeline(impl_->device, impl_->particlePipelineAdditive, nullptr);
+        if (impl_->particlePipelineLayout)
+            vkDestroyPipelineLayout(impl_->device, impl_->particlePipelineLayout, nullptr);
+        if (impl_->particleDescriptorPool)
+            vkDestroyDescriptorPool(impl_->device, impl_->particleDescriptorPool, nullptr);
+        if (impl_->particleSetLayout)
+            vkDestroyDescriptorSetLayout(impl_->device, impl_->particleSetLayout, nullptr);
         if (impl_->pipelineCache)
             vkDestroyPipelineCache(impl_->device, impl_->pipelineCache, nullptr);
         if (impl_->commandPool)

@@ -1,5 +1,7 @@
 #include "audio/audio_system.h"
 #include "character/character_system.h"
+#include "character/weapon_effect.h"
+#include "core/logging.h"
 #include "runtime/phoenix_runtime.h"
 #include "platform/sdl_window.h"
 #include "renderer/dds_loader.h"
@@ -17,6 +19,7 @@
 #include <chrono>
 #include <cmath>
 #include <cctype>
+#include <cstdio>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
@@ -44,7 +47,6 @@
 namespace
 {
     constexpr const char* kAppTitle = "Phoenix Engine";
-    constexpr const char* kLogName = "PhoenixEngine.log";
     constexpr std::size_t kWaterTextureLayer = 62;
     constexpr std::size_t kSkyTextureLayer = 63;
     constexpr std::size_t kPrimaryCloudTextureLayer = 64;
@@ -1034,6 +1036,20 @@ namespace
         return ranges;
     }
 
+    std::vector<phoenix::renderer::BatchBoundsGpu> extract_gpu_bounds(
+        const phoenix::runtime::StaticObjectScene& scene)
+    {
+        std::vector<phoenix::renderer::BatchBoundsGpu> gpuBounds(scene.batchBounds.size());
+        for (std::size_t i = 0; i < scene.batchBounds.size(); ++i)
+        {
+            gpuBounds[i].x = scene.batchBounds[i].x;
+            gpuBounds[i].y = scene.batchBounds[i].y;
+            gpuBounds[i].z = scene.batchBounds[i].z;
+            gpuBounds[i].radius = scene.batchBounds[i].radius;
+        }
+        return gpuBounds;
+    }
+
     void build_visible_object_batches(
         const phoenix::runtime::StaticObjectScene& scene,
         const CameraView& view,
@@ -1055,8 +1071,10 @@ namespace
             auto batchView = view;
             if (i >= actorBatchStart)
                 batchView.distance = std::min(batchView.distance, actorViewDistance);
-            if (sphere_visible(batchView, bounds.x, bounds.y, bounds.z, bounds.radius))
-                batches.push_back(scene.batches[i]);
+            if (!sphere_visible(batchView, bounds.x, bounds.y, bounds.z, bounds.radius))
+                continue;
+
+            batches.push_back(scene.batches[i]);
         }
     }
 
@@ -1342,6 +1360,9 @@ namespace
 #ifdef _WIN32
         struct CoreTimes { ULONGLONG idle{}; ULONGLONG kernel{}; ULONGLONG user{}; };
         CoreTimes lastCoreTimes[kMaxCores]{};
+#else
+        struct CoreTimes { unsigned long long idle{}; unsigned long long total{}; };
+        CoreTimes lastCoreTimes[kMaxCores]{};
 #endif
         bool cpuInitialized{};
 
@@ -1411,6 +1432,83 @@ namespace
                 }
                 cpuPercent = totalUsage / static_cast<float>(cpuCores);
                 cpuInitialized = true;
+            }
+#else
+            // ---- Linux: read metrics from /proc ----
+            // RAM totals from /proc/meminfo (values are in kB).
+            {
+                std::ifstream meminfo("/proc/meminfo");
+                std::string key, unit;
+                long long valueKb = 0, totalKb = 0, availKb = 0;
+                while (meminfo >> key >> valueKb >> unit)
+                {
+                    if (key == "MemTotal:") totalKb = valueKb;
+                    else if (key == "MemAvailable:") availKb = valueKb;
+                    if (totalKb && availKb) break;
+                }
+                if (totalKb > 0)
+                {
+                    ramTotalMB = static_cast<float>(totalKb) / 1024.0f;
+                    ramUsedMB = static_cast<float>(totalKb - availKb) / 1024.0f;
+                    ramPercent = (1.0f - static_cast<float>(availKb) / static_cast<float>(totalKb)) * 100.0f;
+                }
+            }
+
+            // Process resident set from /proc/self/status (VmRSS, in kB).
+            {
+                std::ifstream status("/proc/self/status");
+                std::string line;
+                while (std::getline(status, line))
+                {
+                    if (line.rfind("VmRSS:", 0) == 0)
+                    {
+                        long long kb = 0;
+                        std::sscanf(line.c_str(), "VmRSS: %lld", &kb);
+                        processRamMB = static_cast<float>(kb) / 1024.0f;
+                        break;
+                    }
+                }
+            }
+
+            // Per-core CPU usage from /proc/stat (delta of busy vs idle jiffies).
+            {
+                std::ifstream stat("/proc/stat");
+                std::string line;
+                float totalUsage = 0.0f;
+                std::uint32_t counted = 0;
+                while (std::getline(stat, line))
+                {
+                    if (line.rfind("cpu", 0) != 0 || line.size() < 4
+                        || !std::isdigit(static_cast<unsigned char>(line[3])))
+                        continue;
+                    int core = 0;
+                    unsigned long long u = 0, n = 0, s = 0, idle = 0, iowait = 0, irq = 0, softirq = 0, steal = 0;
+                    if (std::sscanf(line.c_str(), "cpu%d %llu %llu %llu %llu %llu %llu %llu %llu",
+                                    &core, &u, &n, &s, &idle, &iowait, &irq, &softirq, &steal) < 5)
+                        continue;
+                    if (core < 0 || static_cast<std::uint32_t>(core) >= cpuCores)
+                        continue;
+                    const unsigned long long idleAll = idle + iowait;
+                    const unsigned long long total = u + n + s + idle + iowait + irq + softirq + steal;
+                    auto& prev = lastCoreTimes[core];
+                    if (cpuInitialized)
+                    {
+                        const auto idleDiff = idleAll - prev.idle;
+                        const auto totalDiff = total - prev.total;
+                        coreUsage[core] = totalDiff > 0
+                            ? (1.0f - static_cast<float>(idleDiff) / static_cast<float>(totalDiff)) * 100.0f
+                            : 0.0f;
+                    }
+                    prev.idle = idleAll;
+                    prev.total = total;
+                    totalUsage += coreUsage[core];
+                    ++counted;
+                }
+                if (counted > 0)
+                {
+                    cpuPercent = totalUsage / static_cast<float>(counted);
+                    cpuInitialized = true;
+                }
             }
 #endif
 
@@ -1562,7 +1660,7 @@ namespace
         bool loadRequested{};
         bool viewDistanceChanged{};
         bool debugGizmosChanged{};
-        bool characterApplyRequested{};
+        bool characterChanged{};
         bool weatherChanged{};
     };
 
@@ -1586,6 +1684,8 @@ namespace
         const std::vector<CharacterOption>& characterOptions,
         int& selectedCharacterOption,
         phoenix::character::CharacterAppearance& appearance,
+        phoenix::character::CharacterSystem& characterSystem,
+        phoenix::character::WeaponEffect& weaponEffect,
         float camX, float camY, float camZ, float camYaw, float camPitch)
     {
         UnifiedPanelResult result{};
@@ -1675,6 +1775,10 @@ namespace
         // ---- Character ----
         if (!characterOptions.empty() && ImGui::TreeNodeEx("Character", ImGuiTreeNodeFlags_DefaultOpen))
         {
+            // Snapshot current state to detect any change.
+            const auto prevAppearance = appearance;
+            const auto prevCharOption = selectedCharacterOption;
+
             selectedCharacterOption = std::clamp(selectedCharacterOption, 0, static_cast<int>(characterOptions.size() - 1));
             const auto& selected = characterOptions[static_cast<std::size_t>(selectedCharacterOption)];
             ImGui::SetNextItemWidth(180.0f);
@@ -1740,7 +1844,275 @@ namespace
                 appearance.hairIndex = nearest_available(appearance.hairIndex, current.hairIndices);
             }
 
-            result.characterApplyRequested = ImGui::Button("Apply");
+            // ---- Weapon / Shield ----
+            ImGui::Separator();
+            {
+                using WT = phoenix::character::WeaponType;
+                struct WeaponLabel { WT type; const char* label; };
+                static constexpr WeaponLabel weaponLabels[] = {
+                    { WT::None,       "None" },
+                    { WT::Sword1H,    "Sword 1H" },
+                    { WT::Sword2H,    "Sword 2H" },
+                    { WT::Axe1H,      "Axe 1H" },
+                    { WT::Axe2H,      "Axe 2H" },
+                    { WT::DualSword,  "Dual Sword" },
+                    { WT::Spear,      "Spear" },
+                    { WT::Mace1H,     "Mace 1H" },
+                    { WT::Hammer2H,   "Hammer 2H" },
+                    { WT::RevDagger,  "Rev Dagger" },
+                    { WT::Dagger,     "Dagger" },
+                    { WT::Javelin,    "Javelin" },
+                    { WT::Staff,      "Staff" },
+                    { WT::Bow,        "Bow" },
+                    { WT::Crossbow,   "Crossbow" },
+                    { WT::Claw,       "Claw" },
+                };
+                static constexpr WeaponLabel shieldLabels[] = {
+                    { WT::None,        "None" },
+                    { WT::ShieldLight, "Shield (Light)" },
+                    { WT::ShieldDark,  "Shield (Dark)" },
+                };
+
+                // Find current label for weapon combo.
+                const char* currentWeaponLabel = "None";
+                int currentWeaponIdx = 0;
+                for (int i = 0; i < static_cast<int>(std::size(weaponLabels)); ++i)
+                {
+                    if (weaponLabels[i].type == appearance.weaponType)
+                    {
+                        currentWeaponLabel = weaponLabels[i].label;
+                        currentWeaponIdx = i;
+                        break;
+                    }
+                }
+
+                ImGui::SetNextItemWidth(130.0f);
+                if (ImGui::BeginCombo("Weapon", currentWeaponLabel))
+                {
+                    for (int i = 0; i < static_cast<int>(std::size(weaponLabels)); ++i)
+                    {
+                        const bool isSelected = (i == currentWeaponIdx);
+                        if (ImGui::Selectable(weaponLabels[i].label, isSelected))
+                        {
+                            appearance.weaponType = weaponLabels[i].type;
+                            if (appearance.weaponType == WT::None)
+                                appearance.weaponIndex = -1;
+                            else if (appearance.weaponIndex < 0)
+                                appearance.weaponIndex = 1;
+                        }
+                        if (isSelected)
+                            ImGui::SetItemDefaultFocus();
+                    }
+                    ImGui::EndCombo();
+                }
+                if (appearance.weaponType != WT::None)
+                {
+                    ImGui::SameLine();
+                    ImGui::SetNextItemWidth(60.0f);
+                    ImGui::InputInt("##weapIdx", &appearance.weaponIndex);
+                    if (appearance.weaponIndex < 1) appearance.weaponIndex = 1;
+                }
+
+                // Find current label for shield combo.
+                const char* currentShieldLabel = "None";
+                int currentShieldIdx = 0;
+                for (int i = 0; i < static_cast<int>(std::size(shieldLabels)); ++i)
+                {
+                    if (shieldLabels[i].type == appearance.shieldType)
+                    {
+                        currentShieldLabel = shieldLabels[i].label;
+                        currentShieldIdx = i;
+                        break;
+                    }
+                }
+
+                ImGui::SetNextItemWidth(130.0f);
+                if (ImGui::BeginCombo("Shield", currentShieldLabel))
+                {
+                    for (int i = 0; i < static_cast<int>(std::size(shieldLabels)); ++i)
+                    {
+                        const bool isSelected = (i == currentShieldIdx);
+                        if (ImGui::Selectable(shieldLabels[i].label, isSelected))
+                        {
+                            appearance.shieldType = shieldLabels[i].type;
+                            if (appearance.shieldType == WT::None)
+                                appearance.shieldIndex = -1;
+                            else if (appearance.shieldIndex < 0)
+                                appearance.shieldIndex = 1;
+                        }
+                        if (isSelected)
+                            ImGui::SetItemDefaultFocus();
+                    }
+                    ImGui::EndCombo();
+                }
+                if (appearance.shieldType != WT::None)
+                {
+                    ImGui::SameLine();
+                    ImGui::SetNextItemWidth(60.0f);
+                    ImGui::InputInt("##shldIdx", &appearance.shieldIndex);
+                    if (appearance.shieldIndex < 1) appearance.shieldIndex = 1;
+                }
+            }
+
+            // ---- Cloak ----
+            ImGui::Separator();
+            {
+                bool hasCloak = appearance.cloakIndex > 0;
+                if (ImGui::Checkbox("Cloak", &hasCloak))
+                    appearance.cloakIndex = hasCloak ? 1 : -1;
+                if (hasCloak)
+                {
+                    ImGui::SameLine();
+                    ImGui::SetNextItemWidth(60.0f);
+                    ImGui::InputInt("##cloakIdx", &appearance.cloakIndex);
+                    if (appearance.cloakIndex < 1) appearance.cloakIndex = 1;
+                }
+            }
+
+            // ---- Mount (vehicle) ----
+            ImGui::Separator();
+            {
+                ImGui::Checkbox("Mount", &appearance.mounted);
+                if (appearance.mounted)
+                {
+                    static const char* mountClasses[] = { "hu", "de", "el", "vi" };
+                    int classIdx = 0;
+                    for (int i = 0; i < 4; ++i)
+                        if (appearance.mountClass == mountClasses[i]) { classIdx = i; break; }
+                    ImGui::SameLine();
+                    ImGui::SetNextItemWidth(60.0f);
+                    if (ImGui::BeginCombo("##mountClass", mountClasses[classIdx]))
+                    {
+                        for (int i = 0; i < 4; ++i)
+                        {
+                            const bool sel = (i == classIdx);
+                            if (ImGui::Selectable(mountClasses[i], sel))
+                                appearance.mountClass = mountClasses[i];
+                            if (sel) ImGui::SetItemDefaultFocus();
+                        }
+                        ImGui::EndCombo();
+                    }
+                    ImGui::SameLine();
+                    ImGui::SetNextItemWidth(60.0f);
+                    ImGui::InputInt("##mountIdx", &appearance.mountIndex);
+                    if (appearance.mountIndex < 0) appearance.mountIndex = 0;
+
+                    const int maxMountBone = std::max(0, characterSystem.mount_bone_count() - 1);
+                    if (maxMountBone > 0)
+                    {
+                        ImGui::SetNextItemWidth(80.0f);
+                        ImGui::InputInt("Seat bone", &characterSystem.mountBoneIndex);
+                        characterSystem.mountBoneIndex = std::clamp(characterSystem.mountBoneIndex, 0, maxMountBone);
+                    }
+                }
+            }
+
+            // Bone attachment tuning for weapons/shields (live — no reload needed).
+            {
+                const int maxBone = std::max(0, characterSystem.animation_bone_count() - 1);
+                bool showBoneSection = appearance.weaponType != phoenix::character::WeaponType::None
+                    || appearance.shieldType != phoenix::character::WeaponType::None;
+                if (showBoneSection && maxBone > 0)
+                {
+                    ImGui::Separator();
+                    ImGui::Text("Bone attach (0-%d)", maxBone);
+                    if (appearance.weaponType != phoenix::character::WeaponType::None)
+                    {
+                        ImGui::SetNextItemWidth(80.0f);
+                        ImGui::InputInt("Wpn bone", &characterSystem.weaponBoneIndex);
+                        characterSystem.weaponBoneIndex = std::clamp(characterSystem.weaponBoneIndex, 0, maxBone);
+                    }
+                    if (appearance.shieldType != phoenix::character::WeaponType::None)
+                    {
+                        ImGui::SetNextItemWidth(80.0f);
+                        ImGui::InputInt("Shld bone", &characterSystem.shieldBoneIndex);
+                        characterSystem.shieldBoneIndex = std::clamp(characterSystem.shieldBoneIndex, 0, maxBone);
+                    }
+                }
+            }
+
+            // Detect any change — triggers instant reload (no Apply button needed).
+            result.characterChanged = selectedCharacterOption != prevCharOption
+                || appearance.raceFolder != prevAppearance.raceFolder
+                || appearance.prefix != prevAppearance.prefix
+                || appearance.upperIndex != prevAppearance.upperIndex
+                || appearance.lowerIndex != prevAppearance.lowerIndex
+                || appearance.handIndex != prevAppearance.handIndex
+                || appearance.footIndex != prevAppearance.footIndex
+                || appearance.helmetIndex != prevAppearance.helmetIndex
+                || appearance.faceIndex != prevAppearance.faceIndex
+                || appearance.hairIndex != prevAppearance.hairIndex
+                || appearance.helmetVisible != prevAppearance.helmetVisible
+                || appearance.weaponType != prevAppearance.weaponType
+                || appearance.weaponIndex != prevAppearance.weaponIndex
+                || appearance.shieldType != prevAppearance.shieldType
+                || appearance.shieldIndex != prevAppearance.shieldIndex
+                || appearance.cloakIndex != prevAppearance.cloakIndex
+                || appearance.mounted != prevAppearance.mounted
+                || appearance.mountClass != prevAppearance.mountClass
+                || appearance.mountIndex != prevAppearance.mountIndex;
+            ImGui::TreePop();
+        }
+
+        // ---- Weapon aura (procedural particles, layered) ----
+        ImGui::Separator();
+        if (ImGui::TreeNode("Weapon aura"))
+        {
+            using WE = phoenix::character::WeaponEffect;
+            ImGui::Checkbox("Enabled", &weaponEffect.enabled());
+
+            // Preset → layer applier (combine elements by stacking layers).
+            static int presetIdx = 0;
+            static int targetLayer = 0;
+            const char* presetNames[WE::kPresetCount] = {
+                "Fire", "Ice", "Holy", "Poison", "Shadow", "Arcane" };
+            ImGui::SetNextItemWidth(110.0f);
+            ImGui::Combo("Preset", &presetIdx, presetNames, WE::kPresetCount);
+            ImGui::SameLine();
+            ImGui::SetNextItemWidth(50.0f);
+            ImGui::Combo("##presetLayer", &targetLayer, "L0\0L1\0L2\0");
+            ImGui::SameLine();
+            if (ImGui::Button("Apply"))
+                weaponEffect.apply_preset(targetLayer, static_cast<WE::Preset>(presetIdx));
+
+            static const char* axisNames[] = { "X", "Y", "Z" };
+            for (int i = 0; i < WE::kMaxLayers; ++i)
+            {
+                ImGui::PushID(i);
+                auto& L = weaponEffect.layer(i);
+                char hdr[24];
+                std::snprintf(hdr, sizeof(hdr), "Layer %d%s", i, L.enabled ? " (on)" : "");
+                if (ImGui::TreeNode(hdr))
+                {
+                    ImGui::Checkbox("On", &L.enabled);
+                    ImGui::ColorEdit3("Birth", L.colorStart);
+                    ImGui::ColorEdit3("Death", L.colorEnd);
+                    ImGui::SliderFloat("Intensity", &L.intensity, 0.0f, 3.0f, "%.2f");
+                    ImGui::SliderFloat("Spawn/s", &L.spawnRate, 0.0f, 400.0f, "%.0f");
+                    ImGui::SliderFloat("Flow speed", &L.flowSpeed, -2.0f, 2.0f, "%.2f");
+                    ImGui::SliderFloat("Lifetime", &L.lifetime, 0.1f, 3.0f, "%.2f");
+                    ImGui::SliderFloat("Size", &L.size, 0.01f, 0.25f, "%.3f");
+                    ImGui::SliderFloat("Blade length", &L.bladeLength, 0.0f, 2.0f, "%.2f");
+                    ImGui::SliderFloat("Swirl radius", &L.radius, 0.0f, 0.4f, "%.3f");
+                    ImGui::SliderFloat("Swirl speed", &L.swirl, -8.0f, 8.0f, "%.2f");
+                    L.axis = std::clamp(L.axis, 0, 2);
+                    ImGui::SetNextItemWidth(60.0f);
+                    if (ImGui::BeginCombo("Blade axis", axisNames[L.axis]))
+                    {
+                        for (int a = 0; a < 3; ++a)
+                        {
+                            const bool sel = (a == L.axis);
+                            if (ImGui::Selectable(axisNames[a], sel)) L.axis = a;
+                            if (sel) ImGui::SetItemDefaultFocus();
+                        }
+                        ImGui::EndCombo();
+                    }
+                    ImGui::TreePop();
+                }
+                ImGui::PopID();
+            }
+            if (!characterSystem.weapon_attachment().valid)
+                ImGui::TextDisabled("Equip a weapon to anchor the aura.");
             ImGui::TreePop();
         }
 
@@ -1760,8 +2132,9 @@ int main(int, char**)
     constexpr int kHeight = 720;
 
     const auto executableDir = executable_directory();
+    phoenix::core::initialize_logging(executableDir);
     {
-        std::ofstream log(kLogName, std::ios::trunc);
+        std::ofstream log = phoenix::core::open_engine_log();
         log << "Phoenix Engine\n";
         log << "Executable directory: " << executableDir.string() << "\n";
     }
@@ -1792,11 +2165,17 @@ int main(int, char**)
     const auto imguiAvailable = renderer.initialize_imgui(window.handle());
     if (!imguiAvailable)
     {
-        std::ofstream log(kLogName, std::ios::app);
+        std::ofstream log(phoenix::core::engine_log_path(), std::ios::app);
         log << "ImGui initialization unavailable\n";
     }
 
+    std::string lastLoggedLoadingStage;
     auto showLoading = [&](float progress, std::string_view stage) {
+        if (lastLoggedLoadingStage != stage)
+        {
+            lastLoggedLoadingStage = std::string(stage);
+            phoenix::core::write_log_line("Loading", lastLoggedLoadingStage);
+        }
         window.pump_messages();
         window.set_title(std::string(kAppTitle) + " - Loading - " + std::string(stage));
         const auto [sw, sh] = window.client_size();
@@ -1852,14 +2231,16 @@ int main(int, char**)
     showLoading(0.27f, "Audio");
     if (!audioAvailable)
     {
-        std::ofstream log(kLogName, std::ios::app);
+        std::ofstream log(phoenix::core::engine_log_path(), std::ios::app);
         log << "Audio initialization unavailable\n";
     }
 
     phoenix::character::CharacterSystem characterSystem;
+    phoenix::character::WeaponEffect weaponEffect;
     phoenix::character::CharacterAppearance characterAppearance{};
     auto characterOptions = scan_character_options(runtime.state().assets.root);
     runAsyncVoid([&]() { characterSystem.preload(runtime.state().assets.root); }, 0.29f, "Loading characters");
+    runAsyncVoid([&]() { characterSystem.preload_items(runtime.state().assets.root); }, 0.30f, "Loading items");
     showLoading(0.32f, "Characters");
     int selectedCharacterOption = 0;
     for (std::size_t i = 0; i < characterOptions.size(); ++i)
@@ -1897,7 +2278,7 @@ int main(int, char**)
     bool playMapSounds = true;
     bool playMapMusic = true;
     int selectedMapIndex = static_cast<int>(runtime.selected_world_map());
-    std::vector<phoenix::renderer::DdsTexture> cachedTextures;
+    bool terrainTexturesUploaded = false;
     std::size_t characterTextureBaseSlot = 0;
     phoenix::runtime::StaticObjectScene staticObjectScene;
     phoenix::runtime::AnimatedObjectScene animatedObjectScene;
@@ -1910,6 +2291,7 @@ int main(int, char**)
     HeightSamplerContext heightSamplerCtx{ &runtime, &worldCollisionMesh };
     MapAudioScene mapAudioScene;
     bool forceVisibilityUpdate = true;
+    bool gpuSkinningActive = false;
     std::optional<std::size_t> pendingMapLoad;
     CameraView lastCullView{};
     float displayedFps = 0.0f;
@@ -1973,8 +2355,71 @@ int main(int, char**)
         renderer.set_character_visible(playableMode);
     };
 
+    const auto releaseDecodedTextureRam = [](std::vector<phoenix::renderer::DdsTexture>& textures) {
+        for (auto& texture : textures)
+        {
+            std::vector<std::uint8_t>().swap(texture.rgba);
+        }
+    };
+
+    // Normalise all textures to uniform BC3 format at the dominant resolution
+    // so they can be uploaded as a single GPU-compressed Texture2DArray.
+    const auto normalizeTexturesForBcUpload = [](std::vector<phoenix::renderer::DdsTexture>& textures) {
+        if (textures.empty())
+            return;
+
+        // Vote on the dominant resolution among valid textures.
+        std::map<std::uint64_t, std::uint32_t> sizeCounts;
+        for (const auto& t : textures)
+        {
+            if (!t.valid || t.width == 0 || t.height == 0) continue;
+            const auto key = (static_cast<std::uint64_t>(t.width) << 32) | t.height;
+            sizeCounts[key]++;
+        }
+        std::uint32_t targetW = 256, targetH = 256; // default
+        std::uint32_t bestCount = 0;
+        for (const auto& [key, count] : sizeCounts)
+        {
+            if (count > bestCount)
+            {
+                bestCount = count;
+                targetW = static_cast<std::uint32_t>(key >> 32);
+                targetH = static_cast<std::uint32_t>(key & 0xFFFFFFFF);
+            }
+        }
+
+        // Compute mip count: down to 4×4 blocks (same as renderer logic).
+        const auto maxDim = std::max(targetW, targetH);
+        const auto fullMips = static_cast<std::uint32_t>(std::floor(std::log2(static_cast<float>(maxDim)))) + 1u;
+        const auto targetMips = std::min(fullMips,
+            static_cast<std::uint32_t>(std::max(1.0, std::log2(static_cast<double>(maxDim)) - 1.0)));
+
+        // Convert each texture to BC3 in parallel.
+        std::atomic<std::size_t> nextTex{ 0 };
+        const auto workerCount = std::min(
+            static_cast<std::size_t>(std::max(1u, std::thread::hardware_concurrency())),
+            textures.size());
+        std::vector<std::thread> workers;
+        workers.reserve(workerCount);
+        for (std::size_t w = 0; w < workerCount; ++w)
+        {
+            workers.emplace_back([&]() {
+                for (;;)
+                {
+                    const auto idx = nextTex.fetch_add(1, std::memory_order_relaxed);
+                    if (idx >= textures.size()) break;
+                    phoenix::renderer::convert_texture_to_bc3(
+                        textures[idx], targetW, targetH, targetMips);
+                }
+            });
+        }
+        for (auto& w : workers) w.join();
+    };
+
+    constexpr std::size_t kCharacterTextureSlotReserve = 32;
+
     const auto reloadCharacterIntoRenderer = [&]() {
-        if (characterTextureBaseSlot == 0 || cachedTextures.empty())
+        if (characterTextureBaseSlot == 0 || !terrainTexturesUploaded)
             return false;
 
         characterLoaded = characterSystem.load(runtime.state().assets.root, characterAppearance);
@@ -1984,12 +2429,55 @@ int main(int, char**)
         characterSystem.set_height_sampler(character_height_sampler, &heightSamplerCtx);
         characterSystem.set_collision_callback(character_collision_callback, &worldCollisionMesh);
         const auto& charTexPaths = characterSystem.texture_paths();
-        cachedTextures.resize(characterTextureBaseSlot + charTexPaths.size());
-        for (std::size_t i = 0; i < charTexPaths.size(); ++i)
-            cachedTextures[characterTextureBaseSlot + i] = phoenix::renderer::load_dds(charTexPaths[i]);
         characterSystem.set_texture_layer_base(static_cast<std::uint32_t>(characterTextureBaseSlot));
-        renderer.upload_terrain_textures(cachedTextures);
-        uploadCharacterMesh();
+
+        // Fast path: lookup pre-cached BC3 textures (no disk I/O, no conversion).
+        if (characterSystem.bc3_cache_ready() && charTexPaths.size() <= kCharacterTextureSlotReserve)
+        {
+            std::vector<phoenix::renderer::DdsTexture> characterTextures(charTexPaths.size());
+            bool allCached = true;
+            for (std::size_t i = 0; i < charTexPaths.size(); ++i)
+            {
+                const auto* cached = characterSystem.bc3_texture_for(charTexPaths[i]);
+                if (cached)
+                    characterTextures[i] = *cached; // copy BC3 mip data from RAM cache
+                else
+                {
+                    allCached = false;
+                    break;
+                }
+            }
+            if (!allCached)
+            {
+                // Fallback: load from disk + convert (should be rare).
+                for (std::size_t i = 0; i < charTexPaths.size(); ++i)
+                    characterTextures[i] = phoenix::renderer::load_dds(charTexPaths[i]);
+                normalizeTexturesForBcUpload(characterTextures);
+            }
+            renderer.upload_terrain_texture_layers(static_cast<std::uint32_t>(characterTextureBaseSlot), characterTextures);
+        }
+        else
+        {
+            // Fallback: load from disk + convert.
+            std::vector<phoenix::renderer::DdsTexture> characterTextures(charTexPaths.size());
+            for (std::size_t i = 0; i < charTexPaths.size(); ++i)
+                characterTextures[i] = phoenix::renderer::load_dds(charTexPaths[i]);
+            normalizeTexturesForBcUpload(characterTextures);
+            renderer.upload_terrain_texture_layers(static_cast<std::uint32_t>(characterTextureBaseSlot), characterTextures);
+        }
+
+        // Fast mesh update: reuses existing GPU buffers, no vkDeviceWaitIdle.
+        if (characterSystem.ready())
+        {
+            phoenix::character::PlayableInput noInput{};
+            characterSystem.update(0.0f, noInput);
+            const auto& charVerts = characterSystem.world_vertices();
+            const auto& charIndices = characterSystem.indices();
+            const auto* terrainVerts = reinterpret_cast<const phoenix::renderer::TerrainVertex*>(charVerts.data());
+            std::vector<phoenix::renderer::TerrainVertex> tv(terrainVerts, terrainVerts + charVerts.size());
+            renderer.update_character_mesh(tv, charIndices);
+            renderer.set_character_visible(playableMode);
+        }
         return true;
     };
 
@@ -1999,7 +2487,7 @@ int main(int, char**)
         applyFogSettings();
         mapAudioScene = build_map_audio_scene(runtime);
         {
-            std::ofstream audioLog(kLogName, std::ios::app);
+            std::ofstream audioLog(phoenix::core::engine_log_path(), std::ios::app);
             audioLog << "Map audio: musicZones=" << mapAudioScene.musicZones.size()
                 << " soundEmitters=" << mapAudioScene.soundEmitters.size()
                 << " available=" << (audioAvailable ? "yes" : "no") << "\n";
@@ -2087,7 +2575,7 @@ int main(int, char**)
 
 
         {
-            std::ofstream textureLog(kLogName, std::ios::app);
+            std::ofstream textureLog(phoenix::core::engine_log_path(), std::ios::app);
             textureLog << "Terrain texture layers: " << texturePaths.size()
                 << " (loaded with " << threadCount << " threads)\n";
             for (std::size_t i = 0; i < texturePaths.size(); ++i)
@@ -2141,47 +2629,101 @@ int main(int, char**)
         runtime.set_effect_texture_base(0);
 
         // Load character textures into the texture array after water frames.
-        if (!characterLoaded)
+        // Reserve kCharacterTextureSlotReserve slots so appearance swaps don't resize the GPU array.
         {
-            characterLoaded = characterSystem.load(runtime.state().assets.root, characterAppearance);
-            if (characterLoaded)
-            {
-                characterSystem.set_height_sampler(character_height_sampler, &heightSamplerCtx);
-                characterSystem.set_collision_callback(character_collision_callback, &worldCollisionMesh);
-                const auto& charTexPaths = characterSystem.texture_paths();
-                const auto newTotalSlots = characterTextureBaseSlot + charTexPaths.size();
-                terrainTextures.resize(newTotalSlots);
-                for (std::size_t i = 0; i < charTexPaths.size(); ++i)
-                    terrainTextures[characterTextureBaseSlot + i] = phoenix::renderer::load_dds(charTexPaths[i]);
-                characterSystem.set_texture_layer_base(static_cast<std::uint32_t>(characterTextureBaseSlot));
+            const auto reservedEnd = characterTextureBaseSlot + kCharacterTextureSlotReserve;
+            terrainTextures.resize(reservedEnd); // fills reserved slots with empty (invalid) textures
 
-                std::ofstream log(kLogName, std::ios::app);
-                log << "Character textures base layer: " << characterTextureBaseSlot
-                    << " count: " << charTexPaths.size() << "\n";
+            const auto loadCharTextures = [&]() {
+                const auto& charTexPaths = characterSystem.texture_paths();
+                // Use BC3 cache if available (instant), else load from disk.
+                if (characterSystem.bc3_cache_ready())
+                {
+                    for (std::size_t i = 0; i < charTexPaths.size() && i < kCharacterTextureSlotReserve; ++i)
+                    {
+                        const auto* cached = characterSystem.bc3_texture_for(charTexPaths[i]);
+                        if (cached)
+                            terrainTextures[characterTextureBaseSlot + i] = *cached;
+                        else
+                            terrainTextures[characterTextureBaseSlot + i] = phoenix::renderer::load_dds(charTexPaths[i]);
+                    }
+                }
+                else
+                {
+                    for (std::size_t i = 0; i < charTexPaths.size() && i < kCharacterTextureSlotReserve; ++i)
+                        terrainTextures[characterTextureBaseSlot + i] = phoenix::renderer::load_dds(charTexPaths[i]);
+                }
+                characterSystem.set_texture_layer_base(static_cast<std::uint32_t>(characterTextureBaseSlot));
+            };
+
+            if (!characterLoaded)
+            {
+                characterLoaded = characterSystem.load(runtime.state().assets.root, characterAppearance);
+                if (characterLoaded)
+                {
+                    characterSystem.set_height_sampler(character_height_sampler, &heightSamplerCtx);
+                    characterSystem.set_collision_callback(character_collision_callback, &worldCollisionMesh);
+                    loadCharTextures();
+
+                    std::ofstream log(phoenix::core::engine_log_path(), std::ios::app);
+                    log << "Character textures base layer: " << characterTextureBaseSlot
+                        << " reserved: " << kCharacterTextureSlotReserve
+                        << " used: " << characterSystem.texture_paths().size() << "\n";
+                }
             }
-        }
-        else if (characterLoaded)
-        {
-            const auto& charTexPaths = characterSystem.texture_paths();
-            const auto newTotalSlots = characterTextureBaseSlot + charTexPaths.size();
-            terrainTextures.resize(newTotalSlots);
-            for (std::size_t i = 0; i < charTexPaths.size(); ++i)
-                terrainTextures[characterTextureBaseSlot + i] = phoenix::renderer::load_dds(charTexPaths[i]);
-            characterSystem.set_texture_layer_base(static_cast<std::uint32_t>(characterTextureBaseSlot));
+            else
+            {
+                loadCharTextures();
+            }
         }
 
         showLoading(0.68f, "Uploading textures");
         if (!terrainTextures.empty())
         {
-            std::size_t texRamBytes = 0;
-            for (const auto& t : terrainTextures) texRamBytes += t.rgba.size();
+            // Log pre-normalisation format census.
             {
-                std::ofstream log(kLogName, std::ios::app);
-                log << "Texture RAM: " << terrainTextures.size() << " slots, "
-                    << (texRamBytes / (1024 * 1024)) << " MB decoded RGBA\n";
+                std::uint32_t countBc1{}, countBc3{}, countRgba{}, countInvalid{};
+                std::map<std::string, std::uint32_t> sizeDistribution;
+                for (const auto& t : terrainTextures)
+                {
+                    if (!t.valid) { ++countInvalid; continue; }
+                    auto sizeKey = std::to_string(t.width) + "x" + std::to_string(t.height);
+                    sizeDistribution[sizeKey]++;
+                    if (t.compressed && t.vkFormat == VK_FORMAT_BC1_RGBA_UNORM_BLOCK) ++countBc1;
+                    else if (t.compressed && (t.vkFormat == VK_FORMAT_BC3_UNORM_BLOCK || t.vkFormat == VK_FORMAT_BC2_UNORM_BLOCK)) ++countBc3;
+                    else ++countRgba;
+                }
+                std::ofstream log(phoenix::core::engine_log_path(), std::ios::app);
+                log << "Texture format census (pre-normalise): BC1=" << countBc1 << " BC3=" << countBc3
+                    << " RGBA=" << countRgba << " invalid=" << countInvalid
+                    << " total=" << terrainTextures.size() << "\n";
+                for (const auto& [size, count] : sizeDistribution)
+                    log << "  size " << size << ": " << count << "\n";
             }
-            renderer.upload_terrain_textures(terrainTextures);
-            cachedTextures = std::move(terrainTextures);
+
+            showLoading(0.70f, "Normalising textures to BC3");
+            normalizeTexturesForBcUpload(terrainTextures);
+
+            {
+                std::size_t bcBytes = 0;
+                for (const auto& t : terrainTextures)
+                    for (const auto& mip : t.mipData) bcBytes += mip.size();
+                std::ofstream log(phoenix::core::engine_log_path(), std::ios::app);
+                log << "Texture upload: " << terrainTextures.size() << " slots, "
+                    << (bcBytes / (1024 * 1024)) << " MB BC3 mip data, uploadMode=BC3-native\n";
+            }
+
+            showLoading(0.74f, "Uploading BC3 textures");
+            terrainTexturesUploaded = renderer.upload_terrain_textures(terrainTextures);
+            if (terrainTexturesUploaded)
+            {
+                releaseDecodedTextureRam(terrainTextures);
+                // Also release mip data — GPU has it now.
+                for (auto& t : terrainTextures)
+                    std::vector<std::vector<std::uint8_t>>().swap(t.mipData);
+                std::ofstream log(phoenix::core::engine_log_path(), std::ios::app);
+                log << "Texture RAM: released BC3 mip data after GPU upload\n";
+            }
         }
 
         const auto& world = runtime.state().world;
@@ -2212,14 +2754,14 @@ int main(int, char**)
         terrainVertexCount = static_cast<std::uint32_t>(terrainVertices.size());
         terrainIndexCount = static_cast<std::uint32_t>(terrainIndices.size());
         {
-            std::ofstream log(kLogName, std::ios::app);
+            std::ofstream log(phoenix::core::engine_log_path(), std::ios::app);
             log << "Terrain mesh: vertices=" << terrainVertices.size()
                 << " indices=" << terrainIndices.size() << "\n";
         }
 
         if (!renderer.set_terrain_mesh(terrainVertices, terrainIndices))
         {
-            std::ofstream log(kLogName, std::ios::app);
+            std::ofstream log(phoenix::core::engine_log_path(), std::ios::app);
             log << "Terrain mesh upload unavailable; using CPU preview fallback\n";
             const auto previewWidth = std::max(480u, renderer.surface_width() / 2u);
             const auto previewHeight = std::max(270u, renderer.surface_height() / 2u);
@@ -2379,7 +2921,7 @@ int main(int, char**)
         objectInstanceCount = static_cast<std::uint32_t>(staticObjectScene.instances.size());
         objectBatchCount = static_cast<std::uint32_t>(staticObjectScene.batches.size());
         {
-            std::ofstream log(kLogName, std::ios::app);
+            std::ofstream log(phoenix::core::engine_log_path(), std::ios::app);
             log << "Static object mesh: vertices=" << staticObjectScene.vertices.size()
                 << " indices=" << staticObjectScene.indices.size()
                 << " instances=" << staticObjectScene.instances.size()
@@ -2392,8 +2934,15 @@ int main(int, char**)
             staticObjectScene.instances,
             staticObjectScene.batches))
         {
-            std::ofstream log(kLogName, std::ios::app);
+            std::ofstream log(phoenix::core::engine_log_path(), std::ios::app);
             log << "Static object mesh upload unavailable\n";
+        }
+
+        // Upload indirect draw data for GPU frustum culling.
+        if (renderer.upload_indirect_draw_data(staticObjectScene.batches, extract_gpu_bounds(staticObjectScene)))
+        {
+            std::ofstream log(phoenix::core::engine_log_path(), std::ios::app);
+            log << "GPU frustum culling: " << staticObjectScene.batches.size() << " batches uploaded to indirect draw\n";
         }
 
         if (!animatedObjectScene.vertices.empty()
@@ -2403,8 +2952,33 @@ int main(int, char**)
                 animatedObjectScene.instances,
                 animatedObjectScene.batches))
         {
-            std::ofstream log(kLogName, std::ios::app);
+            std::ofstream log(phoenix::core::engine_log_path(), std::ios::app);
             log << "Animated object mesh upload unavailable\n";
+        }
+
+        // Upload GPU skinning source vertices for compute skinning.
+        gpuSkinningActive = false;
+        if (actorVertexAnimationStart < animatedObjectScene.vertexAnimations.size())
+        {
+            // Build source vertex array for all actor vertex animations.
+            std::vector<phoenix::world::GpuSkinSourceVertex> allSkinSources;
+            allSkinSources.resize(animatedObjectScene.vertices.size()); // sized for full vertex buffer
+            for (std::size_t i = actorVertexAnimationStart; i < animatedObjectScene.vertexAnimations.size(); ++i)
+            {
+                const auto& anim = animatedObjectScene.vertexAnimations[i];
+                if (!anim.hasActorSkin || anim.skinData.sourceVertices.empty())
+                    continue;
+                auto gpuSources = phoenix::world::build_gpu_skin_sources(anim.skinData);
+                const auto count = std::min(gpuSources.size(), static_cast<std::size_t>(anim.vertexCount));
+                for (std::size_t v = 0; v < count; ++v)
+                    allSkinSources[anim.firstVertex + v] = gpuSources[v];
+            }
+            if (renderer.upload_skin_source_vertices(allSkinSources.data(), allSkinSources.size()))
+                gpuSkinningActive = true;
+        }
+        {
+            std::ofstream log(phoenix::core::engine_log_path(), std::ios::app);
+            log << "GPU compute skinning: " << (gpuSkinningActive ? "active" : "disabled (CPU fallback)") << "\n";
         }
 
         showLoading(0.90f, "Finalizing scene");
@@ -2470,11 +3044,12 @@ int main(int, char**)
             actorGrid.lastCX = ActorGrid::to_cell(initCamX);
             actorGrid.lastCZ = ActorGrid::to_cell(initCamZ);
             renderer.update_static_object_instances(staticObjectScene.instances, staticObjectScene.batches);
+            renderer.update_indirect_draw_data(staticObjectScene.batches, extract_gpu_bounds(staticObjectScene));
             objectInstanceCount = static_cast<std::uint32_t>(staticObjectScene.instances.size());
             objectBatchCount = static_cast<std::uint32_t>(staticObjectScene.batches.size());
         }
         {
-            std::ofstream log(kLogName, std::ios::app);
+            std::ofstream log(phoenix::core::engine_log_path(), std::ios::app);
             log << "Actor grid: " << actorGrid.staticCells.size() << " cells, "
                 << actorGrid.staticTemplates.size() << " static templates, "
                 << (animatedObjectScene.batches.size() - actorAnimatedBatchStart)
@@ -2528,14 +3103,118 @@ int main(int, char**)
         renderer.update_water_time(totalTime);
         if (!animatedObjectScene.vertices.empty())
         {
+            float camX, camY, camZ, camYaw, camPitch;
+            if (playableMode && characterSystem.ready())
+                characterSystem.camera_state(camX, camY, camZ, camYaw, camPitch);
+            else
+                runtime.camera_state(camX, camY, camZ, camYaw, camPitch);
+
+            if (gpuSkinningActive && renderer.gpu_skinning_ready())
             {
-                float camX, camY, camZ, camYaw, camPitch;
-                if (playableMode && characterSystem.ready())
-                    characterSystem.camera_state(camX, camY, camZ, camYaw, camPitch);
-                else
-                    runtime.camera_state(camX, camY, camZ, camYaw, camPitch);
+                // GPU skinning path: CPU handles animation state + mob movement + VANI only.
+                // Actor vertex skinning is done by compute shader.
+                constexpr float kAnimationRange = 180.0f;
+
+                // Run animation update (mob movement, VANI, gesture timing) but skip CPU skinning.
+                runtime.update_animated_object_scene(animatedObjectScene, totalTime, deltaSeconds, camX, camY, camZ, actorVertexAnimationStart, true);
+
+                // Compute bone matrices for visible actors and queue GPU dispatches.
+                std::vector<float> allBoneMatrices;
+                for (std::size_t i = actorVertexAnimationStart; i < animatedObjectScene.vertexAnimations.size(); ++i)
+                {
+                    const auto& anim = animatedObjectScene.vertexAnimations[i];
+                    if (!anim.hasActorSkin || anim.skinData.sourceVertices.empty())
+                        continue;
+
+                    // Distance cull check (same as CPU path).
+                    const float dx = anim.worldX - camX;
+                    const float dy = anim.worldY - camY;
+                    const float dz = anim.worldZ - camZ;
+                    const float distSq = dx * dx + dy * dy + dz * dz;
+                    const float effectiveRange = kAnimationRange + anim.boundingRadius;
+                    if (distSq > effectiveRange * effectiveRange)
+                        continue;
+
+                    // Determine active animation and frame (mirrors CPU logic).
+                    const auto& breathAnim = anim.animations.breath;
+                    const auto& idleAnim = anim.animations.idle;
+                    const auto& walkAnim = anim.animations.walk;
+                    const auto& runAnim = anim.animations.run;
+
+                    auto animFrameCount = [](const phoenix::world::CharacterAnimation& a) -> float {
+                        if (!a.parsed || a.endKeyframe <= a.startKeyframe)
+                            return 1.0f;
+                        return static_cast<float>(a.endKeyframe - a.startKeyframe + 1);
+                    };
+
+                    const phoenix::world::CharacterAnimation* activeAnim = &breathAnim;
+                    float frameF = 0.0f;
+
+                    if (anim.isMob)
+                    {
+                        const auto total = std::max(1u, anim.totalInstances);
+                        const float movingRatio = static_cast<float>(anim.movingCount) / static_cast<float>(total);
+                        const float runningRatio = static_cast<float>(anim.runningCount) / static_cast<float>(total);
+                        float playbackRate = 12.0f;
+                        if (runningRatio > 0.4f && runAnim.parsed)
+                        {
+                            activeAnim = &runAnim;
+                            playbackRate = 18.0f;
+                        }
+                        else if (movingRatio > 0.4f && walkAnim.parsed)
+                        {
+                            activeAnim = &walkAnim;
+                            playbackRate = 14.0f;
+                        }
+                        else if (anim.playingGesture && idleAnim.parsed)
+                        {
+                            activeAnim = &idleAnim;
+                            frameF = (anim.gestureTimer / 5.0f) * animFrameCount(idleAnim);
+                        }
+                        if (activeAnim != &idleAnim || !anim.playingGesture)
+                            frameF = std::fmod(totalTime * playbackRate, animFrameCount(*activeAnim));
+                    }
+                    else
+                    {
+                        // NPC
+                        float playbackRate = 12.0f;
+                        if (anim.playingGesture && idleAnim.parsed)
+                        {
+                            activeAnim = &idleAnim;
+                            frameF = (anim.gestureTimer / 5.0f) * animFrameCount(idleAnim);
+                        }
+                        else
+                        {
+                            frameF = std::fmod(totalTime * playbackRate, animFrameCount(*activeAnim));
+                        }
+                    }
+
+                    if (!activeAnim->parsed)
+                        continue;
+
+                    const auto boneOffset = static_cast<std::uint32_t>(allBoneMatrices.size() / 16);
+                    const auto boneCount = phoenix::world::compute_skin_matrices(
+                        anim.skinData, *activeAnim, frameF, allBoneMatrices);
+                    if (boneCount == 0)
+                        continue;
+
+                    renderer.dispatch_skin_compute(anim.firstVertex, anim.vertexCount, boneOffset);
+                }
+
+                // Upload all bone matrices for this frame.
+                if (!allBoneMatrices.empty())
+                {
+                    renderer.upload_skin_matrices(
+                        allBoneMatrices.data(),
+                        static_cast<std::uint32_t>(allBoneMatrices.size() / 16));
+                }
+            }
+            else
+            {
+                // CPU skinning fallback path (unchanged).
                 runtime.update_animated_object_scene(animatedObjectScene, totalTime, deltaSeconds, camX, camY, camZ, actorVertexAnimationStart);
             }
+
             renderer.update_animated_object_scene(animatedObjectScene.vertices, animatedObjectScene.instances);
         }
 
@@ -2566,7 +3245,7 @@ int main(int, char**)
                     characterSystem.set_world_position(spawn.x, spawn.y, spawn.z, freeCamYaw);
                     heightSamplerCtx.lastCharacterY = spawn.y;
                     uploadCharacterMesh();
-                    std::ofstream log(kLogName, std::ios::app);
+                    std::ofstream log(phoenix::core::engine_log_path(), std::ios::app);
                     log << "Playable dungeon spawn: x=" << spawn.x
                         << " y=" << spawn.y
                         << " z=" << spawn.z
@@ -2574,7 +3253,7 @@ int main(int, char**)
                 }
                 else
                 {
-                    std::ofstream log(kLogName, std::ios::app);
+                    std::ofstream log(phoenix::core::engine_log_path(), std::ios::app);
                     log << "Playable dungeon spawn unavailable: collisionTriangles="
                         << worldCollisionMesh.triangles.size() << "\n";
                 }
@@ -2690,6 +3369,7 @@ int main(int, char**)
         {
             actorGrid.rebuild(cameraX, cameraZ, actorViewDistance, staticObjectScene, actorBatchStart);
             renderer.update_static_object_instances(staticObjectScene.instances, staticObjectScene.batches);
+            renderer.update_indirect_draw_data(staticObjectScene.batches, extract_gpu_bounds(staticObjectScene));
             objectInstanceCount = static_cast<std::uint32_t>(staticObjectScene.instances.size());
             objectBatchCount = static_cast<std::uint32_t>(staticObjectScene.batches.size());
             forceVisibilityUpdate = true;
@@ -2716,14 +3396,24 @@ int main(int, char**)
                 terrainIndexCount = visibleTerrainIndexCount;
 
             const float effectiveActorDistance = actorsEnabled ? actorViewDistance : -1.0f;
-            std::vector<phoenix::renderer::ObjectBatch> visibleBatches;
-            build_visible_object_batches(staticObjectScene, currentView, actorBatchStart, effectiveActorDistance, visibleBatches);
-            renderer.set_static_object_batches(visibleBatches);
-            std::uint32_t visibleObjectInstances{};
-            for (const auto& batch : visibleBatches)
-                visibleObjectInstances += batch.instanceCount;
-            objectInstanceCount = visibleObjectInstances;
-            objectBatchCount = static_cast<std::uint32_t>(visibleBatches.size());
+            if (renderer.indirect_draw_ready())
+            {
+                // GPU frustum culling handles static objects — no CPU culling needed.
+                // The compute shader runs each frame with the current camera state.
+                objectBatchCount = static_cast<std::uint32_t>(staticObjectScene.batches.size());
+            }
+            else
+            {
+                // Fallback: CPU frustum culling.
+                std::vector<phoenix::renderer::ObjectBatch> visibleBatches;
+                build_visible_object_batches(staticObjectScene, currentView, actorBatchStart, effectiveActorDistance, visibleBatches);
+                renderer.set_static_object_batches(visibleBatches);
+                std::uint32_t visibleObjectInstances{};
+                for (const auto& batch : visibleBatches)
+                    visibleObjectInstances += batch.instanceCount;
+                objectInstanceCount = visibleObjectInstances;
+                objectBatchCount = static_cast<std::uint32_t>(visibleBatches.size());
+            }
 
             if (!animatedObjectScene.batches.empty())
             {
@@ -2759,6 +3449,8 @@ int main(int, char**)
                 characterOptions,
                 selectedCharacterOption,
                 characterAppearance,
+                characterSystem,
+                weaponEffect,
                 cameraX, cameraY, cameraZ, cameraYaw, cameraPitch);
 
             if (panelResult.loadRequested)
@@ -2778,7 +3470,7 @@ int main(int, char**)
                 uploadDebugGizmos();
             }
 
-            if (panelResult.characterApplyRequested)
+            if (panelResult.characterChanged)
                 reloadCharacterIntoRenderer();
 
             if (actorsEnabled != prevActorsEnabled)
@@ -2893,6 +3585,10 @@ int main(int, char**)
                 playMapMusic,
                 playMapSounds));
         }
+
+        // Procedural weapon-effect particles (anchored to the equipped weapon's
+        // attach bone, recomputed in characterSystem.update()).
+        weaponEffect.update(deltaSeconds, characterSystem.weapon_attachment(), renderer);
 
         renderer.render_frame();
 

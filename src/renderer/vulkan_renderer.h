@@ -38,10 +38,28 @@ namespace phoenix::renderer
         std::uint32_t instanceCount{};
     };
 
+    struct BatchBoundsGpu
+    {
+        float x{};
+        float y{};
+        float z{};
+        float radius{};
+    };
+
     struct TerrainDrawRange
     {
         std::uint32_t firstIndex{};
         std::uint32_t indexCount{};
+    };
+
+    // One live particle billboard. Layout matches the HLSL Particle struct
+    // (shaders/particle.hlsl): float3 worldPos, float size, float4 color —
+    // 32 bytes, std430-compatible. Sprites are drawn procedurally (no texture).
+    struct ParticleInstance
+    {
+        float position[3]{};
+        float size{};
+        float color[4]{};
     };
 
     class VulkanRenderer
@@ -77,14 +95,35 @@ namespace phoenix::renderer
             const std::vector<ObjectInstance>& instances);
         bool update_terrain_indices(const std::vector<std::uint32_t>& indices);
         void set_static_object_batches(const std::vector<ObjectBatch>& batches);
+        bool upload_indirect_draw_data(
+            const std::vector<ObjectBatch>& batches,
+            const std::vector<BatchBoundsGpu>& bounds);
+        void update_indirect_draw_data(
+            const std::vector<ObjectBatch>& batches,
+            const std::vector<BatchBoundsGpu>& bounds);
+        bool indirect_draw_ready() const;
         void set_animated_object_batches(const std::vector<ObjectBatch>& batches);
         void set_terrain_draw_ranges(const std::vector<TerrainDrawRange>& ranges);
+        // GPU compute skinning.
+        bool upload_skin_source_vertices(const void* data, std::size_t count);
+        bool upload_skin_matrices(const float* data, std::uint32_t matrixCount);
+        void dispatch_skin_compute(std::uint32_t firstVertex, std::uint32_t vertexCount, std::uint32_t boneMatrixOffset);
+        bool gpu_skinning_ready() const;
+
         bool set_debug_mesh(const std::vector<TerrainVertex>& vertices, const std::vector<std::uint32_t>& indices);
         void set_debug_visible(bool visible);
         bool set_character_mesh(const std::vector<TerrainVertex>& vertices, const std::vector<std::uint32_t>& indices);
+        // Fast mesh swap: reuses existing GPU buffers when large enough, no vkDeviceWaitIdle.
+        bool update_character_mesh(const std::vector<TerrainVertex>& vertices, const std::vector<std::uint32_t>& indices);
         bool update_character_vertices(const std::vector<TerrainVertex>& vertices);
         void set_character_visible(bool visible);
         bool upload_terrain_textures(const std::vector<DdsTexture>& textures);
+        bool upload_terrain_texture_layers(std::uint32_t firstLayer, const std::vector<DdsTexture>& textures);
+        // Procedural weapon-effect particles. set_particle_instances uploads the
+        // per-frame billboard list; sprites are rendered as a soft procedural dot
+        // (no textures). Instances [0, additiveStart) draw with alpha blending,
+        // [additiveStart, end) with additive blending.
+        void set_particle_instances(const std::vector<ParticleInstance>& instances, std::uint32_t additiveStart);
         void set_sky_settings(const float* fogColor, float fogStartDistance, float fogEndDistance, bool hasWorldSky);
         void set_sky_texture_layers(std::uint32_t skyLayer, std::uint32_t primaryCloudLayer, std::uint32_t secondaryCloudLayer);
         void set_sky_tuning(const float* values, std::uint32_t count);
@@ -122,7 +161,10 @@ namespace phoenix::renderer
         bool create_depth_resources();
         bool create_terrain_pipeline();
         bool create_static_object_pipeline();
+        bool create_cull_compute_pipeline();
+        bool create_skin_compute_pipeline();
         bool create_sky_pipeline();
+        bool create_particle_pipeline();
         bool create_descriptor_resources();
         bool create_preview_buffer(std::size_t byteSize);
         bool create_preview_image(std::uint32_t width, std::uint32_t height);

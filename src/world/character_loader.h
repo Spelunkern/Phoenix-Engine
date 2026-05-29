@@ -63,6 +63,25 @@ namespace phoenix::world
         bool ep6{};
     };
 
+    // 3DO format — static mesh for weapons and shields (no bones).
+    struct ItemVertex
+    {
+        float position[3]{};
+        float normal[3]{};
+        float uv[2]{};
+    };
+
+    struct ItemModel
+    {
+        std::string textureName;
+        std::vector<ItemVertex> vertices;
+        std::vector<CharacterFace> faces; // same uint16 triangle format
+        bool parsed{};
+    };
+
     CharacterModel load_character_3dc(const std::filesystem::path& path);
+    // Cloak-specific 3DC loader: no version header, starts directly with boneCount=0.
+    CharacterModel load_cloak_3dc(const std::filesystem::path& path);
     CharacterAnimation load_character_ani(const std::filesystem::path& path);
+    ItemModel load_item_3do(const std::filesystem::path& path);
 }

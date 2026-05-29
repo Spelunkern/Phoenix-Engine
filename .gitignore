@@ -11,7 +11,12 @@
 /Data/
 /**/Data/
 
+# Portable CMake extracted locally by scripts/build.sh from the bundled tarball
+# in external/cmake/ (the tarball itself is tracked; the extraction is not).
+/.cmake-portable/
+
 # Logs and local state
+/Logs/
 *.log
 imgui.ini
 /diagnostics/

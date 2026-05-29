@@ -13,6 +13,70 @@ namespace phoenix::assets
         return value;
     }
 
+    std::string trim_ascii(std::string value)
+    {
+        auto isTrim = [](unsigned char ch) {
+            return ch == ' ' || ch == '\t' || ch == '\r' || ch == '\n' || ch == '\f' || ch == '\v';
+        };
+        std::size_t begin = 0;
+        std::size_t end = value.size();
+        while (begin < end && isTrim(static_cast<unsigned char>(value[begin])))
+            ++begin;
+        while (end > begin && isTrim(static_cast<unsigned char>(value[end - 1])))
+            --end;
+        return value.substr(begin, end - begin);
+    }
+
+    std::filesystem::path resolve_existing_path_case_insensitive(const std::filesystem::path& requested)
+    {
+        if (requested.empty())
+            return {};
+
+        std::error_code ec;
+        if (std::filesystem::exists(requested, ec))
+            return requested;
+
+        // Walk the path component by component, fixing the case of each segment
+        // against what actually exists on disk.
+        std::filesystem::path result;
+        bool first = true;
+        for (const auto& comp : requested)
+        {
+            if (first)
+            {
+                result = comp;   // root ("/" or drive) or first relative segment
+                first = false;
+                continue;
+            }
+
+            std::filesystem::path candidate = result / comp;
+            if (std::filesystem::exists(candidate, ec))
+            {
+                result = std::move(candidate);
+                continue;
+            }
+
+            if (!std::filesystem::is_directory(result, ec))
+                return {};
+
+            const auto wanted = lower_ascii(comp.string());
+            bool found = false;
+            for (const auto& entry : std::filesystem::directory_iterator(result, ec))
+            {
+                if (lower_ascii(entry.path().filename().string()) == wanted)
+                {
+                    result = entry.path();
+                    found = true;
+                    break;
+                }
+            }
+            if (!found)
+                return {};
+        }
+
+        return std::filesystem::exists(result, ec) ? result : std::filesystem::path{};
+    }
+
     std::string DataIndex::normalize_key(std::filesystem::path path)
     {
         auto value = path.generic_string();
