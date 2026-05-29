@@ -2,7 +2,7 @@
 
 All notable changes to Phoenix Engine are documented here. Dates are ISO-8601.
 
-## [Unreleased]
+## [v0.3] - 2026-05-29
 
 This round focused on gameplay/visual features, a large modularity refactor,
 startup-time performance, cross-platform (Linux) portability, and bug fixes.
