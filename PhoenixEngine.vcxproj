@@ -81,6 +81,7 @@
     <ClCompile Include="src\platform\sdl_window.cpp" />
     <ClCompile Include="src\renderer\dds_loader.cpp" />
     <ClCompile Include="src\renderer\vulkan_renderer.cpp" />
+    <ClCompile Include="src\renderer\vulkan_renderer_particles.cpp" />
     <ClCompile Include="src\world\dg_loader.cpp" />
     <ClCompile Include="src\world\smod_loader.cpp" />
     <ClCompile Include="src\world\vani_loader.cpp" />
@@ -112,6 +113,7 @@
     <ClInclude Include="src\platform\sdl_window.h" />
     <ClInclude Include="src\renderer\dds_loader.h" />
     <ClInclude Include="src\renderer\vulkan_renderer.h" />
+    <ClInclude Include="src\renderer\vulkan_renderer_internal.h" />
     <ClInclude Include="src\world\dg_loader.h" />
     <ClInclude Include="src\world\smod_loader.h" />
     <ClInclude Include="src\world\vani_loader.h" />

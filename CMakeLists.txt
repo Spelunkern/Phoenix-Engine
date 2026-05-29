@@ -18,6 +18,7 @@ set(ENGINE_SOURCES
     src/platform/sdl_window.cpp
     src/renderer/dds_loader.cpp
     src/renderer/vulkan_renderer.cpp
+    src/renderer/vulkan_renderer_particles.cpp
     src/runtime/phoenix_runtime.cpp
     src/ui/editor_panel.cpp
     src/ui/perf_hud.cpp
