@@ -53,6 +53,8 @@ namespace phoenix::effects
         float coneAngleDeg{ 25.0f };              // half-angle for Cone
         float originHeight{ 0.0f };               // spawn offset up the local Y axis
                                                   // (e.g. rain / rocks falling from the sky)
+        float swirl{ 0.0f };                      // tangential orbit speed around the
+                                                  // anchor's Y axis (tornadoes/vortices)
         bool enabled{ true };
     };
 
@@ -74,6 +76,7 @@ namespace phoenix::effects
         bool projectile{ false };
         float projectileSpeed{ 0.0f };
         float projectileRange{ 0.0f };
+        float projectileGravity{ 0.0f };  // >0 makes the projectile arc downward
     };
 
     // World placement. basis columns map local X/Y/Z to world (identity * scale for

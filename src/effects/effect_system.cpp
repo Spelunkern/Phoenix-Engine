@@ -176,6 +176,7 @@ namespace phoenix::effects
             {
                 if (inst.ageS < inst.travelTime)
                 {
+                    inst.velocity[1] -= inst.def.projectileGravity * dt;  // arc
                     inst.anchor.position[0] += inst.velocity[0] * dt;
                     inst.anchor.position[1] += inst.velocity[1] * dt;
                     inst.anchor.position[2] += inst.velocity[2] * dt;
@@ -222,6 +223,8 @@ namespace phoenix::effects
                 const float intensity = std::clamp(layer.intensity, 0.0f, 4.0f);
                 const float dragFactor = std::clamp(1.0f - layer.drag * dt, 0.0f, 1.0f);
                 const bool additive = (layer.blend == Blend::Additive);
+                const float cx = inst.anchor.position[0];
+                const float cz = inst.anchor.position[2];
                 for (auto& p : rt.particles)
                 {
                     if (!p.alive)
@@ -234,6 +237,19 @@ namespace phoenix::effects
                     }
                     p.vel[1] -= layer.gravity * dt;        // gravity>0 pulls down; <0 rises
                     p.vel[0] *= dragFactor; p.vel[1] *= dragFactor; p.vel[2] *= dragFactor;
+                    // Vortex: drive horizontal velocity tangentially around the anchor.
+                    if (layer.swirl != 0.0f)
+                    {
+                        const float dx = p.pos[0] - cx;
+                        const float dz = p.pos[2] - cz;
+                        const float r = std::sqrt(dx * dx + dz * dz);
+                        if (r > 0.05f)
+                        {
+                            const float inv = layer.swirl / r;
+                            p.vel[0] = -dz * inv;
+                            p.vel[2] = dx * inv;
+                        }
+                    }
                     p.pos[0] += p.vel[0] * dt;
                     p.pos[1] += p.vel[1] * dt;
                     p.pos[2] += p.vel[2] * dt;
@@ -283,7 +299,7 @@ namespace phoenix::effects
             float speed, float gravity, float radius,
             float drag = 0.0f, float intensity = 1.0f,
             float coneAngleDeg = 25.0f, float height = 1.0f,
-            float originHeight = 0.0f)
+            float originHeight = 0.0f, float swirl = 0.0f)
         {
             EffectLayer l;
             l.shape = shape; l.blend = blend;
@@ -292,7 +308,8 @@ namespace phoenix::effects
             l.spawnRate = spawnRate; l.lifetime = lifetime; l.size = size;
             l.speed = speed; l.gravity = gravity; l.radius = radius;
             l.drag = drag; l.intensity = intensity; l.coneAngleDeg = coneAngleDeg;
-            l.height = height; l.originHeight = originHeight; l.enabled = true;
+            l.height = height; l.originHeight = originHeight; l.swirl = swirl;
+            l.enabled = true;
             return l;
         }
 
@@ -350,15 +367,20 @@ namespace phoenix::effects
                 mkLayer(S::Ring, ADD, 0.5f,0.9f,1.0f, 0.8f,1.0f,1.0f, 200,1.0f,0.09f, 1.0f,-0.6f,1.0f, 0.0f,0.8f) }));
 
             // ===== ICE =====
-            c.push_back(mkDef("Frost nova", C::Ice, false, 0.08f, {
-                mkLayer(S::Sphere, ADD, 0.7f,0.95f,1.0f, 0.5f,0.7f,1.0f, 1600,0.5f,0.09f, 5.0f,1.5f,0.2f, 2.5f,1.1f),
-                mkLayer(S::Disc, ALP, 0.8f,0.92f,1.0f, 0.6f,0.75f,0.95f, 200,0.7f,0.30f, 2.0f,0.0f,0.6f, 3.0f,0.4f) }));
+            // Frost nova — large, detailed, very visible icy explosion.
+            c.push_back(mkDef("Frost nova", C::Ice, false, 0.14f, {
+                mkLayer(S::Shockwave, ADD, 0.8f,0.97f,1.0f, 0.45f,0.7f,1.0f, 2600,0.7f,0.18f, 11.0f,1.0f,0.4f, 1.8f,1.4f),
+                mkLayer(S::Sphere, ADD, 0.7f,0.95f,1.0f, 0.5f,0.7f,1.0f, 2200,0.8f,0.13f, 7.0f,2.0f,0.4f, 2.0f,1.2f),
+                mkLayer(S::Disc, ALP, 0.85f,0.93f,1.0f, 0.6f,0.75f,0.95f, 400,1.0f,0.5f, 3.0f,0.0f,1.2f, 2.5f,0.5f) }));
             c.push_back(mkDef("Ice shards", C::Ice, false, 0.05f, {
                 mkLayer(S::Shockwave, ADD, 0.8f,0.95f,1.0f, 0.55f,0.75f,1.0f, 1400,0.45f,0.10f, 8.0f,2.0f,0.25f, 2.0f,1.0f) }));
             c.push_back(mkDef("Ice spike burst", C::Ice, false, 0.06f, {
                 mkLayer(S::Cone, ADD, 0.75f,0.9f,1.0f, 0.5f,0.7f,1.0f, 700,0.6f,0.11f, 6.0f,3.0f,0.15f, 1.0f,1.0f, 16.0f) }));
+            // Blizzard — large hailstorm with big ice chunks over an area.
             c.push_back(mkDef("Blizzard", C::Ice, true, 0.0f, {
-                mkLayer(S::Sphere, ALP, 0.85f,0.92f,1.0f, 0.7f,0.8f,0.95f, 200,1.6f,0.10f, 1.0f,2.0f,2.0f, 0.6f,0.7f) }));
+                mkLayer(S::Disc, ALP, 0.9f,0.96f,1.0f, 0.7f,0.82f,0.95f, 260,1.6f,0.30f, 1.0f,16.0f,4.5f, 0.0f,1.0f, 25.0f,1.0f, 12.0f),
+                mkLayer(S::Disc, ADD, 0.85f,0.95f,1.0f, 0.6f,0.78f,1.0f, 600,1.4f,0.10f, 1.0f,20.0f,4.5f, 0.0f,0.9f, 25.0f,1.0f, 12.0f),
+                mkLayer(S::Disc, ALP, 0.8f,0.88f,0.95f, 0.6f,0.7f,0.85f, 120,2.4f,0.6f, 0.3f,-0.05f,4.0f, 0.6f,0.4f) }));
             c.push_back(mkDef("Frost mist", C::Ice, true, 0.0f, {
                 mkLayer(S::Disc, ALP, 0.8f,0.9f,1.0f, 0.6f,0.72f,0.9f, 60,2.2f,0.4f, 0.4f,-0.1f,1.1f, 0.8f,0.5f) }));
 
@@ -532,6 +554,90 @@ namespace phoenix::effects
                 mkLayer(S::Line, ADD, 0.85f,0.92f,1.0f, 0.5f,0.6f,1.0f, 2500,0.18f,0.10f, 0.5f,0.0f,0.06f, 0.0f,1.6f, 25.0f, 12.0f),
                 mkLayer(S::Disc, ADD, 0.9f,0.95f,1.0f, 0.5f,0.6f,1.0f, 600,0.14f,0.40f, 0.5f,0.0f,0.6f, 0.0f,1.6f),
                 mkLayer(S::Shockwave, ADD, 0.8f,0.9f,1.0f, 0.4f,0.5f,1.0f, 1200,0.3f,0.08f, 8.0f,4.0f,0.2f, 2.0f,1.4f) }));
+
+            // ===== BIG / ELABORATE SPELLS =====
+            // Tornado — brief swirling wind column at a location.
+            c.push_back(mkDef("Tornado", C::Wind, false, 2.5f, {
+                mkLayer(S::Disc, ALP, 0.6f,0.55f,0.45f, 0.3f,0.28f,0.22f, 340,1.6f,0.22f, 3.5f,-0.6f,1.0f, 0.0f,0.7f, 25.0f,1.0f,0.0f, 5.0f),
+                mkLayer(S::Disc, ALP, 0.5f,0.45f,0.35f, 0.25f,0.22f,0.18f, 180,1.4f,0.14f, 4.0f,-0.8f,0.5f, 0.0f,0.8f, 25.0f,1.0f,0.0f, 7.5f),
+                mkLayer(S::Disc, ALP, 0.65f,0.6f,0.5f, 0.35f,0.32f,0.26f, 120,1.3f,0.26f, 2.5f,-0.5f,1.5f, 0.0f,0.6f, 25.0f,1.0f,2.8f, 4.0f) }));
+            // Turbulence — giant tornado with lightning crackling inside.
+            c.push_back(mkDef("Turbulence", C::Wind, false, 3.5f, {
+                mkLayer(S::Disc, ALP, 0.55f,0.55f,0.6f, 0.3f,0.3f,0.34f, 520,2.0f,0.34f, 4.0f,-0.6f,2.2f, 0.0f,0.7f, 25.0f,1.0f,0.0f, 6.0f),
+                mkLayer(S::Disc, ALP, 0.5f,0.5f,0.55f, 0.28f,0.28f,0.32f, 280,1.8f,0.20f, 5.0f,-0.7f,1.0f, 0.0f,0.8f, 25.0f,1.0f,0.0f, 9.0f),
+                mkLayer(S::Sphere, ADD, 0.8f,0.9f,1.0f, 0.4f,0.5f,1.0f, 200,0.2f,0.13f, 1.0f,0.0f,1.6f, 0.0f,1.6f) }));
+            // Meteors — detailed meteorites raining onto a location.
+            c.push_back(mkDef("Meteors", C::Fire, false, 1.6f, {
+                mkLayer(S::Disc, ADD, 1.0f,0.6f,0.2f, 0.6f,0.1f,0.0f, 95,1.2f,0.30f, 1.0f,16.0f,1.6f, 0.0f,1.2f, 25.0f,1.0f, 13.0f),
+                mkLayer(S::Disc, ADD, 1.0f,0.45f,0.1f, 0.4f,0.05f,0.0f, 260,0.6f,0.16f, 0.5f,11.0f,1.6f, 0.0f,1.1f, 25.0f,1.0f, 9.0f),
+                mkLayer(S::Disc, ALP, 0.2f,0.16f,0.14f, 0.0f,0.0f,0.0f, 70,1.0f,0.30f, 0.5f,4.0f,1.6f, 0.4f,0.5f, 25.0f,1.0f, 7.0f) }));
+            // Infernal fire — huge, detailed fireball burst with black smoke.
+            c.push_back(mkDef("Infernal fire", C::Fire, false, 0.12f, {
+                mkLayer(S::Sphere, ADD, 1.0f,0.55f,0.15f, 0.7f,0.1f,0.0f, 1900,0.7f,0.40f, 5.0f,-1.0f,0.8f, 1.2f,1.3f),
+                mkLayer(S::Sphere, ALP, 0.10f,0.08f,0.08f, 0.0f,0.0f,0.0f, 420,1.0f,0.50f, 3.0f,-0.8f,0.9f, 1.0f,0.8f),
+                mkLayer(S::Sphere, ADD, 1.0f,0.7f,0.2f, 0.6f,0.1f,0.0f, 520,0.9f,0.10f, 7.0f,5.0f,0.5f, 1.0f,1.2f) }));
+            // Earthquake — ground heave: dust shockwave + rising dust + popping rocks.
+            c.push_back(mkDef("Earthquake", C::Earth, false, 1.4f, {
+                mkLayer(S::Shockwave, ALP, 0.5f,0.42f,0.3f, 0.3f,0.24f,0.16f, 1400,0.8f,0.22f, 7.0f,1.0f,0.5f, 1.0f,0.8f),
+                mkLayer(S::Disc, ALP, 0.55f,0.48f,0.36f, 0.3f,0.26f,0.2f, 220,1.5f,0.40f, 1.5f,-0.4f,2.5f, 0.4f,0.6f),
+                mkLayer(S::Disc, ALP, 0.45f,0.42f,0.4f, 0.25f,0.23f,0.22f, 120,1.0f,0.16f, 4.0f,12.0f,2.0f, 0.0f,0.9f) }));
+            // Chain lightning — many strikes battering a large area.
+            c.push_back(mkDef("Chain lightning", C::Lightning, false, 0.7f, {
+                mkLayer(S::Disc, ADD, 0.85f,0.92f,1.0f, 0.5f,0.6f,1.0f, 1200,0.25f,0.08f, 1.0f,30.0f,3.0f, 0.0f,1.5f, 25.0f,1.0f, 9.0f),
+                mkLayer(S::Disc, ADD, 0.9f,0.95f,1.0f, 0.5f,0.6f,1.0f, 260,0.12f,0.40f, 0.5f,0.0f,3.0f, 0.0f,1.6f),
+                mkLayer(S::Sphere, ADD, 0.8f,0.9f,1.0f, 0.4f,0.5f,1.0f, 320,0.3f,0.07f, 6.0f,5.0f,2.5f, 1.5f,1.4f) }));
+            // Hailstorm — falling hail over an area (looping weather prop).
+            c.push_back(mkDef("Hailstorm", C::Ice, true, 0.0f, {
+                mkLayer(S::Disc, ALP, 0.85f,0.92f,1.0f, 0.7f,0.8f,0.95f, 220,1.4f,0.12f, 1.0f,16.0f,3.5f, 0.0f,1.0f, 25.0f,1.0f, 10.0f),
+                mkLayer(S::Disc, ADD, 0.85f,0.95f,1.0f, 0.6f,0.78f,1.0f, 300,1.2f,0.06f, 1.0f,22.0f,3.5f, 0.0f,0.9f, 25.0f,1.0f, 10.0f) }));
+            // Elemental shock — fire/ice/nature clashing in a zone.
+            c.push_back(mkDef("Elemental shock", C::Arcane, false, 0.15f, {
+                mkLayer(S::Sphere, ADD, 1.0f,0.5f,0.1f, 0.6f,0.1f,0.0f, 900,0.5f,0.14f, 6.0f,1.0f,0.5f, 1.5f,1.2f),
+                mkLayer(S::Sphere, ADD, 0.6f,0.9f,1.0f, 0.4f,0.6f,1.0f, 900,0.5f,0.13f, 6.0f,1.0f,0.5f, 1.5f,1.2f),
+                mkLayer(S::Shockwave, ADD, 0.5f,1.0f,0.3f, 0.2f,0.5f,0.1f, 1000,0.5f,0.12f, 8.0f,0.0f,0.3f, 2.0f,1.2f) }));
+
+            // ===== ELEMENTAL CHOIRS (big arcing projectiles) =====
+            {
+                auto d = mkDef("Fire choir", C::Fire, true, 0.0f, {
+                    mkLayer(S::Sphere, ADD, 1.0f,0.6f,0.18f, 0.7f,0.12f,0.0f, 700,0.45f,0.28f, 0.8f,-0.5f,0.4f, 1.0f,1.3f),
+                    mkLayer(S::Sphere, ALP, 0.2f,0.15f,0.14f, 0.0f,0.0f,0.0f, 90,0.7f,0.30f, 0.4f,-0.3f,0.25f, 0.3f,0.6f) });
+                d.projectile = true; d.projectileSpeed = 13.0f; d.projectileRange = 40.0f; d.projectileGravity = 6.0f;
+                c.push_back(d);
+            }
+            {
+                auto d = mkDef("Water choir", C::Water, true, 0.0f, {
+                    mkLayer(S::Sphere, ALP, 0.55f,0.8f,1.0f, 0.8f,0.92f,1.0f, 700,0.5f,0.26f, 0.8f,0.0f,0.4f, 0.6f,0.9f),
+                    mkLayer(S::Sphere, ADD, 0.7f,0.9f,1.0f, 0.4f,0.6f,1.0f, 180,0.5f,0.12f, 1.0f,0.0f,0.45f, 0.5f,1.0f) });
+                d.projectile = true; d.projectileSpeed = 12.0f; d.projectileRange = 38.0f; d.projectileGravity = 6.0f;
+                c.push_back(d);
+            }
+            {
+                auto d = mkDef("Wind choir", C::Wind, true, 0.0f, {
+                    mkLayer(S::Sphere, ALP, 0.8f,0.95f,0.85f, 0.6f,0.8f,0.7f, 600,0.5f,0.26f, 1.0f,0.0f,0.4f, 0.5f,0.9f, 25.0f,1.0f,0.0f, 4.0f),
+                    mkLayer(S::Sphere, ADD, 0.85f,0.95f,0.9f, 0.6f,0.8f,0.7f, 160,0.5f,0.12f, 1.2f,0.0f,0.45f, 0.5f,1.0f) });
+                d.projectile = true; d.projectileSpeed = 15.0f; d.projectileRange = 42.0f; d.projectileGravity = 4.0f;
+                c.push_back(d);
+            }
+            {
+                auto d = mkDef("Earth choir", C::Earth, true, 0.0f, {
+                    mkLayer(S::Sphere, ALP, 0.5f,0.42f,0.3f, 0.3f,0.25f,0.18f, 650,0.5f,0.28f, 0.8f,0.0f,0.4f, 0.5f,1.0f),
+                    mkLayer(S::Sphere, ADD, 0.6f,0.5f,0.35f, 0.35f,0.28f,0.2f, 140,0.5f,0.12f, 1.0f,0.0f,0.45f, 0.5f,0.9f) });
+                d.projectile = true; d.projectileSpeed = 12.0f; d.projectileRange = 36.0f; d.projectileGravity = 8.0f;
+                c.push_back(d);
+            }
+
+            // ===== ELEMENTAL SHOCKS (large turbulent columns) =====
+            c.push_back(mkDef("Fire shock", C::Fire, false, 2.2f, {
+                mkLayer(S::Disc, ADD, 1.0f,0.6f,0.18f, 0.7f,0.1f,0.0f, 420,0.9f,0.22f, 3.5f,-1.2f,0.8f, 0.6f,1.2f, 25.0f,1.0f,0.0f, 4.5f),
+                mkLayer(S::Disc, ALP, 0.2f,0.15f,0.13f, 0.0f,0.0f,0.0f, 70,1.3f,0.35f, 2.0f,-0.7f,0.7f, 0.4f,0.6f, 25.0f,1.0f,0.0f, 3.0f) }));
+            c.push_back(mkDef("Water shock", C::Water, false, 2.2f, {
+                mkLayer(S::Disc, ALP, 0.55f,0.8f,1.0f, 0.8f,0.92f,1.0f, 420,0.9f,0.20f, 3.5f,-1.0f,0.8f, 0.5f,0.8f, 25.0f,1.0f,0.0f, 5.0f),
+                mkLayer(S::Disc, ADD, 0.7f,0.9f,1.0f, 0.4f,0.6f,1.0f, 120,0.9f,0.10f, 4.0f,-1.0f,0.6f, 0.5f,0.9f, 25.0f,1.0f,0.0f, 6.0f) }));
+            c.push_back(mkDef("Wind shock", C::Wind, false, 2.2f, {
+                mkLayer(S::Disc, ALP, 0.8f,0.92f,0.85f, 0.6f,0.78f,0.72f, 420,1.0f,0.22f, 3.5f,-1.0f,0.9f, 0.4f,0.7f, 25.0f,1.0f,0.0f, 6.5f) }));
+            c.push_back(mkDef("Earth shock", C::Earth, false, 2.2f, {
+                mkLayer(S::Disc, ALP, 0.5f,0.42f,0.3f, 0.3f,0.25f,0.18f, 420,1.0f,0.24f, 3.0f,-1.0f,0.9f, 0.4f,0.7f, 25.0f,1.0f,0.0f, 4.5f),
+                mkLayer(S::Disc, ALP, 0.45f,0.42f,0.4f, 0.25f,0.23f,0.22f, 100,0.9f,0.14f, 3.5f,8.0f,0.8f, 0.0f,0.8f) }));
 
             return c;
         }
