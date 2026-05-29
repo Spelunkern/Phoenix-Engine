@@ -385,7 +385,7 @@ namespace phoenix::character
         int shieldBoneIndex{ 21 };   // default: left wrist
         int cloakBodyBoneIndex{ 4 };    // default: upper spine/chest
         int cloakShoulderBoneIndex{ 4 }; // default: upper spine/chest
-        int mountBoneIndex{ 1 };        // mount bone the rider is seated on
+        int mountBoneIndex{ 25 };       // mount bone the rider is seated on
         int animation_bone_count() const;
         int mount_bone_count() const;
 

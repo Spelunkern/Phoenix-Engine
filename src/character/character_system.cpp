@@ -29,6 +29,9 @@ namespace phoenix::character
         constexpr float kRunSpeed = 4.6f;
         constexpr float kFastRunSpeed = 7.4f;
         constexpr float kSwimSpeed = 2.8f;
+        // Mounted movement is faster than running on foot (base > kFastRunSpeed).
+        constexpr float kMountSpeed = 9.5f;
+        constexpr float kMountFastSpeed = 14.0f;
         constexpr float kWaterSurface = 0.0f;
         constexpr float kWaterEnterDepth = 2.0f;
         constexpr float kFloatFeetDepth = 1.20f;
@@ -2012,8 +2015,9 @@ namespace phoenix::character
             moveX /= moveLength;
             moveY = inWater_ ? moveY / moveLength : 0.0f;
             moveZ /= moveLength;
-            const float speed = inWater_ ? kSwimSpeed
-                : (input.fast ? kFastRunSpeed : kRunSpeed);
+            const float speed = data_.hasMount
+                ? (input.fast ? kMountFastSpeed : kMountSpeed)
+                : (inWater_ ? kSwimSpeed : (input.fast ? kFastRunSpeed : kRunSpeed));
             characterX_ += moveX * speed * clampedDelta;
             if (inWater_)
                 characterY_ += moveY * speed * clampedDelta;
@@ -2031,7 +2035,9 @@ namespace phoenix::character
         {
             float adjustedX = characterX_;
             float adjustedZ = characterZ_;
-            const float speed = inWater_ ? kSwimSpeed : (input.fast ? kFastRunSpeed : kRunSpeed);
+            const float speed = data_.hasMount
+                ? (input.fast ? kMountFastSpeed : kMountSpeed)
+                : (inWater_ ? kSwimSpeed : (input.fast ? kFastRunSpeed : kRunSpeed));
             if (collisionFn_(characterX_, characterZ_,
                 characterX_ - moveX * speed * clampedDelta,
                 characterZ_ - moveZ * speed * clampedDelta,
@@ -2379,7 +2385,7 @@ namespace phoenix::character
                 }
             }
 
-            // Seat the rider on the mount's saddle bone (default bone 1).
+            // Seat the rider on the mount's saddle bone (default bone 25).
             Vec3 saddle{ 0.0f, 0.0f, 0.0f };
             if (!mountFinals.empty())
             {
