@@ -2706,22 +2706,23 @@ int main(int, char**)
                 ImGui::SetNextWindowSize(ImVec2(260.0f, 0.0f), ImGuiCond_FirstUseEver);
                 if (ImGui::Begin("Effects"))
                 {
+                    const auto& catalog = preset_catalog();
                     static int presetIdx = 0;
-                    const char* names[] = {
-                        "Portal", "Fire pillar", "Holy column",
-                        "Poison cloud", "Impact (1-shot)", "Heal burst (1-shot)" };
-                    ImGui::SetNextItemWidth(180.0f);
-                    ImGui::Combo("Preset", &presetIdx, names, IM_ARRAYSIZE(names));
-
-                    const auto makeDef = [](int i) -> EffectDefinition {
-                        switch (i) {
-                        case 0: return preset_portal();
-                        case 1: return preset_fire_pillar();
-                        case 2: return preset_holy_column();
-                        case 3: return preset_poison_cloud();
-                        case 4: return preset_impact();
-                        default: return preset_heal_burst();
+                    presetIdx = std::clamp(presetIdx, 0, static_cast<int>(catalog.size()) - 1);
+                    ImGui::SetNextItemWidth(200.0f);
+                    if (ImGui::BeginCombo("Preset", catalog[static_cast<std::size_t>(presetIdx)].name))
+                    {
+                        for (int i = 0; i < static_cast<int>(catalog.size()); ++i)
+                        {
+                            const bool sel = (i == presetIdx);
+                            if (ImGui::Selectable(catalog[static_cast<std::size_t>(i)].name, sel))
+                                presetIdx = i;
+                            if (sel) ImGui::SetItemDefaultFocus();
                         }
+                        ImGui::EndCombo();
+                    }
+                    const auto makeDef = [&catalog](int i) {
+                        return catalog[static_cast<std::size_t>(i)].make();
                     };
 
                     float sx = cameraX, sy = cameraY, sz = cameraZ;

@@ -91,6 +91,14 @@ namespace phoenix::effects
             dir[0] = sym(rng_) * 0.3f; dir[1] = 1.0f; dir[2] = sym(rng_) * 0.3f;
             break;
         }
+        case EmitterShape::Shockwave:
+        {
+            const float c = std::cos(angle), s = std::sin(angle);
+            local[0] = layer.radius * c;
+            local[2] = layer.radius * s;
+            dir[0] = c; dir[1] = 0.0f; dir[2] = s;   // radially outward, flat
+            break;
+        }
         }
 
         float vel[3]{ dir[0] * layer.speed, dir[1] * layer.speed, dir[2] * layer.speed };
@@ -358,5 +366,212 @@ namespace phoenix::effects
         l.intensity = 1.1f; l.spawnRate = 240.0f; l.lifetime = 1.0f;
         l.size = 0.12f; l.radius = 0.7f; l.speed = 2.2f; l.gravity = -1.0f; l.drag = 1.0f;
         return d;
+    }
+
+    EffectDefinition preset_frost_nova()
+    {
+        EffectDefinition d;
+        d.name = "Frost nova";
+        d.loop = false; d.duration = 0.08f; d.layerCount = 2;
+        auto& shard = d.layers[0];
+        shard.shape = EmitterShape::Sphere; shard.blend = Blend::Additive;
+        set3(shard.colorStart, 0.7f, 0.95f, 1.0f); set3(shard.colorEnd, 0.5f, 0.7f, 1.0f);
+        shard.intensity = 1.1f; shard.spawnRate = 1600.0f; shard.lifetime = 0.5f;
+        shard.size = 0.09f; shard.radius = 0.2f; shard.speed = 5.0f; shard.gravity = 1.5f; shard.drag = 2.5f;
+        auto& mist = d.layers[1];
+        mist.shape = EmitterShape::Disc; mist.blend = Blend::Alpha;
+        set3(mist.colorStart, 0.8f, 0.92f, 1.0f); set3(mist.colorEnd, 0.6f, 0.75f, 0.95f);
+        mist.intensity = 0.4f; mist.spawnRate = 200.0f; mist.lifetime = 0.7f;
+        mist.size = 0.3f; mist.radius = 0.6f; mist.speed = 2.0f; mist.drag = 3.0f;
+        return d;
+    }
+
+    EffectDefinition preset_shockwave()
+    {
+        EffectDefinition d;
+        d.name = "Shockwave";
+        d.loop = false; d.duration = 0.05f; d.layerCount = 1;
+        auto& l = d.layers[0];
+        l.shape = EmitterShape::Shockwave; l.blend = Blend::Additive;
+        set3(l.colorStart, 1.0f, 0.95f, 0.8f); set3(l.colorEnd, 1.0f, 0.6f, 0.2f);
+        l.intensity = 1.2f; l.spawnRate = 2000.0f; l.lifetime = 0.4f;
+        l.size = 0.12f; l.radius = 0.3f; l.speed = 10.0f; l.drag = 3.0f;
+        return d;
+    }
+
+    EffectDefinition preset_blood_splatter()
+    {
+        EffectDefinition d;
+        d.name = "Blood splatter";
+        d.loop = false; d.duration = 0.05f; d.layerCount = 1;
+        auto& l = d.layers[0];
+        l.shape = EmitterShape::Sphere; l.blend = Blend::Alpha;
+        set3(l.colorStart, 0.7f, 0.05f, 0.05f); set3(l.colorEnd, 0.3f, 0.0f, 0.0f);
+        l.intensity = 1.0f; l.spawnRate = 900.0f; l.lifetime = 0.6f;
+        l.size = 0.08f; l.radius = 0.15f; l.speed = 4.5f; l.gravity = 12.0f; l.drag = 1.0f;
+        return d;
+    }
+
+    EffectDefinition preset_lightning()
+    {
+        EffectDefinition d;
+        d.name = "Lightning sparks";
+        d.loop = false; d.duration = 0.12f; d.layerCount = 2;
+        auto& arc = d.layers[0];
+        arc.shape = EmitterShape::Point; arc.blend = Blend::Additive;
+        set3(arc.colorStart, 0.8f, 0.9f, 1.0f); set3(arc.colorEnd, 0.4f, 0.5f, 1.0f);
+        arc.intensity = 1.5f; arc.spawnRate = 1200.0f; arc.lifetime = 0.2f;
+        arc.size = 0.07f; arc.speed = 9.0f; arc.gravity = 3.0f; arc.drag = 1.5f;
+        auto& flash = d.layers[1];
+        flash.shape = EmitterShape::Point; flash.blend = Blend::Additive;
+        set3(flash.colorStart, 0.95f, 0.97f, 1.0f); set3(flash.colorEnd, 0.6f, 0.7f, 1.0f);
+        flash.intensity = 1.6f; flash.spawnRate = 200.0f; flash.lifetime = 0.1f;
+        flash.size = 0.35f; flash.speed = 0.5f;
+        return d;
+    }
+
+    EffectDefinition preset_water_fountain()
+    {
+        EffectDefinition d;
+        d.name = "Water fountain";
+        d.loop = true; d.layerCount = 1;
+        auto& l = d.layers[0];
+        l.shape = EmitterShape::Cone; l.blend = Blend::Alpha;
+        set3(l.colorStart, 0.6f, 0.8f, 1.0f); set3(l.colorEnd, 0.85f, 0.95f, 1.0f);
+        l.intensity = 0.7f; l.spawnRate = 300.0f; l.lifetime = 1.4f;
+        l.size = 0.10f; l.speed = 6.0f; l.gravity = 9.0f; l.coneAngleDeg = 14.0f;
+        return d;
+    }
+
+    EffectDefinition preset_smoke_plume()
+    {
+        EffectDefinition d;
+        d.name = "Smoke plume";
+        d.loop = true; d.layerCount = 1;
+        auto& l = d.layers[0];
+        l.shape = EmitterShape::Disc; l.blend = Blend::Alpha;
+        set3(l.colorStart, 0.30f, 0.30f, 0.32f); set3(l.colorEnd, 0.06f, 0.06f, 0.07f);
+        l.intensity = 0.55f; l.spawnRate = 55.0f; l.lifetime = 2.4f;
+        l.size = 0.45f; l.radius = 0.3f; l.speed = 1.4f; l.gravity = -0.7f; l.drag = 0.5f;
+        return d;
+    }
+
+    EffectDefinition preset_embers()
+    {
+        EffectDefinition d;
+        d.name = "Embers";
+        d.loop = true; d.layerCount = 1;
+        auto& l = d.layers[0];
+        l.shape = EmitterShape::Disc; l.blend = Blend::Additive;
+        set3(l.colorStart, 1.0f, 0.6f, 0.15f); set3(l.colorEnd, 0.6f, 0.1f, 0.0f);
+        l.intensity = 1.0f; l.spawnRate = 40.0f; l.lifetime = 2.0f;
+        l.size = 0.05f; l.radius = 0.6f; l.speed = 1.0f; l.gravity = -0.6f; l.drag = 0.4f;
+        return d;
+    }
+
+    EffectDefinition preset_fireflies()
+    {
+        EffectDefinition d;
+        d.name = "Fireflies";
+        d.loop = true; d.layerCount = 1;
+        auto& l = d.layers[0];
+        l.shape = EmitterShape::Sphere; l.blend = Blend::Additive;
+        set3(l.colorStart, 0.9f, 1.0f, 0.5f); set3(l.colorEnd, 0.4f, 0.8f, 0.2f);
+        l.intensity = 0.9f; l.spawnRate = 25.0f; l.lifetime = 3.0f;
+        l.size = 0.05f; l.radius = 2.0f; l.speed = 0.25f; l.gravity = -0.05f; l.drag = 0.3f;
+        return d;
+    }
+
+    EffectDefinition preset_arcane_sigil()
+    {
+        EffectDefinition d;
+        d.name = "Arcane sigil";
+        d.loop = true; d.layerCount = 2;
+        auto& ring = d.layers[0];
+        ring.shape = EmitterShape::Ring; ring.blend = Blend::Additive;
+        set3(ring.colorStart, 0.8f, 0.4f, 1.0f); set3(ring.colorEnd, 0.4f, 0.1f, 0.8f);
+        ring.intensity = 1.0f; ring.spawnRate = 300.0f; ring.lifetime = 0.9f;
+        ring.size = 0.08f; ring.radius = 1.6f; ring.speed = 0.3f; ring.gravity = -0.1f;
+        auto& inner = d.layers[1];
+        inner.shape = EmitterShape::Ring; inner.blend = Blend::Additive;
+        set3(inner.colorStart, 0.95f, 0.7f, 1.0f); set3(inner.colorEnd, 0.5f, 0.2f, 0.9f);
+        inner.intensity = 0.9f; inner.spawnRate = 200.0f; inner.lifetime = 0.9f;
+        inner.size = 0.07f; inner.radius = 0.9f; inner.speed = 0.3f; inner.gravity = -0.1f;
+        return d;
+    }
+
+    EffectDefinition preset_toxic_geyser()
+    {
+        EffectDefinition d;
+        d.name = "Toxic geyser";
+        d.loop = true; d.layerCount = 1;
+        auto& l = d.layers[0];
+        l.shape = EmitterShape::Cone; l.blend = Blend::Alpha;
+        set3(l.colorStart, 0.5f, 1.0f, 0.25f); set3(l.colorEnd, 0.1f, 0.35f, 0.05f);
+        l.intensity = 0.7f; l.spawnRate = 200.0f; l.lifetime = 1.6f;
+        l.size = 0.22f; l.speed = 5.0f; l.gravity = 6.0f; l.coneAngleDeg = 22.0f; l.drag = 0.4f;
+        return d;
+    }
+
+    EffectDefinition preset_shadow_flames()
+    {
+        EffectDefinition d;
+        d.name = "Shadow flames";
+        d.loop = true; d.layerCount = 2;
+        auto& fire = d.layers[0];
+        fire.shape = EmitterShape::Disc; fire.blend = Blend::Additive;
+        set3(fire.colorStart, 0.5f, 0.15f, 0.7f); set3(fire.colorEnd, 0.15f, 0.0f, 0.25f);
+        fire.intensity = 1.0f; fire.spawnRate = 240.0f; fire.lifetime = 0.9f;
+        fire.size = 0.18f; fire.radius = 0.45f; fire.speed = 2.2f; fire.gravity = -1.4f; fire.drag = 1.1f;
+        auto& wisp = d.layers[1];
+        wisp.shape = EmitterShape::Disc; wisp.blend = Blend::Alpha;
+        set3(wisp.colorStart, 0.1f, 0.0f, 0.15f); set3(wisp.colorEnd, 0.0f, 0.0f, 0.0f);
+        wisp.intensity = 0.5f; wisp.spawnRate = 40.0f; wisp.lifetime = 1.5f;
+        wisp.size = 0.3f; wisp.radius = 0.35f; wisp.speed = 1.6f; wisp.gravity = -0.8f; wisp.drag = 0.6f;
+        return d;
+    }
+
+    EffectDefinition preset_rainbow_fountain()
+    {
+        // Three offset-coloured cones for a playful multi-colour spray.
+        EffectDefinition d;
+        d.name = "Rainbow fountain";
+        d.loop = true; d.layerCount = 3;
+        auto cone = [](EffectLayer& l, float r, float g, float b) {
+            l.shape = EmitterShape::Cone; l.blend = Blend::Additive;
+            l.colorStart[0] = r; l.colorStart[1] = g; l.colorStart[2] = b;
+            l.colorEnd[0] = r * 0.4f; l.colorEnd[1] = g * 0.4f; l.colorEnd[2] = b * 0.4f;
+            l.intensity = 1.0f; l.spawnRate = 130.0f; l.lifetime = 1.3f;
+            l.size = 0.10f; l.speed = 5.5f; l.gravity = 8.0f; l.coneAngleDeg = 30.0f;
+        };
+        cone(d.layers[0], 1.0f, 0.2f, 0.2f);
+        cone(d.layers[1], 0.2f, 1.0f, 0.3f);
+        cone(d.layers[2], 0.3f, 0.4f, 1.0f);
+        return d;
+    }
+
+    const std::vector<PresetEntry>& preset_catalog()
+    {
+        static const std::vector<PresetEntry> catalog = {
+            { "Portal",            preset_portal },
+            { "Fire pillar",       preset_fire_pillar },
+            { "Holy column",       preset_holy_column },
+            { "Poison cloud",      preset_poison_cloud },
+            { "Arcane sigil",      preset_arcane_sigil },
+            { "Shadow flames",     preset_shadow_flames },
+            { "Water fountain",    preset_water_fountain },
+            { "Rainbow fountain",  preset_rainbow_fountain },
+            { "Toxic geyser",      preset_toxic_geyser },
+            { "Smoke plume",       preset_smoke_plume },
+            { "Embers",            preset_embers },
+            { "Fireflies",         preset_fireflies },
+            { "Impact (1-shot)",   preset_impact },
+            { "Heal burst (1-shot)", preset_heal_burst },
+            { "Frost nova (1-shot)", preset_frost_nova },
+            { "Shockwave (1-shot)",  preset_shockwave },
+            { "Blood splatter (1-shot)", preset_blood_splatter },
+            { "Lightning (1-shot)",  preset_lightning },
+        };
+        return catalog;
     }
 }

@@ -19,6 +19,7 @@ namespace phoenix::effects
         Disc,    // filled disc in the local XZ plane (ground glow / cast)
         Cone,    // upward cone of directions (spray / fountain)
         Line,    // along the local Y axis (beam / pillar)
+        Shockwave, // on a small ring, launched radially outward in the XZ plane
     };
 
     enum class Blend { Additive, Alpha };
@@ -132,4 +133,22 @@ namespace phoenix::effects
     EffectDefinition preset_poison_cloud();  // looping low green haze
     EffectDefinition preset_impact();        // one-shot burst (attack hit)
     EffectDefinition preset_heal_burst();    // one-shot upward green sparkle
+
+    // More variety:
+    EffectDefinition preset_frost_nova();    // one-shot icy radial burst
+    EffectDefinition preset_shockwave();     // one-shot flat expanding ring
+    EffectDefinition preset_blood_splatter();// one-shot red, falls
+    EffectDefinition preset_lightning();     // one-shot electric sparks
+    EffectDefinition preset_water_fountain();// looping water arc (rises + falls)
+    EffectDefinition preset_smoke_plume();   // looping grey smoke
+    EffectDefinition preset_embers();        // looping ambient rising embers
+    EffectDefinition preset_fireflies();     // looping slow floating motes
+    EffectDefinition preset_arcane_sigil();  // looping flat purple magic ring
+    EffectDefinition preset_toxic_geyser();  // looping green geyser
+    EffectDefinition preset_shadow_flames(); // looping dark purple fire
+    EffectDefinition preset_rainbow_fountain(); // looping multi-colour spray (fun)
+
+    // All presets in panel order, with display names (for the editor UI).
+    struct PresetEntry { const char* name; EffectDefinition (*make)(); };
+    const std::vector<PresetEntry>& preset_catalog();
 }
