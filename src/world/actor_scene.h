@@ -131,5 +131,6 @@ namespace phoenix::world
         const phoenix::assets::DataIndex& assets,
         std::uint32_t textureLayerBase,
         float (*heightSampler)(float worldX, float worldZ, void* userData),
-        void* heightUserData);
+        void* heightUserData,
+        bool isDungeon = false);
 }

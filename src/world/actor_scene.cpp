@@ -830,7 +830,8 @@ namespace phoenix::world
         const phoenix::assets::DataIndex& assets,
         std::uint32_t textureLayerBase,
         float (*heightSampler)(float worldX, float worldZ, void* userData),
-        void* heightUserData)
+        void* heightUserData,
+        bool isDungeon)
     {
         ActorScene scene{};
         // Linux is case-sensitive and the retail dataset mixes cases
@@ -872,7 +873,13 @@ namespace phoenix::world
         std::unordered_map<std::uint32_t, ResolvedActor> resolvedNpcs;
         std::unordered_map<std::uint32_t, std::size_t> npcKeyToAnimIndex;
         std::unordered_map<std::uint32_t, std::size_t> monsterKeyToAnimIndex;
-        const auto halfMap = static_cast<float>(std::max(1, svmap.mapSize)) * 0.5f;
+        // Open-world maps are centred on the origin (subtract half the map size);
+        // dungeons live in raw coordinates (no centring), matching how world
+        // geometry is placed in load_world_assets. Using the wrong offset put
+        // dungeon mobs/NPCs in the wrong place.
+        const auto halfMap = isDungeon
+            ? 0.0f
+            : static_cast<float>(std::max(1, svmap.mapSize)) * 0.5f;
 
         for (const auto& npc : svmap.npcs)
         {

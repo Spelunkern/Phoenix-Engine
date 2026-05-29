@@ -1635,7 +1635,8 @@ int main(int, char**)
                 runtime.state().assets,
                 static_cast<std::uint32_t>(actorTextureBaseSlot),
                 character_height_sampler,
-                &heightSamplerCtx);
+                &heightSamplerCtx,
+                runtime.state().world.isDungeon);
         }, 0.38f, "Loading actors");
         characterTextureBaseSlot = actorTextureBaseSlot + actorScene.texturePaths.size();
         std::vector<phoenix::renderer::DdsTexture> terrainTextures(characterTextureBaseSlot);
