@@ -13,6 +13,7 @@ set(ENGINE_SOURCES
     src/assets/data_index.cpp
     src/audio/audio_system.cpp
     src/character/character_system.cpp
+    src/character/weapon_bone_map.cpp
     src/character/weapon_effect.cpp
     src/core/logging.cpp
     src/platform/sdl_window.cpp
