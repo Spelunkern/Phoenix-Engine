@@ -440,20 +440,9 @@ namespace phoenix::runtime
             state_.worldMapPaths[mapIndex].stem().string());
 
         state_.selectedWorldMap = mapIndex;
-        const auto tWld0 = std::chrono::steady_clock::now();
         state_.world = phoenix::world::analyze_wld(state_.worldMapPaths[mapIndex], diagnostics / previewName);
-        const auto tWld1 = std::chrono::steady_clock::now();
         load_world_assets();
-        const auto tAssets1 = std::chrono::steady_clock::now();
         update_status();
-        {
-            const auto ms = [](auto a, auto b) {
-                return std::chrono::duration_cast<std::chrono::milliseconds>(b - a).count();
-            };
-            std::ofstream tlog(phoenix::core::engine_log_path(), std::ios::app);
-            tlog << "TIMING load_world_map: analyze_wld=" << ms(tWld0, tWld1)
-                 << "ms load_world_assets=" << ms(tWld1, tAssets1) << "ms\n";
-        }
 
         camera_ = {};
         if (state_.world.isDungeon && !state_.sceneObjects.empty())
@@ -727,7 +716,6 @@ namespace phoenix::runtime
 
     void PhoenixRuntime::load_world_assets()
     {
-        const auto tWaStart = std::chrono::steady_clock::now();
         assetTextureLayerCache_.clear();
         state_.worldAssets.clear();
         state_.sceneObjects.clear();
@@ -816,7 +804,6 @@ namespace phoenix::runtime
             }
             for (auto& worker : workers) worker.join();
         }
-        const auto tParseDone = std::chrono::steady_clock::now();
 
         // ---- Pass 2: build world assets serially (same order => identical output,
         // including texture-layer slot assignment). ----
@@ -918,16 +905,6 @@ namespace phoenix::runtime
                 }
                 state_.worldAssets.push_back(std::move(asset));
             }
-        }
-
-        {
-            const auto tBuildDone = std::chrono::steady_clock::now();
-            const auto ms = [](auto a, auto b) {
-                return std::chrono::duration_cast<std::chrono::milliseconds>(b - a).count();
-            };
-            std::ofstream tlog(phoenix::core::engine_log_path(), std::ios::app);
-            tlog << "TIMING load_world_assets: parallelParse=" << ms(tWaStart, tParseDone)
-                 << "ms serialBuild=" << ms(tParseDone, tBuildDone) << "ms\n";
         }
 
         state_.maniAnimations.reserve(state_.world.maniAssets.size());
