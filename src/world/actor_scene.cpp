@@ -9,6 +9,7 @@
 #include "assets/data_index.h"
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstring>
 #include <cctype>
@@ -616,9 +617,14 @@ namespace phoenix::world
             return instance;
         }
 
-        float sample_height(float x, float z, float fallback, float (*heightSampler)(float, float, void*), void* userData)
+        float sample_height(float x, float z, float fallback, float (*heightSampler)(float, float, void*),
+                            void* userData, bool isDungeon)
         {
-            if (!heightSampler)
+            // Dungeons have no terrain heightmap and are multi-level: snapping to the
+            // collision floor near the player's Y collapses everything to the bottom
+            // floor. The svmap spawn Y is authored on the correct floor, so use it
+            // directly (it is in raw, uncentred dungeon space — same as the geometry).
+            if (isDungeon || !heightSampler)
                 return fallback;
             const auto h = heightSampler(x, z, userData);
             return std::isfinite(h) ? h : fallback;
@@ -1023,7 +1029,7 @@ namespace phoenix::world
                     const auto jitter = static_cast<float>((spawn.mobId * 1103515245u + i * 12345u) & 1023u) / 1023.0f - 0.5f;
                     const auto x = minX + width * std::clamp(fx + jitter * 0.12f, 0.05f, 0.95f);
                     const auto z = minZ + depth * std::clamp(fz - jitter * 0.12f, 0.05f, 0.95f);
-                    const auto y = sample_height(x, z, (area.area.min.y + area.area.max.y) * 0.5f, heightSampler, heightUserData);
+                    const auto y = sample_height(x, z, (area.area.min.y + area.area.max.y) * 0.5f, heightSampler, heightUserData, isDungeon);
                     const auto yaw = jitter * std::numbers::pi_v<float> * 2.0f;
                     const auto cellX = static_cast<int>(std::floor(x / kCellSize));
                     const auto cellZ = static_cast<int>(std::floor(z / kCellSize));
@@ -1055,7 +1061,7 @@ namespace phoenix::world
             {
                 const auto x = svmap_to_world(pos.position.x, halfMap);
                 const auto z = svmap_to_world(pos.position.z, halfMap);
-                const auto y = sample_height(x, z, pos.position.y, heightSampler, heightUserData);
+                const auto y = sample_height(x, z, pos.position.y, heightSampler, heightUserData, isDungeon);
                 const auto cellX = static_cast<int>(std::floor(x / kCellSize));
                 const auto cellZ = static_cast<int>(std::floor(z / kCellSize));
                 npcGroups[{ key, cellX, cellZ }].push_back(make_instance(x, y, z, pos.yaw));
@@ -1064,7 +1070,7 @@ namespace phoenix::world
         }
 
         // Set world positions on vertex animations from monster instance centroids.
-        std::unordered_map<std::uint32_t, std::pair<float, float>> mobCentroids;
+        std::unordered_map<std::uint32_t, std::array<float, 3>> mobCentroids; // sumX, sumZ, sumY
         std::unordered_map<std::uint32_t, std::uint32_t> mobCounts;
         for (const auto& [key, instances] : monsterGroups)
         {
@@ -1072,8 +1078,9 @@ namespace phoenix::world
             for (const auto& inst : instances)
             {
                 auto& c = mobCentroids[mobId];
-                c.first += inst.position[0];
-                c.second += inst.position[2];
+                c[0] += inst.position[0];
+                c[1] += inst.position[2];
+                c[2] += inst.position[1];
                 ++mobCounts[mobId];
             }
         }
@@ -1086,9 +1093,12 @@ namespace phoenix::world
                 if (countIt != mobCounts.end() && countIt->second > 0)
                 {
                     const auto& centroid = mobCentroids[mobId];
-                    anim.worldX = centroid.first / static_cast<float>(countIt->second);
-                    anim.worldZ = centroid.second / static_cast<float>(countIt->second);
-                    if (heightSampler)
+                    const auto invCount = 1.0f / static_cast<float>(countIt->second);
+                    anim.worldX = centroid[0] * invCount;
+                    anim.worldZ = centroid[1] * invCount;
+                    if (isDungeon)
+                        anim.worldY = centroid[2] * invCount;   // average authored floor Y
+                    else if (heightSampler)
                         anim.worldY = heightSampler(anim.worldX, anim.worldZ, heightUserData);
                     // Expand bounding radius to cover the farthest instance from centroid.
                     float maxDistSq = 0.0f;
@@ -1109,7 +1119,7 @@ namespace phoenix::world
         }
 
         // Set world positions on vertex animations from NPC instance centroids.
-        std::unordered_map<std::uint32_t, std::pair<float, float>> npcCentroids; // key -> (sumX, sumZ), count tracked via npcGroups
+        std::unordered_map<std::uint32_t, std::array<float, 3>> npcCentroids; // key -> (sumX, sumZ, sumY)
         std::unordered_map<std::uint32_t, std::uint32_t> npcCounts;
         for (const auto& npc : svmap.npcs)
         {
@@ -1122,8 +1132,9 @@ namespace phoenix::world
                 const auto x = svmap_to_world(pos.position.x, halfMap);
                 const auto z = svmap_to_world(pos.position.z, halfMap);
                 auto& centroid = npcCentroids[key];
-                centroid.first += x;
-                centroid.second += z;
+                centroid[0] += x;
+                centroid[1] += z;
+                centroid[2] += pos.position.y;
                 ++npcCounts[key];
             }
         }
@@ -1136,9 +1147,12 @@ namespace phoenix::world
                 if (countIt != npcCounts.end() && countIt->second > 0)
                 {
                     const auto& centroid = npcCentroids[key];
-                    anim.worldX = centroid.first / static_cast<float>(countIt->second);
-                    anim.worldZ = centroid.second / static_cast<float>(countIt->second);
-                    if (heightSampler)
+                    const auto invCount = 1.0f / static_cast<float>(countIt->second);
+                    anim.worldX = centroid[0] * invCount;
+                    anim.worldZ = centroid[1] * invCount;
+                    if (isDungeon)
+                        anim.worldY = centroid[2] * invCount;   // average authored floor Y
+                    else if (heightSampler)
                         anim.worldY = heightSampler(anim.worldX, anim.worldZ, heightUserData);
                     // Expand bounding radius to cover the farthest instance from centroid,
                     // just like mobs. NPCs of the same type (e.g. animals) can be spread
