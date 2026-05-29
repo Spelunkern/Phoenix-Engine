@@ -879,6 +879,26 @@ namespace
 
         fill_rect(pixels, width, height, barX - 2u, barY - 2u, barX + barWidth + 2u, barY + barHeight + 2u, 32, 40, 52);
         fill_rect(pixels, width, height, barX, barY, barX + barWidth, barY + barHeight, 18, 23, 31);
+
+        // Progress-bar colour shifts with load progress (state): blue -> cyan -> green.
+        const auto lerp8 = [](float a, float b, float t) {
+            return static_cast<std::uint8_t>(std::clamp(a + (b - a) * t, 0.0f, 255.0f));
+        };
+        std::uint8_t fillR, fillG, fillB;
+        if (progress < 0.5f)
+        {
+            const float t = progress / 0.5f;
+            fillR = lerp8(66.0f, 40.0f, t);
+            fillG = lerp8(120.0f, 200.0f, t);
+            fillB = lerp8(245.0f, 220.0f, t);
+        }
+        else
+        {
+            const float t = (progress - 0.5f) / 0.5f;
+            fillR = lerp8(40.0f, 120.0f, t);
+            fillG = lerp8(200.0f, 230.0f, t);
+            fillB = lerp8(220.0f, 90.0f, t);
+        }
         fill_rect(
             pixels,
             width,
@@ -887,9 +907,9 @@ namespace
             barY,
             barX + static_cast<std::uint32_t>(static_cast<float>(barWidth) * progress),
             barY + barHeight,
-            96,
-            158,
-            236);
+            fillB,
+            fillG,
+            fillR);
         return pixels;
     }
     std::vector<phoenix::renderer::TerrainDrawRange> build_visible_terrain_ranges(
@@ -2184,17 +2204,22 @@ int main(int, char**)
     {
         const auto currentClientSize = window.client_size();
         const bool minimized = currentClientSize.first <= 0 || currentClientSize.second <= 0;
-        if (!minimized && currentClientSize != lastClientSize)
+        if (minimized)
+        {
+            // While minimized the surface is 0x0 and the swapchain becomes
+            // out-of-date. Force lastClientSize to an impossible value so that on
+            // restore (which keeps the same size) the size-change check below fires
+            // and recreates the swapchain — otherwise the window stays frozen.
+            lastClientSize = { 0, 0 };
+            std::this_thread::sleep_for(std::chrono::milliseconds(16));
+            continue;
+        }
+        if (currentClientSize != lastClientSize)
         {
             renderer.resize(
                 static_cast<std::uint32_t>(currentClientSize.first),
                 static_cast<std::uint32_t>(currentClientSize.second));
             lastClientSize = currentClientSize;
-        }
-        if (minimized)
-        {
-            std::this_thread::sleep_for(std::chrono::milliseconds(16));
-            continue;
         }
 
         const auto now = clock::now();
