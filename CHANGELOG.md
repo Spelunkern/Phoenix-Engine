@@ -2,6 +2,29 @@
 
 All notable changes to Phoenix Engine are documented here. Dates are ISO-8601.
 
+## [Unreleased]
+
+### Added
+- **Effects system** (`src/effects/effect_system.*`): our own procedural,
+  texture-free particle effects engine built on the existing billboard pipeline.
+  - Reusable effect definitions with up to 3 layers; per-layer emitter shapes
+    (point, sphere, ring, disc, cone, line), additive/alpha blend, birth→death
+    colour gradient, lifetime, size, speed, gravity, drag.
+  - Anchoring via a position+basis transform: world-static (portals, map props),
+    entity/bone-attached, or one-shot at a point (attack impacts).
+  - `EffectManager`: spawn/move/stop/clear; looping vs one-shot (auto-despawn).
+  - Built-in presets: portal, fire pillar, holy column, poison cloud, impact,
+    heal burst.
+  - ImGui "Effects" window to spawn/preview presets (at character or ahead) and
+    clear; `G` spawns an impact burst at the weapon.
+- Unified particle rendering: the weapon aura and all effects now feed a single
+  per-frame `ParticleBatch` (alpha then additive) uploaded in one call.
+
+### Notes
+- Next iterations for the effects system: textured flipbook layers, mesh-based
+  layers (portal rings/shields), a data-driven definition format + editor, and
+  bloom/soft-particles for extra polish.
+
 ## [v0.3.1] - 2026-05-29
 
 ### Added

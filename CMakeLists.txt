@@ -16,6 +16,7 @@ set(ENGINE_SOURCES
     src/character/weapon_bone_map.cpp
     src/character/weapon_effect.cpp
     src/core/logging.cpp
+    src/effects/effect_system.cpp
     src/platform/sdl_window.cpp
     src/renderer/dds_loader.cpp
     src/renderer/vulkan_renderer.cpp

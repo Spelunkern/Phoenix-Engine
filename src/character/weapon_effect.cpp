@@ -87,7 +87,8 @@ namespace phoenix::character
     }
 
     void WeaponEffect::simulate_layer(float dt, const Layer& layer, LayerRuntime& rt,
-                                      const CharacterSystem::WeaponAttachment& attach)
+                                      const CharacterSystem::WeaponAttachment& attach,
+                                      renderer::ParticleBatch& batch)
     {
         // ---- Spawn new particles at the configured rate (reusing dead slots). ----
         rt.spawnAccumulator += layer.spawnRate * dt;
@@ -156,13 +157,13 @@ namespace phoenix::character
             inst.color[1] = g;
             inst.color[2] = b;
             inst.color[3] = alpha;
-            scratch_.push_back(inst);
+            batch.add(inst, /*additiveBlend=*/true);   // weapon aura glows (additive)
         }
     }
 
     void WeaponEffect::update(float dt,
                               const CharacterSystem::WeaponAttachment& attach,
-                              renderer::VulkanRenderer& renderer)
+                              renderer::ParticleBatch& batch)
     {
         bool anyLayer = false;
         if (enabled_)
@@ -171,31 +172,23 @@ namespace phoenix::character
 
         if (!enabled_ || !anyLayer || !attach.valid)
         {
-            if (!clearedOnce_)
+            // Let particles die out naturally is unnecessary here; just stop emitting
+            // and reset pools so re-enabling starts clean.
+            for (auto& rt : runtime_)
             {
-                for (auto& rt : runtime_)
-                {
-                    rt.particles.clear();
-                    rt.spawnAccumulator = 0.0f;
-                }
-                renderer.set_particle_instances({}, 0);
-                clearedOnce_ = true;
+                rt.particles.clear();
+                rt.spawnAccumulator = 0.0f;
             }
             return;
         }
-        clearedOnce_ = false;
 
         dt = std::clamp(dt, 0.0f, 0.1f);
 
-        scratch_.clear();
         for (int i = 0; i < kMaxLayers; ++i)
         {
             if (layers_[static_cast<std::size_t>(i)].enabled)
                 simulate_layer(dt, layers_[static_cast<std::size_t>(i)],
-                               runtime_[static_cast<std::size_t>(i)], attach);
+                               runtime_[static_cast<std::size_t>(i)], attach, batch);
         }
-
-        // All particles use additive blending (glow): additiveStart = 0.
-        renderer.set_particle_instances(scratch_, 0);
     }
 }

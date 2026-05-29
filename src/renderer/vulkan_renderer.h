@@ -62,6 +62,23 @@ namespace phoenix::renderer
         float color[4]{};
     };
 
+    // Per-frame accumulator for all particle billboards in the scene (weapon aura,
+    // effects, etc.). Alpha-blended particles are kept separate from additive ones
+    // so the renderer can draw them in two batches with the right blend mode. The
+    // whole scene's particles are gathered here and uploaded once per frame.
+    struct ParticleBatch
+    {
+        std::vector<ParticleInstance> alpha;
+        std::vector<ParticleInstance> additive;
+
+        void clear() { alpha.clear(); additive.clear(); }
+        bool empty() const { return alpha.empty() && additive.empty(); }
+        void add(const ParticleInstance& p, bool additiveBlend)
+        {
+            (additiveBlend ? additive : alpha).push_back(p);
+        }
+    };
+
     class VulkanRenderer
     {
     public:

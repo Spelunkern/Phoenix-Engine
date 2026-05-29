@@ -1,6 +1,7 @@
 #include "audio/audio_system.h"
 #include "character/character_system.h"
 #include "character/weapon_effect.h"
+#include "effects/effect_system.h"
 #include "core/logging.h"
 #include "runtime/phoenix_runtime.h"
 #include "platform/sdl_window.h"
@@ -1336,6 +1337,9 @@ int main(int, char**)
     // each other if overlapped).
     phoenix::character::CharacterSystem characterSystem;
     phoenix::character::WeaponEffect weaponEffect;
+    phoenix::effects::EffectManager effectManager;
+    phoenix::renderer::ParticleBatch particleBatch;
+    std::vector<phoenix::renderer::ParticleInstance> particleScratch;
     phoenix::character::CharacterAppearance characterAppearance{};
 
     std::size_t defaultMap{};
@@ -2694,6 +2698,57 @@ int main(int, char**)
                 if (mob.moving) ++mobsMovingNow;
             perfHud.mobsMoving = mobsMovingNow;
             draw_perf_hud(perfHud, static_cast<float>(renderer.surface_width()));
+
+            // ---- Effects spawner ----
+            {
+                using namespace phoenix::effects;
+                ImGui::SetNextWindowPos(ImVec2(8.0f, 380.0f), ImGuiCond_FirstUseEver);
+                ImGui::SetNextWindowSize(ImVec2(260.0f, 0.0f), ImGuiCond_FirstUseEver);
+                if (ImGui::Begin("Effects"))
+                {
+                    static int presetIdx = 0;
+                    const char* names[] = {
+                        "Portal", "Fire pillar", "Holy column",
+                        "Poison cloud", "Impact (1-shot)", "Heal burst (1-shot)" };
+                    ImGui::SetNextItemWidth(180.0f);
+                    ImGui::Combo("Preset", &presetIdx, names, IM_ARRAYSIZE(names));
+
+                    const auto makeDef = [](int i) -> EffectDefinition {
+                        switch (i) {
+                        case 0: return preset_portal();
+                        case 1: return preset_fire_pillar();
+                        case 2: return preset_holy_column();
+                        case 3: return preset_poison_cloud();
+                        case 4: return preset_impact();
+                        default: return preset_heal_burst();
+                        }
+                    };
+
+                    float sx = cameraX, sy = cameraY, sz = cameraZ;
+                    if (playableMode && characterLoaded && characterSystem.ready())
+                    {
+                        sx = characterSystem.world_x();
+                        sy = characterSystem.world_y();
+                        sz = characterSystem.world_z();
+                    }
+
+                    if (ImGui::Button("Spawn at character"))
+                        effectManager.spawn(makeDef(presetIdx), EffectAnchor::at(sx, sy, sz));
+                    ImGui::SameLine();
+                    if (ImGui::Button("Spawn ahead"))
+                    {
+                        const float fx = std::sin(cameraYaw);
+                        const float fz = std::cos(cameraYaw);
+                        effectManager.spawn(makeDef(presetIdx),
+                            EffectAnchor::at(sx + fx * 4.0f, sy, sz + fz * 4.0f));
+                    }
+                    if (ImGui::Button("Clear all effects"))
+                        effectManager.clear();
+                    ImGui::Text("Active effects: %zu", effectManager.active_count());
+                    ImGui::TextDisabled("G: impact at weapon/character");
+                }
+                ImGui::End();
+            }
         }
 
         if (audioAvailable)
@@ -2718,9 +2773,43 @@ int main(int, char**)
                 playMapSounds));
         }
 
-        // Procedural weapon-effect particles (anchored to the equipped weapon's
-        // attach bone, recomputed in characterSystem.update()).
-        weaponEffect.update(deltaSeconds, characterSystem.weapon_attachment(), renderer);
+        // Demo trigger: G spawns a one-shot impact burst at the weapon (or character).
+        {
+            static bool gWasDown = false;
+            const bool gDown = window.is_key_down(SDLK_g);
+            if (gDown && !gWasDown)
+            {
+                const auto& wa = characterSystem.weapon_attachment();
+                float ix = cameraX, iy = cameraY, iz = cameraZ;
+                if (wa.valid)
+                {
+                    ix = wa.position[0]; iy = wa.position[1]; iz = wa.position[2];
+                }
+                else if (characterLoaded && characterSystem.ready())
+                {
+                    ix = characterSystem.world_x();
+                    iy = characterSystem.world_y() + 1.0f;
+                    iz = characterSystem.world_z();
+                }
+                effectManager.spawn(phoenix::effects::preset_impact(),
+                    phoenix::effects::EffectAnchor::at(ix, iy, iz));
+            }
+            gWasDown = gDown;
+        }
+
+        // Gather all scene particles (weapon aura + world/attack/portal effects)
+        // into one batch and upload once: alpha-blended first, then additive.
+        particleBatch.clear();
+        weaponEffect.update(deltaSeconds, characterSystem.weapon_attachment(), particleBatch);
+        effectManager.update(deltaSeconds, particleBatch);
+        {
+            particleScratch.clear();
+            particleScratch.reserve(particleBatch.alpha.size() + particleBatch.additive.size());
+            particleScratch.insert(particleScratch.end(), particleBatch.alpha.begin(), particleBatch.alpha.end());
+            const auto additiveStart = static_cast<std::uint32_t>(particleBatch.alpha.size());
+            particleScratch.insert(particleScratch.end(), particleBatch.additive.begin(), particleBatch.additive.end());
+            renderer.set_particle_instances(particleScratch, additiveStart);
+        }
 
         renderer.render_frame();
 

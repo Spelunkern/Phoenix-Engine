@@ -53,12 +53,12 @@ namespace phoenix::character
         // Overwrite one layer with a preset (and enable it).
         void apply_preset(int layerIndex, Preset preset);
 
-        // Advances all enabled layers by dt and pushes the combined billboard list
-        // to the renderer. Clears the renderer's particle list once when fully
-        // disabled or when no weapon is attached.
+        // Advances all enabled layers by dt and appends their billboards (additive)
+        // to the shared per-frame particle batch. Emits nothing when disabled or
+        // when no weapon is attached.
         void update(float dt,
                     const CharacterSystem::WeaponAttachment& attach,
-                    renderer::VulkanRenderer& renderer);
+                    renderer::ParticleBatch& batch);
 
     private:
         struct Particle
@@ -79,13 +79,12 @@ namespace phoenix::character
 
         void spawn(const Layer& layer, Particle& p);
         void simulate_layer(float dt, const Layer& layer, LayerRuntime& rt,
-                            const CharacterSystem::WeaponAttachment& attach);
+                            const CharacterSystem::WeaponAttachment& attach,
+                            renderer::ParticleBatch& batch);
 
         bool enabled_{ false };
         std::array<Layer, kMaxLayers> layers_{};
         std::array<LayerRuntime, kMaxLayers> runtime_{};
-        bool clearedOnce_{ true };
         std::mt19937 rng_{ 0x5EED1234u };
-        std::vector<renderer::ParticleInstance> scratch_;
     };
 }
