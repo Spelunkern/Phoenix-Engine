@@ -2432,7 +2432,12 @@ namespace phoenix::runtime
                     const float nz = dzT / distToTarget;
                     inst.position[0] += nx * step;
                     inst.position[2] += nz * step;
-                    inst.position[1] = terrain_height(inst.position[0], inst.position[2]);
+                    // Open world snaps to the terrain heightmap as the mob roams.
+                    // Dungeons have no heightmap (terrain_height ~= 0) and are
+                    // multi-level, so keep the mob's authored floor Y — otherwise it
+                    // sinks to the bottom the moment it moves.
+                    if (!state_.world.isDungeon)
+                        inst.position[1] = terrain_height(inst.position[0], inst.position[2]);
                     mob.yaw = std::atan2(nx, nz);
                     // Face movement direction.
                     const float actorYaw = mob.yaw + 3.14159265f;
