@@ -2367,7 +2367,10 @@ int main(int, char**)
         if (playToggleDown && !playToggleWasDown && characterLoaded)
         {
             playableMode = !playableMode;
-            if (playableMode && runtime.state().world.isDungeon && characterSystem.ready())
+            // Re-entering playable mode drops the character at the free-camera
+            // location on every map (previously dungeons only), snapped to the
+            // nearest walkable collision surface.
+            if (playableMode && characterSystem.ready())
             {
                 float freeCamX{};
                 float freeCamY{};
@@ -2841,8 +2844,8 @@ int main(int, char**)
                     if (ImGui::Button("Reset to native defaults"))
                     {
                         t = phoenix::runtime::ActorAnimTuning{};
-                        characterSystem.swimStartY = -2.0f;
-                        characterSystem.floatLevelY = -1.20f;
+                        characterSystem.swimStartY = -1.6f;
+                        characterSystem.floatLevelY = -1.5f;
                     }
                 }
                 ImGui::End();

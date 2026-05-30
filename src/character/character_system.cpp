@@ -2063,7 +2063,16 @@ namespace phoenix::character
             else if (!swimmingDown)
                 characterY_ += kBuoyancySpeed * clampedDelta;
 
-            characterY_ = std::clamp(characterY_, floorY, floatY);
+            // In shallow water near the shore the collision floor can sit above the
+            // float level. std::clamp(v, lo, hi) with lo>hi is undefined and produced
+            // garbage Y values, which the third-person camera tracked directly -> the
+            // "screen constantly moving" distortion on water entry/exit. Guard it:
+            // rest on the floor when it is above the float surface, otherwise hold at
+            // the float level.
+            if (floorY >= floatY)
+                characterY_ = floorY;
+            else
+                characterY_ = std::clamp(characterY_, floorY, floatY);
             verticalVelocity_ = 0.0f;
             grounded_ = true;
             groundInitialized_ = true;

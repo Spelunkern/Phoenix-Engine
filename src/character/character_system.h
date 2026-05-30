@@ -384,8 +384,8 @@ namespace phoenix::character
         // water surface is Y=0). swimStartY: the character begins swimming once it
         // sinks to/below this height. floatLevelY: the height it bobs up to and
         // floats at while swimming. Kept separate so each can be matched to native.
-        float swimStartY{ -2.0f };
-        float floatLevelY{ -1.20f };
+        float swimStartY{ -1.6f };
+        float floatLevelY{ -1.5f };
 
         // Bone attachment indices — adjustable at runtime via ImGui.
         int weaponBoneIndex{ 11 };   // default: right wrist
