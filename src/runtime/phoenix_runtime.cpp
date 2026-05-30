@@ -2310,17 +2310,19 @@ namespace phoenix::runtime
         std::size_t actorVertexAnimationStart,
         bool skipActorSkinning) const
     {
-        constexpr float kAnimationRange = 180.0f;
+        // Live-tunable animation parameters (debug UI). See ActorAnimTuning.
+        const auto& tune = actorAnimTuning_;
+        const float kAnimationRange = tune.animationRange;
         // NPC gesture timing.
-        constexpr float kGestureIntervalMin = 20.0f;
-        constexpr float kGestureIntervalMax = 30.0f;
-        constexpr float kIdleDuration = 5.0f;
+        const float kGestureIntervalMin = tune.gestureIntervalMin;
+        const float kGestureIntervalMax = tune.gestureIntervalMax;
+        const float kIdleDuration = tune.idleGestureDuration;
         // Mob movement constants.
-        constexpr float kMobWalkSpeed = 1.8f;
-        constexpr float kMobRunSpeed = 4.5f;
-        constexpr float kMobRoamRadius = 12.0f;
-        constexpr float kMobIdleMin = 4.0f;
-        constexpr float kMobIdleMax = 12.0f;
+        const float kMobWalkSpeed = tune.mobWalkSpeed;
+        const float kMobRunSpeed = tune.mobRunSpeed;
+        const float kMobRoamRadius = tune.mobRoamRadius;
+        const float kMobIdleMin = tune.mobIdleMin;
+        const float kMobIdleMax = tune.mobIdleMax;
         constexpr float kMobRunChance = 0.0f;
         constexpr float kMobArriveThreshold = 0.8f;
 
@@ -2474,7 +2476,7 @@ namespace phoenix::runtime
             {
                 if (animation.frames.empty())
                     continue;
-                const auto frame = static_cast<std::size_t>(std::floor(totalTime * 12.0f)) % animation.frames.size();
+                const auto frame = static_cast<std::size_t>(std::floor(totalTime * tune.decorFps)) % animation.frames.size();
                 const auto& frameVertices = animation.frames[frame];
                 const auto count = std::min<std::size_t>(animation.vertexCount, frameVertices.size());
                 if (static_cast<std::size_t>(animation.firstVertex) + count <= scene.vertices.size())
@@ -2528,17 +2530,17 @@ namespace phoenix::runtime
                 const float runningRatio = static_cast<float>(animation.runningCount) / static_cast<float>(total);
 
                 const phoenix::world::CharacterAnimation* activeAnim = &breathAnim;
-                float playbackRate = 12.0f;
+                float playbackRate = tune.breathFps;
 
-                if (runningRatio > 0.4f && runAnim.parsed)
+                if (runningRatio > tune.moveAnimThreshold && runAnim.parsed)
                 {
                     activeAnim = &runAnim;
-                    playbackRate = 18.0f;
+                    playbackRate = tune.runFps;
                 }
-                else if (movingRatio > 0.4f && walkAnim.parsed)
+                else if (movingRatio > tune.moveAnimThreshold && walkAnim.parsed)
                 {
                     activeAnim = &walkAnim;
-                    playbackRate = 14.0f;
+                    playbackRate = tune.walkFps;
                 }
                 else
                 {
@@ -2580,7 +2582,7 @@ namespace phoenix::runtime
 
             // ---- NPC animation (stationary, breath + idle gesture) ----
             const phoenix::world::CharacterAnimation* activeAnim = &breathAnim;
-            float playbackRate = 12.0f;
+            float playbackRate = tune.npcBreathFps;
 
             if (idleAnim.parsed)
             {

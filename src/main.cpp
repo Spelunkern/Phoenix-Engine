@@ -2799,6 +2799,39 @@ int main(int, char**)
                 }
                 ImGui::End();
             }
+
+            // ---- Actor animation tuning (live; match to native client) ----
+            {
+                auto& t = runtime.actor_anim_tuning();
+                ImGui::SetNextWindowPos(ImVec2(8.0f, 560.0f), ImGuiCond_FirstUseEver);
+                ImGui::SetNextWindowSize(ImVec2(290.0f, 0.0f), ImGuiCond_FirstUseEver);
+                if (ImGui::Begin("Actor anim (debug)"))
+                {
+                    ImGui::TextDisabled("Playback rates (frames/sec)");
+                    ImGui::SliderFloat("Idle/breath", &t.breathFps, 1.0f, 60.0f, "%.1f");
+                    ImGui::SliderFloat("Walk", &t.walkFps, 1.0f, 60.0f, "%.1f");
+                    ImGui::SliderFloat("Run", &t.runFps, 1.0f, 60.0f, "%.1f");
+                    ImGui::SliderFloat("NPC breath", &t.npcBreathFps, 1.0f, 60.0f, "%.1f");
+                    ImGui::SliderFloat("Decor vtx anim", &t.decorFps, 1.0f, 60.0f, "%.1f");
+                    ImGui::Separator();
+                    ImGui::TextDisabled("Mob movement");
+                    ImGui::SliderFloat("Walk speed", &t.mobWalkSpeed, 0.1f, 12.0f, "%.2f");
+                    ImGui::SliderFloat("Run speed", &t.mobRunSpeed, 0.1f, 16.0f, "%.2f");
+                    ImGui::SliderFloat("Roam radius", &t.mobRoamRadius, 0.0f, 60.0f, "%.1f");
+                    ImGui::SliderFloat("Idle min", &t.mobIdleMin, 0.0f, 30.0f, "%.1f");
+                    ImGui::SliderFloat("Idle max", &t.mobIdleMax, 0.0f, 60.0f, "%.1f");
+                    ImGui::SliderFloat("Move->anim thr", &t.moveAnimThreshold, 0.0f, 1.0f, "%.2f");
+                    ImGui::Separator();
+                    ImGui::TextDisabled("Idle gestures / range");
+                    ImGui::SliderFloat("Gesture every (min)", &t.gestureIntervalMin, 1.0f, 60.0f, "%.1f");
+                    ImGui::SliderFloat("Gesture every (max)", &t.gestureIntervalMax, 1.0f, 90.0f, "%.1f");
+                    ImGui::SliderFloat("Gesture duration", &t.idleGestureDuration, 0.5f, 15.0f, "%.1f");
+                    ImGui::SliderFloat("Anim range", &t.animationRange, 20.0f, 600.0f, "%.0f");
+                    if (ImGui::Button("Reset to native defaults"))
+                        t = phoenix::runtime::ActorAnimTuning{};
+                }
+                ImGui::End();
+            }
         }
 
         if (audioAvailable)

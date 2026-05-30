@@ -127,6 +127,28 @@ namespace phoenix::runtime
         float speed{ 320.0f };
     };
 
+    // Live-tunable mob/NPC animation parameters (exposed in the debug UI so the
+    // playback can be matched to the native client). Defaults are the calibrated
+    // values; changing them takes effect immediately.
+    struct ActorAnimTuning
+    {
+        float breathFps{ 12.0f };          // idle "breathing" loop rate
+        float walkFps{ 14.0f };            // mob walk loop rate
+        float runFps{ 18.0f };             // mob run loop rate
+        float npcBreathFps{ 12.0f };       // NPC idle loop rate
+        float decorFps{ 12.0f };           // non-actor decorative vertex anims
+        float mobWalkSpeed{ 1.8f };        // world units/s while walking
+        float mobRunSpeed{ 4.5f };         // world units/s while running
+        float mobRoamRadius{ 12.0f };      // wander radius around home
+        float mobIdleMin{ 4.0f };          // min idle seconds between roams
+        float mobIdleMax{ 12.0f };         // max idle seconds between roams
+        float gestureIntervalMin{ 20.0f }; // seconds between idle gestures
+        float gestureIntervalMax{ 30.0f };
+        float idleGestureDuration{ 5.0f }; // how long an idle gesture plays
+        float animationRange{ 180.0f };    // distance beyond which actors freeze
+        float moveAnimThreshold{ 0.4f };   // fraction of a type moving -> walk/run anim
+    };
+
     struct PreviewImage
     {
         std::uint32_t width{};
@@ -296,6 +318,7 @@ namespace phoenix::runtime
         const std::vector<AudioAsset>& audio_assets() const { return state_.audioAssets; }
         std::size_t selected_world_map() const { return state_.selectedWorldMap; }
         const PhoenixRuntimeState& state() const { return state_; }
+        ActorAnimTuning& actor_anim_tuning() { return actorAnimTuning_; }
 
         float terrain_height_at(float worldX, float worldZ) const { return terrain_height(worldX, worldZ); }
         WorldCollisionMesh build_collision_mesh() const;
@@ -314,6 +337,7 @@ namespace phoenix::runtime
 
         PhoenixRuntimeState state_;
         RuntimeCamera camera_;
+        ActorAnimTuning actorAnimTuning_;
         std::uint32_t effectTextureBase_{};
         // Memoises resolve_asset_texture_layer by (textureName, forceCutout) so the
         // per-mesh world build doesn't re-resolve+stat the same texture thousands of

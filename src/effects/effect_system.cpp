@@ -695,8 +695,8 @@ namespace phoenix::effects
                 mkLayer(S::Ring, ADD, 0.3f,1.0f,0.6f, 0.2f,0.7f,1.0f, 300,1.4f,0.12f, 1.5f,-0.4f,3.0f, 0.0f,0.9f),
                 mkLayer(S::Ring, ADD, 0.6f,0.4f,1.0f, 0.3f,0.7f,1.0f, 200,1.4f,0.10f, 1.4f,-0.4f,3.0f, 0.0f,0.8f) }));
             c.push_back(mkDef("Healing rain", C::Holy, true, 0.0f, {
-                mkLayer(S::Disc, ALP, 0.6f,1.0f,0.7f, 0.85f,1.0f,0.9f, 200,1.2f,0.08f, 1.0f,9.0f,3.0f, 0.0f,0.8f, 25.0f,1.0f, 8.0f),
-                mkLayer(S::Disc, ADD, 0.6f,1.0f,0.6f, 0.9f,1.0f,0.8f, 60,1.0f,0.20f, 0.5f,-0.2f,2.8f, 0.3f,0.6f) }));
+                mkLayer(S::Disc, ALP, 0.55f,0.8f,1.0f, 0.8f,0.92f,1.0f, 200,1.2f,0.08f, 1.0f,9.0f,3.0f, 0.0f,0.8f, 25.0f,1.0f, 8.0f),
+                mkLayer(S::Disc, ADD, 0.5f,0.85f,1.0f, 0.8f,0.95f,1.0f, 60,1.0f,0.20f, 0.5f,-0.2f,2.8f, 0.3f,0.6f) }));
             c.push_back(mkDef("Halo", C::Holy, false, 0.5f, {
                 mkLayer(S::Shockwave, ADD, 1.0f,0.95f,0.6f, 1.0f,1.0f,0.9f, 2500,0.8f,0.16f, 9.0f,0.0f,0.5f, 1.0f,1.3f) }));
             c.push_back(mkDef("Holy shield", C::Holy, true, 0.0f, {
