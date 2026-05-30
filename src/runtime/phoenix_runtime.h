@@ -132,7 +132,8 @@ namespace phoenix::runtime
     // values; changing them takes effect immediately.
     struct ActorAnimTuning
     {
-        float breathFps{ 12.0f };          // idle "breathing" loop rate
+        float breathFps{ 12.0f };          // standing "breathing" loop rate
+        float idleFps{ 12.0f };            // occasional idle-gesture playback rate
         float walkFps{ 14.0f };            // mob walk loop rate
         float runFps{ 18.0f };             // mob run loop rate
         float npcBreathFps{ 12.0f };       // NPC idle loop rate

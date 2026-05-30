@@ -2559,8 +2559,7 @@ namespace phoenix::runtime
                             }
                             else
                             {
-                                const float progress = animation.gestureTimer / kIdleDuration;
-                                skinCached(idleAnim, progress * animFrameCount(idleAnim));
+                                skinCached(idleAnim, std::fmod(animation.gestureTimer * tune.idleFps, animFrameCount(idleAnim)));
                                 continue;
                             }
                         }
@@ -2599,8 +2598,7 @@ namespace phoenix::runtime
                     }
                     else
                     {
-                        const float progress = animation.gestureTimer / kIdleDuration;
-                        skinCached(idleAnim, progress * animFrameCount(idleAnim));
+                        skinCached(idleAnim, std::fmod(animation.gestureTimer * tune.idleFps, animFrameCount(idleAnim)));
                         continue;
                     }
                 }

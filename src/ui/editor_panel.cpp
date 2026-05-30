@@ -131,6 +131,8 @@ namespace phoenix::ui
         phoenix::character::CharacterAppearance& appearance,
         phoenix::character::CharacterSystem& characterSystem,
         phoenix::character::WeaponEffect& weaponEffect,
+        bool& showEffectsWindow,
+        bool& showActorAnimWindow,
         float camX, float camY, float camZ, float camYaw, float camPitch)
     {
         UnifiedPanelResult result{};
@@ -211,6 +213,11 @@ namespace phoenix::ui
             ImGui::Checkbox("Play Music", &playMapMusic);
             ImGui::SetNextItemWidth(200.0f);
             ImGui::SliderFloat("Volume", &masterVolume, 0.0f, 1.0f, "%.2f");
+            ImGui::Separator();
+            ImGui::TextDisabled("Debug windows");
+            ImGui::Checkbox("Effects##win", &showEffectsWindow);
+            ImGui::SameLine();
+            ImGui::Checkbox("Actor anim##win", &showActorAnimWindow);
             result.debugGizmosChanged = prevSounds != showSoundGizmos
                 || prevMusic != showMusicGizmos
                 || prevPortals != showPortalGizmos

@@ -80,6 +80,11 @@ namespace phoenix::renderer
         ImGui::CreateContext();
         auto& io = ImGui::GetIO();
         io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
+        // Persist window layout (positions/sizes) next to the executable so panel
+        // placement is remembered across runs regardless of the launch directory.
+        // ImGui stores this pointer without copying, so keep the string alive.
+        static std::string imguiIniPath = (executable_dir() / "imgui.ini").string();
+        io.IniFilename = imguiIniPath.c_str();
         ImGui::StyleColorsDark();
 
         if (!ImGui_ImplSDL2_InitForVulkan(window))

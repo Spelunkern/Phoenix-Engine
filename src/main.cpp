@@ -1402,6 +1402,8 @@ int main(int, char**)
     bool showMusicGizmos = false;
     bool showPortalGizmos = false;
     bool showEffectGizmos = false;
+    bool showEffectsWindow = false;     // debug "Effects" library window (off by default)
+    bool showActorAnimWindow = false;   // debug "Actor anim" tuning window (off by default)
     bool playMapSounds = true;
     bool playMapMusic = true;
     float masterVolume = 1.0f;
@@ -2586,6 +2588,8 @@ int main(int, char**)
                 characterAppearance,
                 characterSystem,
                 weaponEffect,
+                showEffectsWindow,
+                showActorAnimWindow,
                 cameraX, cameraY, cameraZ, cameraYaw, cameraPitch);
 
             if (panelResult.loadRequested)
@@ -2700,11 +2704,12 @@ int main(int, char**)
             draw_perf_hud(perfHud, static_cast<float>(renderer.surface_width()));
 
             // ---- Effects spawner ----
+            if (showEffectsWindow)
             {
                 using namespace phoenix::effects;
                 ImGui::SetNextWindowPos(ImVec2(8.0f, 380.0f), ImGuiCond_FirstUseEver);
                 ImGui::SetNextWindowSize(ImVec2(260.0f, 0.0f), ImGuiCond_FirstUseEver);
-                if (ImGui::Begin("Effects"))
+                if (ImGui::Begin("Effects", &showEffectsWindow))
                 {
                     const auto& catalog = preset_catalog();
                     const int categoryCount = static_cast<int>(EffectCategory::Count);
@@ -2801,14 +2806,16 @@ int main(int, char**)
             }
 
             // ---- Actor animation tuning (live; match to native client) ----
+            if (showActorAnimWindow)
             {
                 auto& t = runtime.actor_anim_tuning();
                 ImGui::SetNextWindowPos(ImVec2(8.0f, 560.0f), ImGuiCond_FirstUseEver);
                 ImGui::SetNextWindowSize(ImVec2(290.0f, 0.0f), ImGuiCond_FirstUseEver);
-                if (ImGui::Begin("Actor anim (debug)"))
+                if (ImGui::Begin("Actor anim (debug)", &showActorAnimWindow))
                 {
                     ImGui::TextDisabled("Playback rates (frames/sec)");
-                    ImGui::SliderFloat("Idle/breath", &t.breathFps, 1.0f, 60.0f, "%.1f");
+                    ImGui::SliderFloat("Breath (mob)", &t.breathFps, 1.0f, 60.0f, "%.1f");
+                    ImGui::SliderFloat("Idle gesture", &t.idleFps, 1.0f, 60.0f, "%.1f");
                     ImGui::SliderFloat("Walk", &t.walkFps, 1.0f, 60.0f, "%.1f");
                     ImGui::SliderFloat("Run", &t.runFps, 1.0f, 60.0f, "%.1f");
                     ImGui::SliderFloat("NPC breath", &t.npcBreathFps, 1.0f, 60.0f, "%.1f");

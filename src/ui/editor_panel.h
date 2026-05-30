@@ -81,5 +81,7 @@ namespace phoenix::ui
         phoenix::character::CharacterAppearance& appearance,
         phoenix::character::CharacterSystem& characterSystem,
         phoenix::character::WeaponEffect& weaponEffect,
+        bool& showEffectsWindow,
+        bool& showActorAnimWindow,
         float camX, float camY, float camZ, float camYaw, float camPitch);
 }
