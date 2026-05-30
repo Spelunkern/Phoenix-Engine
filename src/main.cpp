@@ -174,6 +174,41 @@ namespace
     }
 
 
+    // Initial playable spawn for a freshly loaded map: the centre of the play
+    // area, snapped to the nearest walkable collision surface. Open-world maps are
+    // centred on the origin, so the preferred point is (0,0,0). Dungeons live in
+    // raw, uncentred space with no fixed centre, so we aim at the centroid of all
+    // walkable triangles (a guaranteed-interior point) and snap to the nearest one.
+    PlayableSpawn find_initial_playable_spawn(
+        const phoenix::runtime::WorldCollisionMesh& collisionMesh,
+        bool isDungeon)
+    {
+        float preferredX = 0.0f;
+        float preferredY = 0.0f;
+        float preferredZ = 0.0f;
+        if (isDungeon)
+        {
+            double sx = 0.0, sy = 0.0, sz = 0.0;
+            std::size_t n = 0;
+            for (const auto& tri : collisionMesh.triangles)
+            {
+                if (tri.normalY < phoenix::runtime::WorldCollisionMesh::kWalkableNormalY)
+                    continue;
+                sx += (tri.v0[0] + tri.v1[0] + tri.v2[0]) / 3.0;
+                sy += (tri.v0[1] + tri.v1[1] + tri.v2[1]) / 3.0;
+                sz += (tri.v0[2] + tri.v1[2] + tri.v2[2]) / 3.0;
+                ++n;
+            }
+            if (n > 0)
+            {
+                preferredX = static_cast<float>(sx / static_cast<double>(n));
+                preferredY = static_cast<float>(sy / static_cast<double>(n));
+                preferredZ = static_cast<float>(sz / static_cast<double>(n));
+            }
+        }
+        return find_dungeon_playable_spawn(collisionMesh, preferredX, preferredY, preferredZ);
+    }
+
     std::filesystem::path executable_directory()
     {
 #ifdef _WIN32
@@ -2218,6 +2253,24 @@ int main(int, char**)
                 }
                 std::ofstream log(phoenix::core::engine_log_path(), std::ios::app);
                 log << "Portal effects placed: " << portalCount << "\n";
+            }
+        }
+
+        // ---- Initial playable spawn: centre of the map (valid interior point in
+        // dungeons), snapped to a walkable surface. A queued portal teleport, if
+        // any, overrides this afterwards in the pendingMapLoad handler.
+        if (characterLoaded && characterSystem.ready())
+        {
+            const auto spawn = find_initial_playable_spawn(
+                worldCollisionMesh, runtime.state().world.isDungeon);
+            if (spawn.valid)
+            {
+                characterSystem.set_world_position(spawn.x, spawn.y, spawn.z, 0.0f);
+                heightSamplerCtx.lastCharacterY = spawn.y;
+                uploadCharacterMesh();
+                std::ofstream log(phoenix::core::engine_log_path(), std::ios::app);
+                log << "Initial spawn: x=" << spawn.x << " y=" << spawn.y << " z=" << spawn.z
+                    << " dungeon=" << runtime.state().world.isDungeon << "\n";
             }
         }
 
