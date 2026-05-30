@@ -639,6 +639,102 @@ namespace phoenix::effects
                 mkLayer(S::Disc, ALP, 0.5f,0.42f,0.3f, 0.3f,0.25f,0.18f, 420,1.0f,0.24f, 3.0f,-1.0f,0.9f, 0.4f,0.7f, 25.0f,1.0f,0.0f, 4.5f),
                 mkLayer(S::Disc, ALP, 0.45f,0.42f,0.4f, 0.25f,0.23f,0.22f, 100,0.9f,0.14f, 3.5f,8.0f,0.8f, 0.0f,0.8f) }));
 
+            // ===== PHYSICAL (weapon / melee) =====
+            c.push_back(mkDef("Wind spin", C::Normal, false, 0.5f, {
+                mkLayer(S::Ring, ALP, 0.9f,0.95f,1.0f, 0.7f,0.8f,0.85f, 600,0.4f,0.16f, 0.2f,0.0f,1.3f, 0.0f,0.9f, 25.0f,1.0f,0.6f, 12.0f),
+                mkLayer(S::Ring, ADD, 0.95f,0.97f,1.0f, 0.7f,0.85f,0.9f, 300,0.4f,0.10f, 0.2f,0.0f,1.1f, 0.0f,0.9f, 25.0f,1.0f,0.6f, 14.0f) }));
+            c.push_back(mkDef("Deadly strike", C::Normal, false, 0.5f, {
+                mkLayer(S::Shockwave, ADD, 1.0f,0.9f,0.8f, 1.0f,0.3f,0.2f, 1600,0.3f,0.12f, 9.0f,0.0f,0.2f, 2.0f,1.3f),
+                mkLayer(S::Sphere, ADD, 1.0f,0.85f,0.5f, 0.9f,0.2f,0.1f, 800,0.3f,0.07f, 7.0f,6.0f,0.2f, 1.5f,1.2f) }));
+            c.push_back(mkDef("Great strike", C::Normal, false, 0.08f, {
+                mkLayer(S::Shockwave, ADD, 1.0f,0.95f,0.8f, 1.0f,0.6f,0.2f, 2200,0.45f,0.16f, 11.0f,0.0f,0.3f, 2.0f,1.4f),
+                mkLayer(S::Sphere, ADD, 1.0f,0.9f,0.6f, 0.9f,0.3f,0.1f, 1200,0.4f,0.10f, 8.0f,8.0f,0.2f, 1.5f,1.3f),
+                mkLayer(S::Disc, ALP, 0.5f,0.48f,0.45f, 0.25f,0.24f,0.22f, 200,0.6f,0.30f, 2.0f,-0.3f,0.8f, 0.4f,0.6f) }));
+            c.push_back(mkDef("Ground shock", C::Earth, false, 0.4f, {
+                mkLayer(S::Shockwave, ALP, 0.5f,0.42f,0.3f, 0.3f,0.24f,0.16f, 1400,0.6f,0.20f, 8.0f,1.0f,0.4f, 1.0f,0.8f),
+                mkLayer(S::Shockwave, ADD, 0.7f,0.85f,1.0f, 0.4f,0.5f,1.0f, 1000,0.4f,0.10f, 9.0f,0.0f,0.3f, 1.5f,1.4f),
+                mkLayer(S::Disc, ADD, 0.8f,0.9f,1.0f, 0.4f,0.5f,1.0f, 300,0.2f,0.30f, 0.5f,0.0f,0.8f, 0.0f,1.4f) }));
+
+            // ===== ARCANE UTILITY =====
+            c.push_back(mkDef("Hypnosis", C::Arcane, false, 1.6f, {
+                mkLayer(S::Disc, ADD, 0.6f,0.3f,0.9f, 0.3f,0.1f,0.6f, 50,1.6f,0.08f, 0.6f,-0.2f,0.6f, 0.3f,0.6f),
+                mkLayer(S::Ring, ADD, 0.7f,0.4f,1.0f, 0.35f,0.15f,0.7f, 60,1.2f,0.07f, 0.4f,-0.15f,0.8f, 0.0f,0.4f) }));
+            c.push_back(mkDef("Magic veil", C::Arcane, true, 0.0f, {
+                mkLayer(S::Sphere, ADD, 0.6f,0.4f,1.0f, 0.3f,0.15f,0.8f, 240,0.8f,0.08f, 0.15f,0.0f,1.2f, 0.0f,0.8f) }));
+            c.push_back(mkDef("Dispel", C::Arcane, false, 0.9f, {
+                mkLayer(S::Disc, ADD, 0.8f,0.75f,1.0f, 0.6f,0.5f,0.95f, 160,0.8f,0.07f, 1.5f,-0.6f,0.5f, 0.5f,0.8f),
+                mkLayer(S::Ring, ADD, 0.85f,0.8f,1.0f, 0.6f,0.55f,0.95f, 90,0.7f,0.06f, 0.6f,-0.3f,0.6f, 0.0f,0.6f) }));
+            c.push_back(mkDef("Dread visage", C::Shadow, false, 2.0f, {
+                mkLayer(S::Disc, ALP, 0.2f,0.05f,0.3f, 0.0f,0.0f,0.05f, 400,1.4f,0.30f, 2.0f,-0.4f,1.2f, 0.0f,0.7f, 25.0f,1.0f,0.0f, 6.0f),
+                mkLayer(S::Sphere, ADD, 0.4f,0.1f,0.6f, 0.1f,0.0f,0.2f, 220,1.0f,0.16f, 1.2f,0.0f,0.8f, 0.3f,0.9f),
+                mkLayer(S::Shockwave, ADD, 0.5f,0.15f,0.7f, 0.1f,0.0f,0.2f, 200,0.8f,0.14f, 7.0f,0.0f,0.3f, 1.5f,1.0f) }));
+            c.push_back(mkDef("Poison shot", C::Poison, true, 0.0f, {
+                mkLayer(S::Sphere, ADD, 0.5f,0.95f,0.3f, 0.2f,0.5f,0.1f, 220,0.35f,0.07f, 0.4f,0.0f,0.06f, 1.0f,0.9f),
+                mkLayer(S::Sphere, ALP, 0.4f,0.7f,0.2f, 0.1f,0.3f,0.05f, 70,0.4f,0.05f, 0.3f,0.0f,0.05f, 0.5f,0.6f) }));
+            {
+                auto& d = c.back();  // configure Poison shot as a small projectile
+                d.projectile = true; d.projectileSpeed = 16.0f; d.projectileRange = 28.0f; d.projectileGravity = 1.5f;
+            }
+
+            // ===== ELEMENTAL AURAS / BARRIERS =====
+            c.push_back(mkDef("Fire aura", C::Fire, true, 0.0f, {
+                mkLayer(S::Ring, ADD, 1.0f,0.6f,0.2f, 0.6f,0.1f,0.0f, 130,0.7f,0.10f, 1.2f,-0.8f,0.7f, 0.5f,0.8f) }));
+            c.push_back(mkDef("Frost barrier", C::Ice, true, 0.0f, {
+                mkLayer(S::Sphere, ADD, 0.7f,0.92f,1.0f, 0.5f,0.7f,1.0f, 240,0.8f,0.09f, 0.15f,0.0f,1.2f, 0.0f,0.9f),
+                mkLayer(S::Disc, ALP, 0.8f,0.92f,1.0f, 0.6f,0.75f,0.95f, 60,1.2f,0.10f, 0.3f,0.6f,1.2f, 0.4f,0.5f) }));
+
+            // ===== HOLY / SUPPORT =====
+            c.push_back(mkDef("Healing", C::Holy, true, 0.0f, {
+                mkLayer(S::Ring, ADD, 1.0f,0.92f,0.55f, 1.0f,1.0f,0.9f, 200,1.0f,0.08f, 0.3f,-0.2f,1.0f, 0.0f,0.9f),
+                mkLayer(S::Disc, ADD, 0.7f,1.0f,0.6f, 1.0f,1.0f,0.85f, 60,1.4f,0.06f, 1.2f,-0.6f,0.7f, 0.3f,0.8f) }));
+            c.push_back(mkDef("Recovery", C::Holy, true, 0.0f, {
+                mkLayer(S::Ring, ADD, 1.0f,0.92f,0.55f, 1.0f,1.0f,0.9f, 420,1.0f,0.10f, 0.4f,-0.2f,1.4f, 0.0f,1.1f),
+                mkLayer(S::Line, ADD, 1.0f,0.95f,0.6f, 1.0f,1.0f,0.95f, 220,1.2f,0.12f, 1.6f,-0.4f,0.5f, 0.0f,1.1f, 25.0f,3.0f),
+                mkLayer(S::Disc, ADD, 1.0f,1.0f,0.8f, 1.0f,0.9f,0.5f, 160,1.4f,0.07f, 2.2f,-0.7f,1.0f, 0.4f,1.0f) }));
+            c.push_back(mkDef("Aurora veil", C::Holy, true, 0.0f, {
+                mkLayer(S::Ring, ADD, 0.3f,1.0f,0.6f, 0.2f,0.7f,1.0f, 300,1.4f,0.12f, 1.5f,-0.4f,3.0f, 0.0f,0.9f),
+                mkLayer(S::Ring, ADD, 0.6f,0.4f,1.0f, 0.3f,0.7f,1.0f, 200,1.4f,0.10f, 1.4f,-0.4f,3.0f, 0.0f,0.8f) }));
+            c.push_back(mkDef("Healing rain", C::Holy, true, 0.0f, {
+                mkLayer(S::Disc, ALP, 0.6f,1.0f,0.7f, 0.85f,1.0f,0.9f, 200,1.2f,0.08f, 1.0f,9.0f,3.0f, 0.0f,0.8f, 25.0f,1.0f, 8.0f),
+                mkLayer(S::Disc, ADD, 0.6f,1.0f,0.6f, 0.9f,1.0f,0.8f, 60,1.0f,0.20f, 0.5f,-0.2f,2.8f, 0.3f,0.6f) }));
+            c.push_back(mkDef("Halo", C::Holy, false, 0.5f, {
+                mkLayer(S::Shockwave, ADD, 1.0f,0.95f,0.6f, 1.0f,1.0f,0.9f, 2500,0.8f,0.16f, 9.0f,0.0f,0.5f, 1.0f,1.3f) }));
+            c.push_back(mkDef("Holy shield", C::Holy, true, 0.0f, {
+                mkLayer(S::Sphere, ADD, 1.0f,0.9f,0.5f, 1.0f,1.0f,0.85f, 240,0.8f,0.09f, 0.15f,0.0f,1.2f, 0.0f,0.9f) }));
+            c.push_back(mkDef("Resurrection", C::Holy, false, 1.6f, {
+                mkLayer(S::Line, ADD, 1.0f,0.95f,0.6f, 1.0f,1.0f,0.95f, 400,1.2f,0.14f, 2.0f,-0.5f,0.5f, 0.0f,1.2f, 25.0f,4.0f),
+                mkLayer(S::Ring, ADD, 1.0f,0.92f,0.55f, 1.0f,1.0f,0.9f, 300,1.2f,0.10f, 0.4f,-0.2f,1.5f, 0.0f,1.1f),
+                mkLayer(S::Disc, ADD, 1.0f,1.0f,0.8f, 1.0f,0.9f,0.5f, 220,1.4f,0.08f, 2.5f,-0.8f,1.0f, 0.4f,1.1f) }));
+
+            // ===== ELEMENTAL STREAMS (channelled forward, Comet-Azur style) =====
+            {
+                auto d = mkDef("Fire stream", C::Fire, true, 0.0f, {
+                    mkLayer(S::Sphere, ADD, 1.0f,0.6f,0.2f, 0.7f,0.1f,0.0f, 1300,0.5f,0.34f, 0.6f,-0.4f,0.45f, 1.0f,1.3f),
+                    mkLayer(S::Sphere, ALP, 0.2f,0.15f,0.13f, 0.0f,0.0f,0.0f, 120,0.7f,0.30f, 0.4f,-0.3f,0.3f, 0.3f,0.6f) });
+                d.projectile = true; d.projectileSpeed = 24.0f; d.projectileRange = 60.0f; d.projectileGravity = 0.0f;
+                c.push_back(d);
+            }
+            {
+                auto d = mkDef("Water stream", C::Water, true, 0.0f, {
+                    mkLayer(S::Sphere, ADD, 0.5f,0.8f,1.0f, 0.3f,0.5f,1.0f, 1300,0.5f,0.32f, 0.6f,0.0f,0.45f, 0.8f,1.2f),
+                    mkLayer(S::Sphere, ALP, 0.7f,0.9f,1.0f, 0.85f,0.95f,1.0f, 120,0.6f,0.22f, 0.4f,0.0f,0.3f, 0.4f,0.7f) });
+                d.projectile = true; d.projectileSpeed = 24.0f; d.projectileRange = 60.0f; d.projectileGravity = 0.0f;
+                c.push_back(d);
+            }
+            {
+                auto d = mkDef("Wind stream", C::Wind, true, 0.0f, {
+                    mkLayer(S::Sphere, ADD, 0.8f,0.95f,0.85f, 0.6f,0.8f,0.7f, 1200,0.5f,0.30f, 0.6f,0.0f,0.45f, 0.6f,1.1f, 25.0f,1.0f,0.0f, 4.0f) });
+                d.projectile = true; d.projectileSpeed = 27.0f; d.projectileRange = 64.0f; d.projectileGravity = 0.0f;
+                c.push_back(d);
+            }
+            {
+                auto d = mkDef("Earth stream", C::Earth, true, 0.0f, {
+                    mkLayer(S::Sphere, ADD, 0.55f,0.45f,0.3f, 0.3f,0.24f,0.16f, 1200,0.5f,0.32f, 0.6f,0.0f,0.45f, 0.6f,1.1f),
+                    mkLayer(S::Sphere, ALP, 0.5f,0.46f,0.4f, 0.25f,0.22f,0.2f, 120,0.7f,0.26f, 0.4f,0.0f,0.3f, 0.3f,0.6f) });
+                d.projectile = true; d.projectileSpeed = 22.0f; d.projectileRange = 56.0f; d.projectileGravity = 0.0f;
+                c.push_back(d);
+            }
+
             return c;
         }
     }
