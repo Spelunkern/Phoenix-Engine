@@ -2834,8 +2834,16 @@ int main(int, char**)
                     ImGui::SliderFloat("Gesture every (max)", &t.gestureIntervalMax, 1.0f, 90.0f, "%.1f");
                     ImGui::SliderFloat("Gesture duration", &t.idleGestureDuration, 0.5f, 15.0f, "%.1f");
                     ImGui::SliderFloat("Anim range", &t.animationRange, 20.0f, 600.0f, "%.0f");
+                    ImGui::Separator();
+                    ImGui::TextDisabled("Water (player, world Y; surface=0)");
+                    ImGui::SliderFloat("Swim start Y", &characterSystem.swimStartY, -8.0f, 2.0f, "%.2f");
+                    ImGui::SliderFloat("Float Y", &characterSystem.floatLevelY, -8.0f, 2.0f, "%.2f");
                     if (ImGui::Button("Reset to native defaults"))
+                    {
                         t = phoenix::runtime::ActorAnimTuning{};
+                        characterSystem.swimStartY = -2.0f;
+                        characterSystem.floatLevelY = -1.20f;
+                    }
                 }
                 ImGui::End();
             }

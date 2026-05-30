@@ -2003,7 +2003,7 @@ namespace phoenix::character
         if (waterAtPosition)
         {
             if (!inWater_)
-                inWater_ = characterY_ <= kWaterSurface - kWaterEnterDepth;
+                inWater_ = characterY_ <= swimStartY;
         }
         else
         {
@@ -2056,7 +2056,7 @@ namespace phoenix::character
         if (inWater_)
         {
             const float floorY = groundY + kGroundClearance;
-            const float floatY = kWaterSurface - kFloatFeetDepth;
+            const float floatY = floatLevelY;
             const bool swimmingDown = moving && moveY < -0.08f;
             if (input.jump)
                 characterY_ += (kBuoyancySpeed + 0.75f) * clampedDelta;
