@@ -216,6 +216,8 @@ namespace phoenix::renderer
                     vkGetPhysicalDeviceProperties(device, &properties);
                     adapterName_ = properties.deviceName;
                     impl_->maxSamplerAnisotropy = std::max(1.0f, properties.limits.maxSamplerAnisotropy);
+                    impl_->integratedGpu =
+                        properties.deviceType == VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU;
                     return true;
                 }
             }
@@ -2621,9 +2623,28 @@ namespace phoenix::renderer
 
         VkMemoryRequirements requirements{};
         vkGetBufferMemoryRequirements(impl_->device, bufferOut, &requirements);
-        const auto memoryType = find_memory_type(
-            requirements.memoryTypeBits,
-            VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+        // On integrated GPUs the GPU-side accesses to a plain HOST_VISIBLE |
+        // HOST_COHERENT buffer are typically uncached/write-combined, which makes
+        // per-frame GPU-read/written buffers extremely slow (reported as terrible
+        // Intel performance). Prefer the unified DEVICE_LOCAL | HOST_VISIBLE type,
+        // which is cached for the GPU, and only fall back to the plain host type.
+        // Discrete GPUs (AMD/NVIDIA) keep the original host type, so their proven
+        // behaviour is unchanged.
+        std::uint32_t memoryType = UINT32_MAX;
+        if (impl_->integratedGpu)
+        {
+            memoryType = find_memory_type(
+                requirements.memoryTypeBits,
+                VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT
+                    | VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT
+                    | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+        }
+        if (memoryType == UINT32_MAX)
+        {
+            memoryType = find_memory_type(
+                requirements.memoryTypeBits,
+                VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+        }
         if (memoryType == UINT32_MAX)
             return false;
 

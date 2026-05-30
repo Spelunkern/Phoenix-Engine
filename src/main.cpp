@@ -2351,7 +2351,15 @@ int main(int, char**)
                 runtime.update_animated_object_scene(animatedObjectScene, totalTime, deltaSeconds, camX, camY, camZ, actorVertexAnimationStart);
             }
 
-            renderer.update_animated_object_scene(animatedObjectScene.vertices, animatedObjectScene.instances);
+            // With GPU skinning the compute pass rewrites the animated vertex buffer
+            // every frame, so re-uploading the CPU bind-pose vertices is wasted work
+            // (and on integrated GPUs a costly per-frame copy of a multi-MB host
+            // buffer). Only the per-instance transforms need refreshing there; the
+            // CPU fallback still uploads its freshly skinned vertices.
+            static const std::vector<phoenix::renderer::TerrainVertex> kNoVertexUpload;
+            renderer.update_animated_object_scene(
+                gpuSkinningActive ? kNoVertexUpload : animatedObjectScene.vertices,
+                animatedObjectScene.instances);
         }
 
         const auto fogToggleDown = window.is_key_down(SDLK_f);

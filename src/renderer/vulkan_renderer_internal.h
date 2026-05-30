@@ -225,6 +225,12 @@ namespace phoenix::renderer
         std::uint32_t indirectBatchCount{};
         bool indirectReady{};
         bool multiDrawIndirectSupported{};
+        // Integrated GPUs (Intel/AMD APU) use unified memory. Their fast memory
+        // type is DEVICE_LOCAL | HOST_VISIBLE; the plain HOST_VISIBLE | HOST_COHERENT
+        // type is often write-combined/uncached for the GPU, which makes per-frame
+        // GPU-read/written buffers (skinned vertices, matrices, instances) crawl.
+        // We use this flag to prefer the unified cached type on such hardware.
+        bool integratedGpu{};
 
         // GPU compute skinning resources.
         VkPipelineLayout skinPipelineLayout{};
