@@ -126,20 +126,21 @@ namespace phoenix::world
             float scale{ 1.0f };
         };
 
+        // Append one mesh part's vertices/faces. All parts of a single actor share
+        // ONE skeleton (identical bone arrays), so the caller stores that skeleton
+        // once and passes its base/count here instead of duplicating it per part
+        // (duplicating overflowed kMaxBones for 2-3 part actors, dropping parts).
         void append_model_part(
             std::vector<phoenix::renderer::TerrainVertex>& vertices,
             std::vector<std::uint32_t>& indices,
             const CharacterModel& model,
             std::uint32_t textureLayer,
             float scale,
+            std::uint32_t meshBoneBase,
+            std::uint32_t meshBoneCount,
             ModelBuild& build)
         {
             const auto baseVertex = static_cast<std::uint32_t>(vertices.size());
-            const auto meshBoneBase = static_cast<std::uint32_t>(build.skinData.meshBones.size());
-            const auto meshBoneCount = static_cast<std::uint32_t>(model.bones.size());
-            build.skinData.meshBones.insert(build.skinData.meshBones.end(), model.bones.begin(), model.bones.end());
-            for (std::uint32_t j = 0; j < static_cast<std::uint32_t>(model.bones.size()); ++j)
-                build.skinData.meshBoneAnimIndex.push_back(static_cast<std::uint8_t>(j));
             for (const auto& src : model.vertices)
             {
                 phoenix::renderer::TerrainVertex v{};
@@ -531,6 +532,10 @@ namespace phoenix::world
             result.firstIndex = static_cast<std::uint32_t>(indices.size());
             result.radius = 0.0f;
 
+            // The actor's parts all rig to the SAME skeleton, so the skinning bones
+            // are stored once at base 0 and grown only if a later part declares more
+            // bones. Every part's vertices then reference this single shared block.
+            std::uint32_t sharedBoneCount = 0;
             for (const auto& part : def.parts)
             {
                 const auto meshPath = resolve_actor_file(assets, folder, part.meshFileName);
@@ -544,7 +549,21 @@ namespace phoenix::world
                 if (!model.parsed || model.vertices.empty() || model.faces.empty())
                     continue;
 
-                append_model_part(vertices, indices, model, textureLayer, scale, result);
+                // Grow the shared skeleton to cover this part's bones (no-op when the
+                // parts share an identical skeleton, which is the common case).
+                const auto partBoneCount = static_cast<std::uint32_t>(model.bones.size());
+                if (partBoneCount > sharedBoneCount)
+                {
+                    for (std::uint32_t j = sharedBoneCount; j < partBoneCount; ++j)
+                    {
+                        result.skinData.meshBones.push_back(model.bones[j]);
+                        result.skinData.meshBoneAnimIndex.push_back(static_cast<std::uint8_t>(j));
+                    }
+                    sharedBoneCount = partBoneCount;
+                }
+
+                append_model_part(vertices, indices, model, textureLayer, scale,
+                                  /*meshBoneBase*/ 0, partBoneCount, result);
             }
 
             result.vertexCount = static_cast<std::uint32_t>(vertices.size()) - result.firstVertex;
