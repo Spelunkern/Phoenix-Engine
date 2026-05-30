@@ -1613,6 +1613,8 @@ int main(int, char**)
 
     const auto uploadCurrentWorld = [&]() {
         renderer.enter_loading_mode();
+        // Drop any looping effects (e.g. portals) carried over from the previous map.
+        effectManager.clear();
         showLoading(0.36f, "Preparing scene");
         applyFogSettings();
         mapAudioScene = build_map_audio_scene(runtime);
@@ -2190,6 +2192,34 @@ int main(int, char**)
         // Upload character mesh (initial bind pose).
         if (characterLoaded && characterSystem.ready())
             uploadCharacterMesh();
+
+        // ---- Spawn the fiery Portal effect at every gate on this map ----
+        // Portal boxes live in raw map space; the world is centred by subtracting
+        // halfMap (dungeons are not centred), matching the static-object transform.
+        {
+            using namespace phoenix::effects;
+            static const EffectDefinition* portalDef = []() -> const EffectDefinition* {
+                for (const auto& d : preset_catalog())
+                    if (d.name == "Portal") return &d;
+                return nullptr;
+            }();
+            if (portalDef)
+            {
+                const float mapSize = static_cast<float>(runtime.state().world.mapSize);
+                const float halfMap = runtime.state().world.isDungeon ? 0.0f : mapSize * 0.5f;
+                std::uint32_t portalCount = 0;
+                for (const auto& portal : runtime.state().world.portals)
+                {
+                    const float cx = (portal.box.min[0] + portal.box.max[0]) * 0.5f - halfMap;
+                    const float cy = (portal.box.min[1] + portal.box.max[1]) * 0.5f;
+                    const float cz = (portal.box.min[2] + portal.box.max[2]) * 0.5f - halfMap;
+                    effectManager.spawn(*portalDef, EffectAnchor::at(cx, cy + 1.4f, cz, 2.0f));
+                    ++portalCount;
+                }
+                std::ofstream log(phoenix::core::engine_log_path(), std::ios::app);
+                log << "Portal effects placed: " << portalCount << "\n";
+            }
+        }
 
         forceVisibilityUpdate = true;
         showLoading(1.0f, "Ready");
