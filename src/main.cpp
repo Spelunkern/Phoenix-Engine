@@ -1458,6 +1458,12 @@ int main(int, char**)
     bool forceVisibilityUpdate = true;
     bool gpuSkinningActive = false;
     std::optional<std::size_t> pendingMapLoad;
+    // Portal teleport: walking into a portal queues a destination map load here and
+    // remembers where to drop the character on arrival. A cooldown prevents
+    // re-triggering a portal immediately after spawning on/near one.
+    struct PendingTeleport { float x{}, y{}, z{}; bool hasDestination{}; };
+    std::optional<PendingTeleport> pendingTeleportDestination;
+    float portalCooldown = 0.0f;
     CameraView lastCullView{};
     float displayedFps = 0.0f;
     PerfHudState perfHud;
@@ -2525,6 +2531,69 @@ int main(int, char**)
             characterSystem.update(deltaSeconds, pInput);
             characterSystem.camera_state(cameraX, cameraY, cameraZ, cameraYaw, cameraPitch);
 
+            // ---- Portal teleport ----
+            // Walking into a portal box queues a load of its destination map and
+            // remembers the destination position. A short cooldown (after spawn and
+            // after each teleport) avoids instant re-triggering on the arrival gate.
+            if (portalCooldown > 0.0f)
+                portalCooldown -= deltaSeconds;
+            if (!pendingMapLoad && portalCooldown <= 0.0f)
+            {
+                const float mapSize = static_cast<float>(runtime.state().world.mapSize);
+                const float halfMap = runtime.state().world.isDungeon ? 0.0f : mapSize * 0.5f;
+                const float px = characterSystem.world_x();
+                const float py = characterSystem.world_y();
+                const float pz = characterSystem.world_z();
+                for (const auto& portal : runtime.state().world.portals)
+                {
+                    const float minX = portal.box.min[0] - halfMap;
+                    const float maxX = portal.box.max[0] - halfMap;
+                    const float minZ = portal.box.min[2] - halfMap;
+                    const float maxZ = portal.box.max[2] - halfMap;
+                    const float minY = portal.box.min[1] - 2.0f;
+                    const float maxY = portal.box.max[1] + 4.0f;
+                    if (px < minX || px > maxX || pz < minZ || pz > maxZ || py < minY || py > maxY)
+                        continue;
+
+                    // Resolve destination map: world files are named <mapId>.wld, so
+                    // match by the numeric stem (case/extension independent).
+                    const int destMapId = static_cast<int>(portal.mapId);
+                    const auto& mapNames = runtime.world_map_names();
+                    std::size_t destIdx = mapNames.size();
+                    for (std::size_t mi = 0; mi < mapNames.size(); ++mi)
+                    {
+                        const char* s = mapNames[mi].c_str();
+                        char* end = nullptr;
+                        const long n = std::strtol(s, &end, 10);
+                        if (end != s && (*end == '.' || *end == '\0') && n == destMapId)
+                        {
+                            destIdx = mi;
+                            break;
+                        }
+                    }
+                    if (destIdx >= mapNames.size())
+                    {
+                        std::ofstream log(phoenix::core::engine_log_path(), std::ios::app);
+                        log << "Portal destination map not found: id=" << destMapId << "\n";
+                        portalCooldown = 1.0f;
+                        break;
+                    }
+
+                    PendingTeleport tp{};
+                    tp.x = portal.destinationPosition[0];
+                    tp.y = portal.destinationPosition[1];
+                    tp.z = portal.destinationPosition[2];
+                    tp.hasDestination = tp.x != 0.0f || tp.y != 0.0f || tp.z != 0.0f;
+                    pendingTeleportDestination = tp;
+                    pendingMapLoad = destIdx;
+                    portalCooldown = 2.0f;
+                    std::ofstream log(phoenix::core::engine_log_path(), std::ios::app);
+                    log << "Portal entered -> map id " << destMapId
+                        << " dest=(" << tp.x << "," << tp.y << "," << tp.z << ")\n";
+                    break;
+                }
+            }
+
             // Upload animated vertices.
             const auto& charVerts = characterSystem.world_vertices();
             const auto* tv = reinterpret_cast<const phoenix::renderer::TerrainVertex*>(charVerts.data());
@@ -3007,7 +3076,32 @@ int main(int, char**)
             {
                 uploadCurrentWorld();
                 applyFogSettings();
+
+                // Apply a queued portal teleport: place the character at the portal
+                // destination (raw map space -> world via halfMap), snapped to the
+                // nearest walkable surface. This overrides the centre spawn that
+                // uploadCurrentWorld() applies by default.
+                if (pendingTeleportDestination && characterSystem.ready())
+                {
+                    const auto tp = *pendingTeleportDestination;
+                    if (tp.hasDestination)
+                    {
+                        const float mapSize = static_cast<float>(runtime.state().world.mapSize);
+                        const float halfMap = runtime.state().world.isDungeon ? 0.0f : mapSize * 0.5f;
+                        const float wx = tp.x - halfMap;
+                        const float wz = tp.z - halfMap;
+                        const auto spawn = find_dungeon_playable_spawn(worldCollisionMesh, wx, tp.y, wz);
+                        const float fy = spawn.valid ? spawn.y : tp.y;
+                        characterSystem.set_world_position(wx, fy, wz, 0.0f);
+                        heightSamplerCtx.lastCharacterY = fy;
+                        uploadCharacterMesh();
+                        std::ofstream log(phoenix::core::engine_log_path(), std::ios::app);
+                        log << "Teleport placed character at (" << wx << "," << fy << "," << wz << ")\n";
+                    }
+                    portalCooldown = 2.0f;
+                }
             }
+            pendingTeleportDestination.reset();
             lastFrame = clock::now();
         }
 
