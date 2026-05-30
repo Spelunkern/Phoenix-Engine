@@ -470,9 +470,21 @@ namespace phoenix::effects
                 mkLayer(S::Disc, ALP, 0.45f,0.7f,0.25f, 0.3f,0.5f,0.15f, 70,1.4f,0.09f, 1.0f,-0.5f,0.9f, 0.4f,0.7f) }));
 
             // ===== ARCANE / MAGICAL =====
-            c.push_back(mkDef("Portal", C::Arcane, true, 0.0f, {
+            // Arcane (blue) portal kept under a distinct name.
+            c.push_back(mkDef("Portal (arcane)", C::Arcane, true, 0.0f, {
                 mkLayer(S::Ring, ADD, 0.55f,0.45f,1.0f, 0.15f,0.25f,0.7f, 220,1.1f,0.10f, 0.8f,-0.2f,1.4f, 0.0f,1.0f),
                 mkLayer(S::Disc, ADD, 0.7f,0.6f,1.0f, 0.2f,0.1f,0.6f, 90,0.9f,0.14f, 0.5f,-0.4f,1.1f, 0.0f,0.8f) }));
+            // "Portal": the sophisticated fiery vortex used at map gates (matches the
+            // retail Shaiya fire portal). Layers: swirling body, bright hot core, and
+            // an outward flaming corona. The swirl spins particles around the anchor's
+            // local Y axis; the map spawner orients the basis so this plane stands
+            // vertical and faces the play area. Args after colours are:
+            // spawnRate, lifetime, size, speed, gravity, radius, drag, intensity,
+            // coneAngleDeg, height, originHeight, swirl.
+            c.push_back(mkDef("Portal", C::Fire, true, 0.0f, {
+                mkLayer(S::Disc, ADD, 1.0f,0.55f,0.14f, 0.7f,0.07f,0.0f, 340,0.9f,0.22f, 0.3f,-0.4f,1.5f, 0.6f,1.0f, 25.0f,1.0f,0.0f, 7.0f),
+                mkLayer(S::Disc, ADD, 1.0f,0.9f,0.6f, 1.0f,0.4f,0.1f, 150,0.5f,0.17f, 0.2f,-0.2f,0.55f, 0.8f,1.0f, 25.0f,1.0f,0.0f, 9.5f),
+                mkLayer(S::Ring, ADD, 1.0f,0.5f,0.1f, 0.6f,0.05f,0.0f, 130,0.7f,0.20f, 1.1f,-0.6f,1.75f, 0.4f,1.0f, 25.0f,1.0f,0.0f, 3.0f) }));
             c.push_back(mkDef("Arcane sigil", C::Arcane, true, 0.0f, {
                 mkLayer(S::Ring, ADD, 0.8f,0.4f,1.0f, 0.4f,0.1f,0.8f, 300,0.9f,0.08f, 0.3f,-0.1f,1.6f, 0.0f,1.0f),
                 mkLayer(S::Ring, ADD, 0.95f,0.7f,1.0f, 0.5f,0.2f,0.9f, 200,0.9f,0.07f, 0.3f,-0.1f,0.9f, 0.0f,0.9f) }));
