@@ -2609,7 +2609,8 @@ namespace phoenix::renderer
         std::size_t byteSize,
         std::uint32_t usage,
         VkBuffer& bufferOut,
-        VkDeviceMemory& memoryOut)
+        VkDeviceMemory& memoryOut,
+        void** persistentMapped)
     {
         if (byteSize == 0)
             return false;
@@ -2655,14 +2656,21 @@ namespace phoenix::renderer
             return false;
 
         vkBindBufferMemory(impl_->device, bufferOut, memoryOut, 0);
+
+        // Persistent mapping: leave the buffer mapped for its entire lifetime so
+        // per-frame writes are a plain memcpy (no map/unmap overhead per frame).
+        // HOST_COHERENT guarantees CPU writes are visible to the GPU without explicit
+        // flush, so this is safe on every vendor. Callers that don't need persistent
+        // mapping pass nullptr for persistentMapped.
+        void* mapped{};
+        if (vkMapMemory(impl_->device, memoryOut, 0, byteSize, 0, &mapped) != VK_SUCCESS)
+            return false;
         if (data)
-        {
-            void* mapped{};
-            if (vkMapMemory(impl_->device, memoryOut, 0, byteSize, 0, &mapped) != VK_SUCCESS)
-                return false;
             std::memcpy(mapped, data, byteSize);
+        if (persistentMapped)
+            *persistentMapped = mapped;
+        else
             vkUnmapMemory(impl_->device, memoryOut);
-        }
         return true;
     }
 
@@ -3122,10 +3130,12 @@ namespace phoenix::renderer
 
         impl_->animatedObjectVertexBuffer = {};
         impl_->animatedObjectVertexMemory = {};
+        impl_->animatedObjectVertexMapped = nullptr;
         impl_->animatedObjectIndexBuffer = {};
         impl_->animatedObjectIndexMemory = {};
         impl_->animatedObjectInstanceBuffer = {};
         impl_->animatedObjectInstanceMemory = {};
+        impl_->animatedObjectInstanceMapped = nullptr;
         impl_->animatedObjectVertexBytes = 0;
         impl_->animatedObjectInstanceBytes = 0;
         impl_->animatedObjectBatches.clear();
@@ -3141,11 +3151,13 @@ namespace phoenix::renderer
         const auto vertexUsage = VK_BUFFER_USAGE_VERTEX_BUFFER_BIT
             | (impl_->skinPipelineReady ? VK_BUFFER_USAGE_STORAGE_BUFFER_BIT : 0u);
         if (!create_host_buffer(vertices.data(), vertexBytes, vertexUsage,
-                impl_->animatedObjectVertexBuffer, impl_->animatedObjectVertexMemory)
+                impl_->animatedObjectVertexBuffer, impl_->animatedObjectVertexMemory,
+                &impl_->animatedObjectVertexMapped)
             || !create_device_local_buffer(indices.data(), indexBytes, VK_BUFFER_USAGE_INDEX_BUFFER_BIT,
                 impl_->animatedObjectIndexBuffer, impl_->animatedObjectIndexMemory)
             || !create_host_buffer(instances.data(), instanceBytes, VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
-                impl_->animatedObjectInstanceBuffer, impl_->animatedObjectInstanceMemory))
+                impl_->animatedObjectInstanceBuffer, impl_->animatedObjectInstanceMemory,
+                &impl_->animatedObjectInstanceMapped))
         {
             log_line("Vulkan: animated object upload failed");
             return false;
@@ -3170,17 +3182,26 @@ namespace phoenix::renderer
         if (vertexBytes > impl_->animatedObjectVertexBytes || instanceBytes > impl_->animatedObjectInstanceBytes)
             return false;
 
-        void* mapped = nullptr;
-        if (vertexBytes > 0)
+        // Persistent-mapped path: direct memcpy, no map/unmap overhead per frame.
+        if (vertexBytes > 0 && impl_->animatedObjectVertexMapped)
+            std::memcpy(impl_->animatedObjectVertexMapped, vertices.data(), vertexBytes);
+
+        if (instanceBytes > 0 && impl_->animatedObjectInstanceMapped)
+            std::memcpy(impl_->animatedObjectInstanceMapped, instances.data(), instanceBytes);
+
+        // Legacy fallback (should not happen with persistent mapping).
+        if (vertexBytes > 0 && !impl_->animatedObjectVertexMapped)
         {
+            void* mapped = nullptr;
             if (vkMapMemory(impl_->device, impl_->animatedObjectVertexMemory, 0, vertexBytes, 0, &mapped) != VK_SUCCESS)
                 return false;
             std::memcpy(mapped, vertices.data(), vertexBytes);
             vkUnmapMemory(impl_->device, impl_->animatedObjectVertexMemory);
         }
 
-        if (instanceBytes > 0)
+        if (instanceBytes > 0 && !impl_->animatedObjectInstanceMapped)
         {
+            void* mapped = nullptr;
             if (vkMapMemory(impl_->device, impl_->animatedObjectInstanceMemory, 0, instanceBytes, 0, &mapped) != VK_SUCCESS)
                 return false;
             std::memcpy(mapped, instances.data(), instanceBytes);
@@ -3255,8 +3276,10 @@ namespace phoenix::renderer
             }
             // Allocate with headroom; use nullptr for initial data so we don't read beyond the source.
             const auto allocSize = byteSize + byteSize / 2;
+            impl_->skinMatrixMapped = nullptr;
             if (!create_host_buffer(nullptr, allocSize, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
-                    impl_->skinMatrixBuffer, impl_->skinMatrixMemory))
+                    impl_->skinMatrixBuffer, impl_->skinMatrixMemory,
+                    &impl_->skinMatrixMapped))
                 return false;
             impl_->skinMatrixBufferBytes = allocSize;
 
@@ -3273,8 +3296,13 @@ namespace phoenix::renderer
             write.pBufferInfo = &matInfo;
             vkUpdateDescriptorSets(impl_->device, 1, &write, 0, nullptr);
         }
+        // Persistent-mapped path: direct memcpy.
+        if (impl_->skinMatrixMapped)
         {
-            // Map + copy actual data.
+            std::memcpy(impl_->skinMatrixMapped, data, byteSize);
+        }
+        else
+        {
             void* mapped = nullptr;
             if (vkMapMemory(impl_->device, impl_->skinMatrixMemory, 0, byteSize, 0, &mapped) != VK_SUCCESS)
                 return false;

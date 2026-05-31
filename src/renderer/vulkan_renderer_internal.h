@@ -123,6 +123,7 @@ namespace phoenix::renderer
         VkPipeline particlePipelineAdditive{};
         VkBuffer particleInstanceBuffer{};
         VkDeviceMemory particleInstanceMemory{};
+        void* particleInstanceMapped{};           // persistent mapping
         std::size_t particleInstanceCapacity{};   // bytes
         std::uint32_t particleInstanceCount{};
         std::uint32_t particleAdditiveStart{};
@@ -164,10 +165,12 @@ namespace phoenix::renderer
         bool objectsReady{};
         VkBuffer animatedObjectVertexBuffer{};
         VkDeviceMemory animatedObjectVertexMemory{};
+        void* animatedObjectVertexMapped{};    // persistent mapping
         VkBuffer animatedObjectIndexBuffer{};
         VkDeviceMemory animatedObjectIndexMemory{};
         VkBuffer animatedObjectInstanceBuffer{};
         VkDeviceMemory animatedObjectInstanceMemory{};
+        void* animatedObjectInstanceMapped{};  // persistent mapping
         std::size_t animatedObjectVertexBytes{};
         std::size_t animatedObjectInstanceBytes{};
         std::vector<ObjectBatch> animatedObjectBatches;
@@ -242,6 +245,7 @@ namespace phoenix::renderer
         VkDeviceMemory skinSourceMemory{};
         VkBuffer skinMatrixBuffer{};            // readonly: per-frame bone matrices
         VkDeviceMemory skinMatrixMemory{};
+        void* skinMatrixMapped{};              // persistent mapping
         std::size_t skinMatrixBufferBytes{};
         std::uint32_t skinSourceVertexCount{};
         bool skinPipelineReady{};

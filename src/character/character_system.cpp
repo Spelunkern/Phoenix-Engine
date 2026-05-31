@@ -1901,36 +1901,13 @@ namespace phoenix::character
                 << " shield=" << data_.hasShield
                 << " ready=" << data_.loaded << "\n";
 
-            // Dump bone hierarchy from idle animation for skeleton inspection.
+            // Summary bone counts (full dump removed — it was hundreds of lines per
+            // character swap and caused visible CPU/IO load on slower hardware).
             if (data_.loaded && data_.idleAnimation < data_.animations.size()
                 && data_.animations[data_.idleAnimation].animation.parsed)
             {
-                const auto& anim = data_.animations[data_.idleAnimation].animation;
-                log << "Bone hierarchy (" << anim.bones.size() << " bones):\n";
-                // Compute finals at frame 0 to get world-space positions.
-                const auto finals = compute_client_finals(anim, static_cast<float>(anim.startKeyframe));
-                for (std::size_t i = 0; i < anim.bones.size(); ++i)
-                {
-                    const auto& bone = anim.bones[i];
-                    float wx = finals[i].m[3][0];
-                    float wy = finals[i].m[3][1];
-                    float wz = finals[i].m[3][2];
-                    log << "  Bone " << i
-                        << " parent=" << bone.parentBoneIndex
-                        << " pos=(" << wx << ", " << wy << ", " << wz << ")"
-                        << " rotFrames=" << bone.rotationFrames.size()
-                        << " transFrames=" << bone.translationFrames.size()
-                        << "\n";
-                }
-
-                // Also dump mesh bone bind-pose positions for reference.
-                log << "Mesh bones (" << data_.meshBones.size() << "):\n";
-                for (std::size_t i = 0; i < data_.meshBones.size(); ++i)
-                {
-                    const auto m = mat4_from_shaiya_transposed(data_.meshBones[i].matrix);
-                    log << "  MeshBone " << i
-                        << " pos=(" << m.m[3][0] << ", " << m.m[3][1] << ", " << m.m[3][2] << ")\n";
-                }
+                log << "Bones: skeleton=" << data_.animations[data_.idleAnimation].animation.bones.size()
+                    << " mesh=" << data_.meshBones.size() << "\n";
             }
         }
         return data_.loaded;

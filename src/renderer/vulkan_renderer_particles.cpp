@@ -200,8 +200,10 @@ namespace phoenix::renderer
             impl_->particleInstanceCapacity = 0;
 
             const std::size_t newCapacity = byteSize + byteSize / 2 + 4096;
+            impl_->particleInstanceMapped = nullptr;
             if (!create_host_buffer(nullptr, newCapacity, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
-                impl_->particleInstanceBuffer, impl_->particleInstanceMemory))
+                impl_->particleInstanceBuffer, impl_->particleInstanceMemory,
+                &impl_->particleInstanceMapped))
             {
                 impl_->particleInstanceCount = 0;
                 return;
@@ -221,11 +223,19 @@ namespace phoenix::renderer
             vkUpdateDescriptorSets(impl_->device, 1, &write, 0, nullptr);
         }
 
-        void* mapped{};
-        if (vkMapMemory(impl_->device, impl_->particleInstanceMemory, 0, byteSize, 0, &mapped) == VK_SUCCESS)
+        // Persistent-mapped path: direct memcpy, no per-frame map/unmap.
+        if (impl_->particleInstanceMapped)
         {
-            std::memcpy(mapped, instances.data(), byteSize);
-            vkUnmapMemory(impl_->device, impl_->particleInstanceMemory);
+            std::memcpy(impl_->particleInstanceMapped, instances.data(), byteSize);
+        }
+        else
+        {
+            void* mapped{};
+            if (vkMapMemory(impl_->device, impl_->particleInstanceMemory, 0, byteSize, 0, &mapped) == VK_SUCCESS)
+            {
+                std::memcpy(mapped, instances.data(), byteSize);
+                vkUnmapMemory(impl_->device, impl_->particleInstanceMemory);
+            }
         }
     }
 

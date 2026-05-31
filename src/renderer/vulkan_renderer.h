@@ -188,12 +188,17 @@ namespace phoenix::renderer
         bool create_descriptor_resources();
         bool create_preview_buffer(std::size_t byteSize);
         bool create_preview_image(std::uint32_t width, std::uint32_t height);
+        // persistentMapped: if non-null, the buffer is left mapped for its entire
+        // lifetime and *persistentMapped receives the pointer. Per-frame writes are
+        // then a plain memcpy (no vkMapMemory/vkUnmapMemory overhead). Safe because
+        // HOST_COHERENT guarantees CPU writes are visible without explicit flush.
         bool create_host_buffer(
             const void* data,
             std::size_t byteSize,
             std::uint32_t usage,
             VkBuffer& bufferOut,
-            VkDeviceMemory& memoryOut);
+            VkDeviceMemory& memoryOut,
+            void** persistentMapped = nullptr);
         bool create_device_local_buffer(
             const void* data,
             std::size_t byteSize,
