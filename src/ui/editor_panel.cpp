@@ -75,12 +75,13 @@ namespace phoenix::ui
         // checkbox, because the alternative is seeing the skybox through walls.
         if (!fogEnabled && dungeon)
         {
+            constexpr float kDungeonFogDist = 75.0f;
             renderer.set_sky_settings(
                 weatherFog.data(),
-                viewDistance * 0.3f,
-                viewDistance * 0.7f,
-                false);   // no sky in dungeons
-            return viewDistance * 0.7f;
+                kDungeonFogDist * 0.4f,
+                kDungeonFogDist,
+                false);
+            return kDungeonFogDist;
         }
 
         // Atmospheric fog: starts gradually, reaches full opacity well before cull edge.
@@ -96,11 +97,22 @@ namespace phoenix::ui
             fogStart = std::max(28.0f, viewDistance * 0.16f);
             fogEnd = std::max(fogStart + 75.0f, viewDistance * 0.52f);
         }
+        // Dungeons: override fog to a short black range regardless of slider.
+        if (dungeon)
+        {
+            constexpr float kDungeonFogDist = 75.0f;
+            renderer.set_sky_settings(
+                weatherFog.data(),
+                kDungeonFogDist * 0.4f,
+                kDungeonFogDist,
+                false);
+            return kDungeonFogDist;
+        }
         renderer.set_sky_settings(
             weatherFog.data(),
             fogStart,
             fogEnd,
-            !dungeon && world.parsedSky && !world.skyFileName.empty());
+            world.parsedSky && !world.skyFileName.empty());
         return fogEnd;
     }
 

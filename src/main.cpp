@@ -2210,17 +2210,26 @@ int main(int, char**)
                         entry.inst.position[0], entry.inst.position[2], &heightSamplerCtx);
                 }
             }
-            // Re-sample only MOB vertex animation world positions (for skinning).
-            // NPCs keep their authored Y — the native client does not snap them
-            // to terrain, so an NPC placed "floating" by its map coordinates
-            // stays floating. Mob instances are re-sampled during their movement
-            // loop (terrain_height in update_animated_object_scene).
-            if (actorVertexAnimationStart < animatedObjectScene.vertexAnimations.size())
+            // Re-sample MOB instance positions and vertex animation world Y to the
+            // collision mesh floor. This is important in dungeons (multi-level) where
+            // the svmap spawn Y may not match the actual walkable surface.
+            // NPCs keep their authored Y — the native client does not snap them.
             {
+                // Snap mob instances to collision floor.
+                for (const auto& mob : animatedObjectScene.mobInstances)
+                {
+                    if (mob.instanceIndex >= animatedObjectScene.instances.size()) continue;
+                    auto& inst = animatedObjectScene.instances[mob.instanceIndex];
+                    heightSamplerCtx.lastCharacterY = inst.position[1];
+                    inst.position[1] = character_height_sampler(inst.position[0], inst.position[2], &heightSamplerCtx);
+                    if (mob.instanceIndex < animatedObjectScene.baseInstances.size())
+                        animatedObjectScene.baseInstances[mob.instanceIndex].position[1] = inst.position[1];
+                }
+                // Snap mob vertex animation world Y.
                 for (std::size_t i = actorVertexAnimationStart; i < animatedObjectScene.vertexAnimations.size(); ++i)
                 {
                     auto& anim = animatedObjectScene.vertexAnimations[i];
-                    if (!anim.isMob) continue;  // NPCs: keep authored Y
+                    if (!anim.isMob) continue;
                     heightSamplerCtx.lastCharacterY = anim.worldY;
                     anim.worldY = character_height_sampler(anim.worldX, anim.worldZ, &heightSamplerCtx);
                 }
