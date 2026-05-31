@@ -931,87 +931,20 @@ namespace phoenix::character
             }
         }
 
-        // ---- Pre-cache all character textures as BC3 in RAM ----
-        // This runs during the loading screen so appearance swaps are instant at runtime.
+        // ---- BC3 target resolution (used by on-demand conversion at swap time) ----
+        // ~80% of textures are already BC3 at 256×256 on disk, so pre-converting
+        // all 1963 character textures into a RAM cache was heavy CPU work (~50s)
+        // for negligible swap-time benefit. We now just record the target resolution
+        // and let the swap path (reloadCharacterIntoRenderer) load + convert the
+        // ~9 textures it actually needs on demand — milliseconds, not seconds.
         {
-            // Determine dominant resolution from a quick scan of the first few textures.
-            std::uint32_t targetW = 256, targetH = 256;
-            std::map<std::uint64_t, std::uint32_t> sizeCounts;
-            const std::size_t probeSampleCount = std::min(cachedTexturePaths_.size(), std::size_t(64));
-            for (std::size_t i = 0; i < probeSampleCount; ++i)
-            {
-                auto tex = renderer::load_dds(cachedTexturePaths_[i]);
-                if (!tex.valid || tex.width == 0 || tex.height == 0) continue;
-                const auto key = (static_cast<std::uint64_t>(tex.width) << 32) | tex.height;
-                sizeCounts[key]++;
-            }
-            std::uint32_t bestCount = 0;
-            for (const auto& [key, count] : sizeCounts)
-            {
-                if (count > bestCount)
-                {
-                    bestCount = count;
-                    targetW = static_cast<std::uint32_t>(key >> 32);
-                    targetH = static_cast<std::uint32_t>(key & 0xFFFFFFFF);
-                }
-            }
-            const auto maxDim = std::max(targetW, targetH);
+            bc3TargetWidth_ = 256;
+            bc3TargetHeight_ = 256;
+            const auto maxDim = std::max(bc3TargetWidth_, bc3TargetHeight_);
             const auto fullMips = static_cast<std::uint32_t>(std::floor(std::log2(static_cast<float>(maxDim)))) + 1u;
-            const auto targetMips = std::min(fullMips,
+            bc3TargetMips_ = std::min(fullMips,
                 static_cast<std::uint32_t>(std::max(1.0, std::log2(static_cast<double>(maxDim)) - 1.0)));
-
-            bc3TargetWidth_ = targetW;
-            bc3TargetHeight_ = targetH;
-            bc3TargetMips_ = targetMips;
-
-            // Parallel load + BC3 convert all character textures.
-            struct Bc3Result
-            {
-                std::string key;
-                renderer::DdsTexture texture;
-            };
-            std::vector<Bc3Result> results(cachedTexturePaths_.size());
-            std::atomic<std::size_t> nextIdx{ 0 };
-            // Use half the cores (min 1) so the background preload doesn't saturate
-            // the CPU while the game is already running interactively.
-            const auto workerCount = std::min(
-                static_cast<std::size_t>(std::max(1u, std::thread::hardware_concurrency() / 2)),
-                cachedTexturePaths_.size());
-            std::vector<std::thread> workers;
-            workers.reserve(workerCount);
-            for (std::size_t w = 0; w < workerCount; ++w)
-            {
-                workers.emplace_back([&]() {
-                    for (;;)
-                    {
-                        const auto idx = nextIdx.fetch_add(1, std::memory_order_relaxed);
-                        if (idx >= cachedTexturePaths_.size()) break;
-                        auto tex = renderer::load_dds(cachedTexturePaths_[idx]);
-                        renderer::convert_texture_to_bc3(tex, targetW, targetH, targetMips);
-                        // Free decoded RGBA — only keep BC3 mip data.
-                        std::vector<std::uint8_t>().swap(tex.rgba);
-                        results[idx].key = path_key(cachedTexturePaths_[idx]);
-                        results[idx].texture = std::move(tex);
-                    }
-                });
-            }
-            for (auto& w : workers) w.join();
-
-            std::size_t bc3Bytes = 0;
-            for (auto& r : results)
-            {
-                if (!r.texture.valid) continue;
-                for (const auto& mip : r.texture.mipData)
-                    bc3Bytes += mip.size();
-                cachedBc3Textures_.emplace(std::move(r.key), std::move(r.texture));
-            }
-            bc3CacheReady_ = true;
-
-            std::ofstream bc3Log(phoenix::core::engine_log_path(), std::ios::app);
-            bc3Log << "Character BC3 cache: " << cachedBc3Textures_.size()
-                << " textures, " << (bc3Bytes / (1024 * 1024)) << " MB"
-                << " target=" << targetW << "x" << targetH
-                << " mips=" << targetMips << "\n";
+            bc3CacheReady_ = true;   // signal that the target params are set
         }
 
         cacheReady_ = true;
@@ -1066,60 +999,23 @@ namespace phoenix::character
                 cachedItemModels_.emplace(path_key(entry.path()), std::move(model));
         }
 
-        // Pre-cache item DDS textures as BC3.
+        // Item DDS textures are loaded on demand at swap time (same as character
+        // textures). The bulk pre-cache was removed — it burned CPU converting
+        // hundreds of textures that may never be used. Only register the paths so
+        // the slot map is ready for on-demand lookup.
         const auto ddsRoot = itemRoot / "dds";
-        if (std::filesystem::exists(ddsRoot) && bc3CacheReady_)
+        if (std::filesystem::exists(ddsRoot))
         {
-            std::vector<std::filesystem::path> itemTexPaths;
             for (const auto& entry : std::filesystem::directory_iterator(ddsRoot))
             {
                 if (!entry.is_regular_file() || lower_ascii(entry.path().extension().string()) != ".dds")
                     continue;
                 const auto key = path_key(entry.path());
-                if (cachedBc3Textures_.contains(key))
-                    continue;
-                // Also register in the texture slot map for later lookup.
                 if (!cachedTextureSlotByPath_.contains(key))
                 {
                     const auto slot = static_cast<std::uint32_t>(cachedTexturePaths_.size());
                     cachedTextureSlotByPath_.emplace(key, slot);
                     cachedTexturePaths_.push_back(entry.path());
-                }
-                itemTexPaths.push_back(entry.path());
-            }
-
-            // Parallel BC3 conversion.
-            if (!itemTexPaths.empty())
-            {
-                struct Bc3Result { std::string key; renderer::DdsTexture texture; };
-                std::vector<Bc3Result> results(itemTexPaths.size());
-                std::atomic<std::size_t> nextIdx{ 0 };
-                const auto workerCount = std::min(
-                    static_cast<std::size_t>(std::max(1u, std::thread::hardware_concurrency() / 2)),
-                    itemTexPaths.size());
-                std::vector<std::thread> workers;
-                workers.reserve(workerCount);
-                for (std::size_t w = 0; w < workerCount; ++w)
-                {
-                    workers.emplace_back([&]() {
-                        for (;;)
-                        {
-                            const auto idx = nextIdx.fetch_add(1, std::memory_order_relaxed);
-                            if (idx >= itemTexPaths.size()) break;
-                            auto tex = renderer::load_dds(itemTexPaths[idx]);
-                            renderer::convert_texture_to_bc3(tex, bc3TargetWidth_, bc3TargetHeight_, bc3TargetMips_);
-                            std::vector<std::uint8_t>().swap(tex.rgba);
-                            results[idx].key = path_key(itemTexPaths[idx]);
-                            results[idx].texture = std::move(tex);
-                        }
-                    });
-                }
-                for (auto& w : workers) w.join();
-
-                for (auto& r : results)
-                {
-                    if (!r.texture.valid) continue;
-                    cachedBc3Textures_.emplace(std::move(r.key), std::move(r.texture));
                 }
             }
         }
