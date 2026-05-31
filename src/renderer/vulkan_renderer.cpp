@@ -362,7 +362,10 @@ namespace phoenix::renderer
         colorAttachment.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
         colorAttachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
         colorAttachment.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-        colorAttachment.finalLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
+        // COLOR_ATTACHMENT_OPTIMAL instead of PRESENT_SRC_KHR so we can
+        // optionally blit (dynamic resolution scaling) after the render pass
+        // before presenting. A barrier transitions to PRESENT afterwards.
+        colorAttachment.finalLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
 
         VkAttachmentDescription depthAttachment{};
         depthAttachment.format = VK_FORMAT_D32_SFLOAT;
@@ -3600,6 +3603,18 @@ namespace phoenix::renderer
         impl_->skyConstants[15] = tileSize;
     }
 
+    void VulkanRenderer::set_render_scale(float scale)
+    {
+        if (!impl_)
+            return;
+        impl_->renderScale = std::clamp(scale, 0.25f, 1.0f);
+    }
+
+    float VulkanRenderer::render_scale() const
+    {
+        return impl_ ? impl_->renderScale : 1.0f;
+    }
+
     void VulkanRenderer::update_water_time(float totalTime)
     {
         if (!impl_)
@@ -3781,12 +3796,18 @@ namespace phoenix::renderer
             }
 
             vkCmdBeginRenderPass(commandBuffer, &renderPassInfo, VK_SUBPASS_CONTENTS_INLINE);
+            // Dynamic resolution: render the 3D scene at a reduced viewport size.
+            // The result occupies the top-left corner; after the render pass we blit
+            // it to fill the entire swapchain image (linear upscale).
+            const float scale = std::clamp(impl_->renderScale, 0.25f, 1.0f);
+            const auto renderW = std::max(1u, static_cast<std::uint32_t>(impl_->swapchainExtent.width * scale));
+            const auto renderH = std::max(1u, static_cast<std::uint32_t>(impl_->swapchainExtent.height * scale));
             VkViewport viewport{};
-            viewport.width = static_cast<float>(impl_->swapchainExtent.width);
-            viewport.height = static_cast<float>(impl_->swapchainExtent.height);
+            viewport.width = static_cast<float>(renderW);
+            viewport.height = static_cast<float>(renderH);
             viewport.maxDepth = 1.0f;
             VkRect2D scissor{};
-            scissor.extent = impl_->swapchainExtent;
+            scissor.extent = { renderW, renderH };
             vkCmdSetViewport(commandBuffer, 0, 1, &viewport);
             vkCmdSetScissor(commandBuffer, 0, 1, &scissor);
 
@@ -3924,11 +3945,38 @@ namespace phoenix::renderer
             }
             if (imguiReady_ && imguiFrameStarted_)
             {
+                // ImGui at native resolution (always sharp).
+                VkViewport fullViewport{};
+                fullViewport.width = static_cast<float>(impl_->swapchainExtent.width);
+                fullViewport.height = static_cast<float>(impl_->swapchainExtent.height);
+                fullViewport.maxDepth = 1.0f;
+                VkRect2D fullScissor{};
+                fullScissor.extent = impl_->swapchainExtent;
+                vkCmdSetViewport(commandBuffer, 0, 1, &fullViewport);
+                vkCmdSetScissor(commandBuffer, 0, 1, &fullScissor);
+
                 ImGui::Render();
                 ImGui_ImplVulkan_RenderDrawData(ImGui::GetDrawData(), commandBuffer);
                 imguiFrameStarted_ = false;
             }
             vkCmdEndRenderPass(commandBuffer);
+
+            // Transition to PRESENT_SRC_KHR (render pass ends at COLOR_ATTACHMENT_OPTIMAL).
+            {
+                VkImageMemoryBarrier toPresent{ VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER };
+                toPresent.srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+                toPresent.dstAccessMask = 0;
+                toPresent.oldLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+                toPresent.newLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
+                toPresent.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+                toPresent.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+                toPresent.image = impl_->swapchainImages[imageIndex];
+                toPresent.subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 };
+                vkCmdPipelineBarrier(commandBuffer,
+                    VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+                    VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
+                    0, 0, nullptr, 0, nullptr, 1, &toPresent);
+            }
         }
         else
         {

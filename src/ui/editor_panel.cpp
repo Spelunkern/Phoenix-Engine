@@ -172,6 +172,14 @@ namespace phoenix::ui
         if (fogEnabled != previousFog)
             apply_renderer_fog(renderer, runtime, fogEnabled, viewDistance, weatherMode);
 
+        // Dynamic resolution slider (25–100%).
+        {
+            float pct = renderer.render_scale() * 100.0f;
+            ImGui::SetNextItemWidth(200.0f);
+            if (ImGui::SliderFloat("Quality", &pct, 25.0f, 100.0f, "%.0f%%"))
+                renderer.set_render_scale(pct / 100.0f);
+        }
+
         const auto previousViewDistance = viewDistance;
         ImGui::SetNextItemWidth(200.0f);
         ImGui::SliderFloat("View", &viewDistance, 100.0f, 2500.0f, "%.0f");
