@@ -972,8 +972,10 @@ namespace phoenix::character
             };
             std::vector<Bc3Result> results(cachedTexturePaths_.size());
             std::atomic<std::size_t> nextIdx{ 0 };
+            // Use half the cores (min 1) so the background preload doesn't saturate
+            // the CPU while the game is already running interactively.
             const auto workerCount = std::min(
-                static_cast<std::size_t>(std::max(1u, std::thread::hardware_concurrency())),
+                static_cast<std::size_t>(std::max(1u, std::thread::hardware_concurrency() / 2)),
                 cachedTexturePaths_.size());
             std::vector<std::thread> workers;
             workers.reserve(workerCount);
@@ -1093,7 +1095,7 @@ namespace phoenix::character
                 std::vector<Bc3Result> results(itemTexPaths.size());
                 std::atomic<std::size_t> nextIdx{ 0 };
                 const auto workerCount = std::min(
-                    static_cast<std::size_t>(std::max(1u, std::thread::hardware_concurrency())),
+                    static_cast<std::size_t>(std::max(1u, std::thread::hardware_concurrency() / 2)),
                     itemTexPaths.size());
                 std::vector<std::thread> workers;
                 workers.reserve(workerCount);
