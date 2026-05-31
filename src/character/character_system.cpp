@@ -1981,7 +1981,20 @@ namespace phoenix::character
             }
             else
             {
-                characterY_ = groundY;
+                // Smooth terrain following for both the character model and camera.
+                // Without this the character visibly "jumps" at heightmap cell edges.
+                if (groundInitialized_)
+                {
+                    const float blend = 1.0f - std::exp(-14.0f * clampedDelta);
+                    characterY_ += (groundY - characterY_) * blend;
+                    // Snap if very close to avoid perpetual micro-drift.
+                    if (std::abs(characterY_ - groundY) < 0.005f)
+                        characterY_ = groundY;
+                }
+                else
+                {
+                    characterY_ = groundY;
+                }
                 groundInitialized_ = true;
             }
         }
