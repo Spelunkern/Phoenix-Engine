@@ -1401,8 +1401,14 @@ int main(int, char**)
     }
 
     auto characterOptions = scan_character_options(runtime.state().assets.root);
-    runAsyncVoid([&]() { characterSystem.preload(runtime.state().assets.root); }, 0.29f, "Loading characters");
-    runAsyncVoid([&]() { characterSystem.preload_items(runtime.state().assets.root); }, 0.30f, "Loading items");
+    // The full character/item caches (all races + BC3 textures, ~93MB, several
+    // seconds) used to be built synchronously here. To launch fast we now skip that:
+    // the default character (Humf on map 1) loads via on-demand disk fallback, and
+    // the heavy preload runs in a background thread after the world is ready (see
+    // backgroundAssetThread below). assetsFullyLoaded gates the appearance UI until
+    // the caches exist, so appearance swaps remain instant and race-free.
+    std::atomic<bool> assetsFullyLoaded{ false };
+    std::thread backgroundAssetThread;
     showLoading(0.32f, "Characters");
     int selectedCharacterOption = 0;
     for (std::size_t i = 0; i < characterOptions.size(); ++i)
@@ -1593,7 +1599,8 @@ int main(int, char**)
         if (characterTextureBaseSlot == 0 || !terrainTexturesUploaded)
             return false;
 
-        characterLoaded = characterSystem.load(runtime.state().assets.root, characterAppearance);
+        characterLoaded = characterSystem.load(
+            runtime.state().assets.root, characterAppearance, assetsFullyLoaded.load());
         if (!characterLoaded)
             return false;
 
@@ -1832,7 +1839,8 @@ int main(int, char**)
 
             if (!characterLoaded)
             {
-                characterLoaded = characterSystem.load(runtime.state().assets.root, characterAppearance);
+                characterLoaded = characterSystem.load(
+                    runtime.state().assets.root, characterAppearance, assetsFullyLoaded.load());
                 if (characterLoaded)
                 {
                     characterSystem.set_height_sampler(character_height_sampler, &heightSamplerCtx);
@@ -2287,6 +2295,18 @@ int main(int, char**)
     uploadCurrentWorld();
     applyFogSettings();
     window.set_title(runtime.window_title(renderer.adapter_name(), displayedFps, fogEnabled));
+
+    // World + default character are up and the window is interactive. Now build the
+    // full character/item caches (all races + BC3 textures) off the main thread so
+    // the rest of the content streams in without blocking play. assetsFullyLoaded is
+    // flipped when done; the appearance UI stays disabled until then so there is no
+    // concurrent reader of the caches while this thread writes them.
+    backgroundAssetThread = std::thread([&]() {
+        characterSystem.preload(runtime.state().assets.root);
+        characterSystem.preload_items(runtime.state().assets.root);
+        assetsFullyLoaded.store(true);
+        phoenix::core::write_log_line("Loading", "Background asset preload complete");
+    });
 
     using clock = std::chrono::steady_clock;
     auto lastFrame = clock::now();
@@ -2745,6 +2765,7 @@ int main(int, char**)
                 weaponEffect,
                 showEffectsWindow,
                 showActorAnimWindow,
+                assetsFullyLoaded.load(),
                 cameraX, cameraY, cameraZ, cameraYaw, cameraPitch);
 
             if (panelResult.loadRequested)
@@ -3114,6 +3135,11 @@ int main(int, char**)
             lastTitleUpdate = now;
         }
     }
+
+    // Join the background asset preload before tearing down (it captures
+    // characterSystem/runtime by reference).
+    if (backgroundAssetThread.joinable())
+        backgroundAssetThread.join();
 
     renderer.shutdown();
     audioSystem.shutdown();

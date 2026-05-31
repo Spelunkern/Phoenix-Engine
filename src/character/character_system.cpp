@@ -1135,9 +1135,14 @@ namespace phoenix::character
         return load(dataRoot, CharacterAppearance{});
     }
 
-    bool CharacterSystem::load(const std::filesystem::path& dataRoot, const CharacterAppearance& appearance)
+    bool CharacterSystem::load(const std::filesystem::path& dataRoot, const CharacterAppearance& appearance, bool allowPreload)
     {
-        preload(dataRoot);
+        // When allowPreload is false the heavy all-races preload is skipped; the
+        // body-part meshes, animations, item meshes and textures all resolve through
+        // their on-demand disk fallbacks below, so the first character can appear
+        // immediately while the full caches are built in a background thread.
+        if (allowPreload)
+            preload(dataRoot);
 
         const auto root = dataRoot / "Character" / appearance.raceFolder;
         const auto meshRoot = root / "3DC";
@@ -1472,7 +1477,8 @@ namespace phoenix::character
             return true;
         };
 
-        preload_items(dataRoot);
+        if (allowPreload)
+            preload_items(dataRoot);
         // Mounted characters never wield weapons/shields — they ride with empty
         // hands, so skip loading them entirely while mounted.
         if (appearance.mounted)

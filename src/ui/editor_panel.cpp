@@ -133,6 +133,7 @@ namespace phoenix::ui
         phoenix::character::WeaponEffect& weaponEffect,
         bool& showEffectsWindow,
         bool& showActorAnimWindow,
+        bool assetsReady,
         float camX, float camY, float camZ, float camYaw, float camPitch)
     {
         UnifiedPanelResult result{};
@@ -229,6 +230,13 @@ namespace phoenix::ui
         // ---- Character ----
         if (!characterOptions.empty() && ImGui::TreeNodeEx("Character", ImGuiTreeNodeFlags_DefaultOpen))
         {
+            if (!assetsReady)
+            {
+                ImGui::TextDisabled("Loading assets...");
+                ImGui::TreePop();
+            }
+            else
+            {
             // Snapshot current state to detect any change.
             const auto prevAppearance = appearance;
             const auto prevCharOption = selectedCharacterOption;
@@ -506,6 +514,7 @@ namespace phoenix::ui
                 || appearance.mountClass != prevAppearance.mountClass
                 || appearance.mountIndex != prevAppearance.mountIndex;
             ImGui::TreePop();
+            } // else (assetsReady)
         }
 
         // ---- Weapon aura (procedural particles, layered) ----

@@ -341,7 +341,11 @@ namespace phoenix::character
         bool preload(const std::filesystem::path& dataRoot);
         bool preload_items(const std::filesystem::path& dataRoot);
         bool load(const std::filesystem::path& dataRoot);
-        bool load(const std::filesystem::path& dataRoot, const CharacterAppearance& appearance);
+        // allowPreload=false skips the (heavy, all-races) preload and relies on the
+        // per-asset on-demand disk fallback, so the first character can appear before
+        // the full caches are built in the background. Subsequent loads (appearance
+        // swaps) use the caches once the background preload has completed.
+        bool load(const std::filesystem::path& dataRoot, const CharacterAppearance& appearance, bool allowPreload = true);
 
         // Set the base texture layer index into the shared texture array.
         void set_texture_layer_base(std::uint32_t base) { textureLayerBase_ = base; }
