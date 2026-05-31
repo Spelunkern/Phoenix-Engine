@@ -959,10 +959,17 @@ namespace
 
         constexpr std::uint32_t kChunkQ = phoenix::runtime::PhoenixRuntime::kTerrainChunkQuads;
         constexpr int kLodLevels = phoenix::runtime::PhoenixRuntime::kTerrainLodLevels;
-        // LOD distance thresholds: chunks closer than these use higher detail.
-        // LOD 0 (full): 0 – 80m    |  LOD 1 (1/4): 80 – 160m
-        // LOD 2 (1/16): 160 – 260m |  LOD 3 (1/64): 260m+
-        const float lodThresholds[kLodLevels] = { 80.0f, 160.0f, 260.0f, 1e9f };
+        // LOD thresholds scale with the cull distance (≈ fogEnd) so that lower-
+        // detail levels always fall inside the fog gradient where reduced geometry
+        // is invisible. Full detail covers the near 30%, then each successive LOD
+        // fills an equal band until the cull boundary.
+        const float cullDist = view.distance;   // already set to fogCullDistance
+        const float lodThresholds[kLodLevels] = {
+            cullDist * 0.30f,   // LOD 0 → 1 (full → 1/4)
+            cullDist * 0.55f,   // LOD 1 → 2 (1/4 → 1/16)
+            cullDist * 0.80f,   // LOD 2 → 3 (1/16 → 1/64)
+            1e9f,               // LOD 3 (coarsest, beyond fog — culled anyway)
+        };
 
         ranges.reserve(lod.chunks.size());
         for (std::uint32_t cz = 0; cz < lod.chunkCountZ; ++cz)
