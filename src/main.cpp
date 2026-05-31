@@ -1424,7 +1424,7 @@ int main(int, char**)
     bool playableMode = true; // true = third-person playable, false = free camera viewer
 
     bool fogEnabled = true;
-    float viewDistance = 1000.0f;
+    float viewDistance = 300.0f;
     float actorViewDistance = 100.0f;
     bool actorsEnabled = true;
     bool showNamePlates = true;

@@ -40,8 +40,11 @@ namespace phoenix::ui
         std::string gpuName;
         float vramUsedMB{};
         float vramTotalMB{};
-        float systemUpdateTimer{};
         phoenix::renderer::VulkanRenderer* renderer{};
+
+        // Internal: accumulate frames between display refreshes (~0.5s).
+        float displayAccum_{};
+        std::uint32_t displayFrames_{};
 
         // Per-core CPU state (raw counters from the previous sample).
 #ifdef _WIN32

@@ -181,24 +181,28 @@ namespace phoenix::ui
         const float ms = dt * 1000.0f;
         frametimeHistory[historyIndex] = ms;
         historyIndex = (historyIndex + 1) % kHistorySize;
-        frametimeMs = ms;
-        float sum = 0.0f, minV = 999.0f, maxV = 0.0f;
-        for (auto v : frametimeHistory)
+
+        // Accumulate frames and refresh the displayed values every ~0.5s so the
+        // HUD text is readable instead of flickering every frame.
+        displayAccum_ += dt;
+        displayFrames_++;
+        if (displayAccum_ >= 0.5f)
         {
-            if (v <= 0.0f) continue;
-            sum += v;
-            minV = std::min(minV, v);
-            maxV = std::max(maxV, v);
-        }
-        frametimeAvg = sum / static_cast<float>(kHistorySize);
-        frametimeMin = minV;
-        frametimeMax = maxV;
-        const float instantFps = dt > 0.0001f ? 1.0f / dt : 0.0f;
-        fpsSmoothed = fpsSmoothed * 0.92f + instantFps * 0.08f;
-        systemUpdateTimer += dt;
-        if (systemUpdateTimer >= 0.5f)
-        {
-            systemUpdateTimer = 0.0f;
+            fpsSmoothed = static_cast<float>(displayFrames_) / displayAccum_;
+            frametimeMs = (displayAccum_ / static_cast<float>(displayFrames_)) * 1000.0f;
+            float sum = 0.0f, minV = 999.0f, maxV = 0.0f;
+            for (auto v : frametimeHistory)
+            {
+                if (v <= 0.0f) continue;
+                sum += v;
+                minV = std::min(minV, v);
+                maxV = std::max(maxV, v);
+            }
+            frametimeAvg = sum / static_cast<float>(kHistorySize);
+            frametimeMin = minV;
+            frametimeMax = maxV;
+            displayAccum_ = 0.0f;
+            displayFrames_ = 0;
             update_system_metrics();
         }
     }
