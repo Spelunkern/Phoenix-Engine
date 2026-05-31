@@ -2460,6 +2460,17 @@ namespace phoenix::runtime
 
             auto& inst = scene.baseInstances[mob.instanceIndex];
 
+            // Skip movement simulation for mobs far from the camera — they are
+            // not visible and updating their position is wasted CPU. When they
+            // come back into range they continue from where they were (or restart
+            // from spawn if they were mid-move when culled).
+            {
+                const float dx = inst.position[0] - cameraX;
+                const float dz = inst.position[2] - cameraZ;
+                if (dx * dx + dz * dz > kAnimationRange * kAnimationRange * 1.5f * 1.5f)
+                    continue;
+            }
+
             if (mob.moving)
             {
                 const float curX = inst.position[0];
