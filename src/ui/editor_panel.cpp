@@ -20,7 +20,7 @@ namespace phoenix::ui
     }
 
 // === moved bodies appended below by build step ===
-    void apply_renderer_fog(
+    float apply_renderer_fog(
         phoenix::renderer::VulkanRenderer& renderer,
         const phoenix::runtime::PhoenixRuntime& runtime,
         bool fogEnabled,
@@ -67,7 +67,7 @@ namespace phoenix::ui
                 100000.0f,
                 100001.0f,
                 world.parsedSky && !world.skyFileName.empty());
-            return;
+            return viewDistance;
         }
 
         // Atmospheric fog: starts gradually, reaches full opacity well before cull edge.
@@ -88,6 +88,7 @@ namespace phoenix::ui
             fogStart,
             fogEnd,
             world.parsedSky && !world.skyFileName.empty());
+        return fogEnd;
     }
 
     int nearest_available(int value, const std::vector<int>& values)

@@ -1430,8 +1430,13 @@ int main(int, char**)
     bool showNamePlates = true;
     bool showCollisionDebug = false;
     WeatherMode weatherMode = WeatherMode::Default;
+    // fogCullDistance is the actual cull boundary: nothing beyond the fog-end is
+    // visible, so nothing beyond it should be rendered. All CPU/GPU culling
+    // (terrain chunks, static object compute cull, animated object batch cull,
+    // actor grid, skinning range) uses this instead of viewDistance.
+    float fogCullDistance = viewDistance;
     const auto applyFogSettings = [&]() {
-        apply_renderer_fog(renderer, runtime, fogEnabled, viewDistance, weatherMode);
+        fogCullDistance = apply_renderer_fog(renderer, runtime, fogEnabled, viewDistance, weatherMode);
     };
     applyFogSettings();
 
@@ -2370,7 +2375,7 @@ int main(int, char**)
                 // Actor vertex skinning is done by compute shader.
                 // Animation range tracks viewDistance so actors beyond the fog are not
                 // skinned (saves CPU bone-matrix work + GPU compute dispatches).
-                const float kAnimationRange = std::min(viewDistance, runtime.actor_anim_tuning().animationRange);
+                const float kAnimationRange = std::min(fogCullDistance, runtime.actor_anim_tuning().animationRange);
 
                 // Run animation update (mob movement, VANI, gesture timing) but skip CPU skinning.
                 runtime.update_animated_object_scene(animatedObjectScene, totalTime, deltaSeconds, camX, camY, camZ, actorVertexAnimationStart, true);
@@ -2676,7 +2681,7 @@ int main(int, char**)
             cameraYaw,
             cameraPitch,
             static_cast<float>(std::max(1u, renderer.surface_width())) / static_cast<float>(std::max(1u, renderer.surface_height())),
-            viewDistance);
+            fogCullDistance);
 
         CameraView currentView{};
         currentView.x = cameraX;
@@ -2686,7 +2691,7 @@ int main(int, char**)
         currentView.pitch = cameraPitch;
         currentView.aspect = static_cast<float>(std::max(1u, renderer.surface_width()))
             / static_cast<float>(std::max(1u, renderer.surface_height()));
-        currentView.distance = viewDistance;
+        currentView.distance = fogCullDistance;
 
         if (actorGrid.built && actorsEnabled && actorGrid.camera_cell_changed(cameraX, cameraZ))
         {

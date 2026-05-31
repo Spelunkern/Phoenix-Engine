@@ -50,7 +50,9 @@ namespace phoenix::ui
     int nearest_available(int value, const std::vector<int>& values);
 
     // Push fog / sky tuning to the renderer for the current weather mode.
-    void apply_renderer_fog(
+    // Returns the fog-end distance (the cull boundary — nothing beyond this is
+    // visible). When fog is disabled, returns a very large distance.
+    float apply_renderer_fog(
         phoenix::renderer::VulkanRenderer& renderer,
         const phoenix::runtime::PhoenixRuntime& runtime,
         bool fogEnabled,
