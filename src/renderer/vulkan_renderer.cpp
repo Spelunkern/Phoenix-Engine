@@ -3702,10 +3702,13 @@ namespace phoenix::renderer
         const bool hasScene = impl_->terrainReady || impl_->objectsReady;
         if (hasScene)
         {
+            // Clear to the fog color so areas with no geometry (sky/void) match
+            // the fog instead of showing a fixed grey. In dungeons (black fog)
+            // this makes the background pitch black.
             VkClearValue clears[2]{};
-            clears[0].color.float32[0] = 0.12f;
-            clears[0].color.float32[1] = 0.12f;
-            clears[0].color.float32[2] = 0.14f;
+            clears[0].color.float32[0] = impl_->skyConstants[0];
+            clears[0].color.float32[1] = impl_->skyConstants[1];
+            clears[0].color.float32[2] = impl_->skyConstants[2];
             clears[0].color.float32[3] = 1.0f;
             clears[1].depthStencil.depth = 1.0f;
 
