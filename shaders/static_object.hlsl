@@ -89,6 +89,15 @@ VSOutput VSMain(VSInput input)
 
 float4 PSMain(VSOutput input) : SV_TARGET
 {
+    // ---- Early fog discard ----
+    {
+        float fogStart = camera.fogDistances.x;
+        float fogEnd = max(fogStart + 1.0, camera.fogDistances.y);
+        float earlyFog = saturate((input.viewDepth - fogStart) / (fogEnd - fogStart));
+        if (earlyFog >= 0.995)
+            discard;
+    }
+
     const float3 lightDir = normalize(float3(-0.32, 0.72, -0.61));
     const float3 skyColor = saturate(camera.fogColorHasSky.rgb);
     const float waterSurfaceY = 0.0;

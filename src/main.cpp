@@ -977,7 +977,7 @@ namespace
                 const auto centerZ = -halfMap + (static_cast<float>(minZ + maxZ) * 0.5f) * cellSize;
                 const auto extentX = static_cast<float>(maxX - minX) * cellSize * 0.5f;
                 const auto extentZ = static_cast<float>(maxZ - minZ) * cellSize * 0.5f;
-                const auto radius = std::sqrt(extentX * extentX + extentZ * extentZ) + 180.0f;
+                const auto radius = std::sqrt(extentX * extentX + extentZ * extentZ) + 50.0f;
                 if (!sphere_visible(view, centerX, 30.0f, centerZ, radius))
                     continue;
 
@@ -2368,7 +2368,9 @@ int main(int, char**)
             {
                 // GPU skinning path: CPU handles animation state + mob movement + VANI only.
                 // Actor vertex skinning is done by compute shader.
-                constexpr float kAnimationRange = 180.0f;
+                // Animation range tracks viewDistance so actors beyond the fog are not
+                // skinned (saves CPU bone-matrix work + GPU compute dispatches).
+                const float kAnimationRange = std::min(viewDistance, runtime.actor_anim_tuning().animationRange);
 
                 // Run animation update (mob movement, VANI, gesture timing) but skip CPU skinning.
                 runtime.update_animated_object_scene(animatedObjectScene, totalTime, deltaSeconds, camX, camY, camZ, actorVertexAnimationStart, true);

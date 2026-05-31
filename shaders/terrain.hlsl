@@ -197,6 +197,19 @@ float3 realisticWaterColor(float3 worldPos, float3 viewDir, float3 lightDir, flo
 
 float4 PSMain(VSOutput input) : SV_TARGET
 {
+    // ---- Early fog discard ----
+    // Fragments fully consumed by fog are invisible. Killing them here, before
+    // any texture/lighting work, is the main performance win when lowering view
+    // distance: geometry that passes vertex-level culling but lands entirely in
+    // the dense fog band is discarded at negligible cost.
+    {
+        float fogStart = camera.fogDistances.x;
+        float fogEnd = max(fogStart + 1.0, camera.fogDistances.y);
+        float earlyFog = saturate((input.viewDepth - fogStart) / (fogEnd - fogStart));
+        if (earlyFog >= 0.995)
+            discard;
+    }
+
     const float3 lightDir = normalize(float3(-0.32, 0.72, -0.61));
     const float3 skyColor = saturate(camera.fogColorHasSky.rgb);
     const float waterSurfaceY = 0.0;
