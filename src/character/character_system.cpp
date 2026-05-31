@@ -1981,7 +1981,25 @@ namespace phoenix::character
             }
             else
             {
-                characterY_ = groundY;
+                // Smooth terrain following: interpolate toward the ground height
+                // instead of snapping directly, so the character glides over the
+                // heightmap quads instead of visibly "jumping" at grid edges.
+                // The speed adapts to the gap so large slopes still track quickly.
+                if (groundInitialized_)
+                {
+                    const float gap = groundY - characterY_;
+                    const float smoothSpeed = std::max(8.0f, std::abs(gap) * 12.0f);
+                    if (std::abs(gap) < 0.02f)
+                        characterY_ = groundY;
+                    else if (gap > 0.0f)
+                        characterY_ += std::min(gap, smoothSpeed * clampedDelta);
+                    else
+                        characterY_ += std::max(gap, -smoothSpeed * clampedDelta);
+                }
+                else
+                {
+                    characterY_ = groundY;
+                }
                 groundInitialized_ = true;
             }
         }
