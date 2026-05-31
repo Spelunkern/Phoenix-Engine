@@ -3805,12 +3805,20 @@ namespace phoenix::renderer
                     impl_->terrainPipelineLayout, 0, 1, &impl_->descriptorSet, 0, nullptr);
             }
 
-            if (impl_->skyPipeline)
+            // Skip the sky pass when the fog color is black (dungeons) — the clear
+            // color already fills the background with pitch black; drawing the sky
+            // gradient over it would introduce unwanted blue/grey.
             {
-                vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, impl_->skyPipeline);
-                vkCmdPushConstants(commandBuffer, impl_->skyPipelineLayout,
-                    kPushStages, 0, sizeof(constants), constants);
-                vkCmdDraw(commandBuffer, 3, 1, 0, 0);
+                const bool blackFog = impl_->skyConstants[0] < 0.01f
+                    && impl_->skyConstants[1] < 0.01f
+                    && impl_->skyConstants[2] < 0.01f;
+                if (impl_->skyPipeline && !blackFog)
+                {
+                    vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, impl_->skyPipeline);
+                    vkCmdPushConstants(commandBuffer, impl_->skyPipelineLayout,
+                        kPushStages, 0, sizeof(constants), constants);
+                    vkCmdDraw(commandBuffer, 3, 1, 0, 0);
+                }
             }
 
             if (impl_->terrainReady)
