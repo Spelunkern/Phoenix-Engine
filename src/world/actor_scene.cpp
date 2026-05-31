@@ -1080,7 +1080,9 @@ namespace phoenix::world
             {
                 const auto x = svmap_to_world(pos.position.x, halfMap);
                 const auto z = svmap_to_world(pos.position.z, halfMap);
-                const auto y = sample_height(x, z, pos.position.y, heightSampler, heightUserData, isDungeon);
+                // NPCs use their authored Y coordinate directly — the native client
+                // does not snap them to terrain. An NPC placed "floating" stays floating.
+                const auto y = pos.position.y;
                 const auto cellX = static_cast<int>(std::floor(x / kCellSize));
                 const auto cellZ = static_cast<int>(std::floor(z / kCellSize));
                 npcGroups[{ key, cellX, cellZ }].push_back(make_instance(x, y, z, pos.yaw));
@@ -1169,10 +1171,9 @@ namespace phoenix::world
                     const auto invCount = 1.0f / static_cast<float>(countIt->second);
                     anim.worldX = centroid[0] * invCount;
                     anim.worldZ = centroid[1] * invCount;
-                    if (isDungeon)
-                        anim.worldY = centroid[2] * invCount;   // average authored floor Y
-                    else if (heightSampler)
-                        anim.worldY = heightSampler(anim.worldX, anim.worldZ, heightUserData);
+                    // NPCs keep their authored Y — the native client does not snap
+                    // them to terrain (an NPC placed "floating" stays floating).
+                    anim.worldY = centroid[2] * invCount;
                     // Expand bounding radius to cover the farthest instance from centroid,
                     // just like mobs. NPCs of the same type (e.g. animals) can be spread
                     // across the map � without this, culling kills their animation.

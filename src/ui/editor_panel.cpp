@@ -28,10 +28,12 @@ namespace phoenix::ui
         WeatherMode weatherMode)
     {
         const auto& world = runtime.state().world;
+        // Dungeons always use pitch-black sky and fog — no clouds, no sky texture.
+        const bool dungeon = world.isDungeon;
         std::array<float, 3> weatherFog{
-            world.fogColor[0],
-            world.fogColor[1],
-            world.fogColor[2],
+            dungeon ? 0.0f : world.fogColor[0],
+            dungeon ? 0.0f : world.fogColor[1],
+            dungeon ? 0.0f : world.fogColor[2],
         };
         std::array<float, 12> skyTuning{
             0.62f, 0.0f, 1.0f, 0.0f,
@@ -60,7 +62,7 @@ namespace phoenix::ui
         }
         renderer.set_sky_tuning(skyTuning.data(), static_cast<std::uint32_t>(skyTuning.size()));
 
-        if (!fogEnabled)
+        if (!fogEnabled && !dungeon)
         {
             renderer.set_sky_settings(
                 weatherFog.data(),
@@ -68,6 +70,17 @@ namespace phoenix::ui
                 100001.0f,
                 world.parsedSky && !world.skyFileName.empty());
             return viewDistance;
+        }
+        // Dungeons always have fog (black) even when the user disables the fog
+        // checkbox, because the alternative is seeing the skybox through walls.
+        if (!fogEnabled && dungeon)
+        {
+            renderer.set_sky_settings(
+                weatherFog.data(),
+                viewDistance * 0.3f,
+                viewDistance * 0.7f,
+                false);   // no sky in dungeons
+            return viewDistance * 0.7f;
         }
 
         // Atmospheric fog: starts gradually, reaches full opacity well before cull edge.
@@ -87,7 +100,7 @@ namespace phoenix::ui
             weatherFog.data(),
             fogStart,
             fogEnd,
-            world.parsedSky && !world.skyFileName.empty());
+            !dungeon && world.parsedSky && !world.skyFileName.empty());
         return fogEnd;
     }
 
