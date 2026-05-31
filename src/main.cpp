@@ -959,17 +959,15 @@ namespace
 
         constexpr std::uint32_t kChunkQ = phoenix::runtime::PhoenixRuntime::kTerrainChunkQuads;
         constexpr int kLodLevels = phoenix::runtime::PhoenixRuntime::kTerrainLodLevels;
-        // LOD thresholds scale with the cull distance (≈ fogEnd). Transitions are
-        // placed deep enough into the fog gradient that the geometry simplification
-        // is invisible. With exponential fog (density = 1 - exp(-t²*3.5)):
-        //   65% of fogEnd ≈ 45% fog opacity → LOD 1 (1/4 tris) well masked
-        //   82% of fogEnd ≈ 75% fog opacity → LOD 2 (1/16 tris) hidden
-        //   95% of fogEnd ≈ 97% fog opacity → LOD 3 (1/64 tris) invisible
+        // Full detail for everything the player can actually see clearly; reduced
+        // LOD only where the fog is so dense it hides the geometry completely.
+        // LOD 0 (full) covers 0–85%, LOD 1 (1/4) 85–92%, LOD 2 (1/16) 92–97%,
+        // LOD 3 (1/64) 97%+ (practically invisible, about to be culled).
         const float cullDist = view.distance;   // already set to fogCullDistance
         const float lodThresholds[kLodLevels] = {
-            cullDist * 0.65f,   // LOD 0 → 1
-            cullDist * 0.82f,   // LOD 1 → 2
-            cullDist * 0.95f,   // LOD 2 → 3
+            cullDist * 0.85f,   // LOD 0 → 1
+            cullDist * 0.92f,   // LOD 1 → 2
+            cullDist * 0.97f,   // LOD 2 → 3
             1e9f,
         };
 
