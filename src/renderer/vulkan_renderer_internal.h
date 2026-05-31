@@ -137,19 +137,6 @@ namespace phoenix::renderer
         std::array<VkSemaphore, kMaxFramesInFlight> imageAvailable{};
         std::array<VkSemaphore, kMaxFramesInFlight> renderFinished{};
         std::array<VkFence, kMaxFramesInFlight> inFlight{};
-        // ---- Dynamic resolution: offscreen render target at reduced size ----
-        VkImage offscreenColor{};
-        VkDeviceMemory offscreenColorMemory{};
-        VkImageView offscreenColorView{};
-        VkImage offscreenDepth{};
-        VkDeviceMemory offscreenDepthMemory{};
-        VkImageView offscreenDepthView{};
-        VkFramebuffer offscreenFramebuffer{};
-        VkRenderPass offscreenRenderPass{};   // same format, STORE instead of PRESENT
-        std::uint32_t offscreenWidth{};
-        std::uint32_t offscreenHeight{};
-        float renderScale{ 1.0f };            // 0.5 – 1.0; 1.0 = native
-
         VkBuffer previewBuffer{};
         VkDeviceMemory previewMemory{};
         VkDeviceSize previewBufferSize{};

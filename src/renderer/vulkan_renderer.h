@@ -90,11 +90,6 @@ namespace phoenix::renderer
         bool initialize(SDL_Window* window, std::uint32_t width, std::uint32_t height);
         bool initialize_imgui(SDL_Window* window);
         void begin_imgui_frame();
-        // Dynamic resolution: scale 0.25–1.0 (1.0 = native). Scene is rendered to
-        // an offscreen target at (width*scale × height*scale) and blitted up to the
-        // swapchain. ImGui renders at native resolution (always sharp).
-        void set_render_scale(float scale);
-        float render_scale() const;
         bool set_preview_image(std::uint32_t width, std::uint32_t height, const std::vector<std::uint8_t>& bgraPixels);
         void enter_loading_mode();
         bool set_terrain_mesh(const std::vector<TerrainVertex>& vertices, const std::vector<std::uint32_t>& indices);
