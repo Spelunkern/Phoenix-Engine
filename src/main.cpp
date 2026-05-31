@@ -959,15 +959,13 @@ namespace
 
         constexpr std::uint32_t kChunkQ = phoenix::runtime::PhoenixRuntime::kTerrainChunkQuads;
         constexpr int kLodLevels = phoenix::runtime::PhoenixRuntime::kTerrainLodLevels;
-        // Full detail for everything the player can actually see clearly; reduced
-        // LOD only where the fog is so dense it hides the geometry completely.
-        // LOD 0 (full) covers 0–85%, LOD 1 (1/4) 85–92%, LOD 2 (1/16) 92–97%,
-        // LOD 3 (1/64) 97%+ (practically invisible, about to be culled).
-        const float cullDist = view.distance;   // already set to fogCullDistance
+        // Full detail for the entire clear-visibility zone; LOD only in the last
+        // sliver where fog is nearly 100% opaque and geometry is indistinguishable.
+        const float cullDist = view.distance;
         const float lodThresholds[kLodLevels] = {
-            cullDist * 0.85f,   // LOD 0 → 1
-            cullDist * 0.92f,   // LOD 1 → 2
-            cullDist * 0.97f,   // LOD 2 → 3
+            cullDist * 0.93f,   // LOD 0 → 1  (fog ~95%)
+            cullDist * 0.96f,   // LOD 1 → 2  (fog ~98%)
+            cullDist * 0.99f,   // LOD 2 → 3  (fog ~99.5%)
             1e9f,
         };
 
