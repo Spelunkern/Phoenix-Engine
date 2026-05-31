@@ -107,6 +107,8 @@ namespace phoenix::character
         float mouseDx{};
         float mouseDy{};
         float mouseWheel{};
+        bool sit{};             // C key (toggle)
+        int emote{};            // 0=none, 1-10=emote number (one-shot from ImGui)
     };
 
     // Holds all data for a loaded character (mesh, bones, animations).
@@ -149,6 +151,7 @@ namespace phoenix::character
         WeaponPart shield;
         bool hasWeapon{};
         bool hasShield{};
+        WeaponType equippedWeaponType{ WeaponType::None };
 
         // Cloak — static meshes (3DC with boneCount=0), bone-attached.
         // Two components: main cloak body + shoulder piece.
@@ -455,6 +458,23 @@ namespace phoenix::character
         bool grounded_{ true };
         bool jumpWasDown_{};
         bool groundInitialized_{};
+
+        // Sit state: 0=standing, 1=sitting down (one-shot), 2=seated (loop), 3=standing up (one-shot)
+        int sitState_{};
+        bool sitWasDown_{};
+
+        // Emote: when >0, plays the one-shot emote animation then returns to idle.
+        int activeEmote_{};
+
+        // Dodge double-tap detection.
+        float dodgeBackTimer_{};   // time since last backward release
+        float dodgeLeftTimer_{};
+        float dodgeRightTimer_{};
+        bool lastBackward_{};
+        bool lastLeft_{};
+        bool lastRight_{};
+        float dodgePlayTimer_{};   // >0 while dodge animation is playing
+        std::size_t dodgeAnimation_{};
 
         HeightSampleFn heightFn_{};
         void* heightUserData_{};

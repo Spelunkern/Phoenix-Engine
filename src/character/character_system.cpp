@@ -1388,6 +1388,7 @@ namespace phoenix::character
         {
             data_.hasWeapon = loadItemPart(appearance.weaponType, appearance.weaponIndex, data_.weapon);
             data_.hasShield = loadItemPart(appearance.shieldType, appearance.shieldIndex, data_.shield);
+            data_.equippedWeaponType = data_.hasWeapon ? appearance.weaponType : WeaponType::None;
         }
 
         // ---- Cloak ----
@@ -2015,18 +2016,165 @@ namespace phoenix::character
             }
         }
 
+        // ---- Sit toggle (C key) ----
+        {
+            const bool sitPressed = input.sit && !sitWasDown_;
+            sitWasDown_ = input.sit;
+            if (sitPressed && grounded_ && !inWater_ && !data_.hasMount)
+            {
+                if (sitState_ == 0)      sitState_ = 1;  // start sitting down
+                else if (sitState_ == 2) sitState_ = 3;  // start standing up
+            }
+            // Advance one-shot sit transitions.
+            if (sitState_ == 1 || sitState_ == 3)
+            {
+                const auto& sitAnim = (sitState_ == 1)
+                    ? data_.animations[data_.sitDownAnimation].animation
+                    : data_.animations[data_.sitUpAnimation].animation;
+                if (sitAnim.parsed)
+                {
+                    const float duration = static_cast<float>(sitAnim.endKeyframe - sitAnim.startKeyframe) / 30.0f;
+                    if (animationSeconds_ >= duration * 0.95f)
+                    {
+                        if (sitState_ == 1) sitState_ = 2;      // seated
+                        else { sitState_ = 0; }                   // back to standing
+                        animationSeconds_ = 0.0f;
+                    }
+                }
+                else
+                {
+                    sitState_ = (sitState_ == 1) ? 2 : 0;
+                }
+            }
+            // Cancel sit on movement or jump.
+            if ((moving || !grounded_) && sitState_ > 0)
+            {
+                sitState_ = 0;
+                animationSeconds_ = 0.0f;
+            }
+        }
+
+        // ---- Emote (one-shot from ImGui, 1–10) ----
+        if (input.emote > 0 && input.emote <= 10 && grounded_ && !moving && !inWater_ && sitState_ == 0)
+        {
+            activeEmote_ = input.emote;
+            animationSeconds_ = 0.0f;
+        }
+        if (activeEmote_ > 0 && (moving || !grounded_))
+        {
+            activeEmote_ = 0;
+            animationSeconds_ = 0.0f;
+        }
+
+        // ---- Dodge double-tap detection ----
+        constexpr float kDoubleTapWindow = 0.3f;
+        constexpr float kDodgeDuration = 0.6f;
+        {
+            // Backward
+            if (!input.backward && lastBackward_)
+                dodgeBackTimer_ = kDoubleTapWindow;
+            if (input.backward && !lastBackward_ && dodgeBackTimer_ > 0.0f && grounded_ && !inWater_ && sitState_ == 0)
+            {
+                dodgeAnimation_ = data_.dodgeBackAnimation;
+                dodgePlayTimer_ = kDodgeDuration;
+                dodgeBackTimer_ = 0.0f;
+            }
+            // Left
+            if (!input.left && lastLeft_)
+                dodgeLeftTimer_ = kDoubleTapWindow;
+            if (input.left && !lastLeft_ && dodgeLeftTimer_ > 0.0f && grounded_ && !inWater_ && sitState_ == 0)
+            {
+                dodgeAnimation_ = data_.dodgeLeftAnimation;
+                dodgePlayTimer_ = kDodgeDuration;
+                dodgeLeftTimer_ = 0.0f;
+            }
+            // Right
+            if (!input.right && lastRight_)
+                dodgeRightTimer_ = kDoubleTapWindow;
+            if (input.right && !lastRight_ && dodgeRightTimer_ > 0.0f && grounded_ && !inWater_ && sitState_ == 0)
+            {
+                dodgeAnimation_ = data_.dodgeRightAnimation;
+                dodgePlayTimer_ = kDodgeDuration;
+                dodgeRightTimer_ = 0.0f;
+            }
+            lastBackward_ = input.backward;
+            lastLeft_ = input.left;
+            lastRight_ = input.right;
+            dodgeBackTimer_ = std::max(0.0f, dodgeBackTimer_ - clampedDelta);
+            dodgeLeftTimer_ = std::max(0.0f, dodgeLeftTimer_ - clampedDelta);
+            dodgeRightTimer_ = std::max(0.0f, dodgeRightTimer_ - clampedDelta);
+            if (dodgePlayTimer_ > 0.0f)
+                dodgePlayTimer_ -= clampedDelta;
+        }
+
+        // ---- Weapon-specific run helper ----
+        // Returns the weapon-specific run anim if it exists, otherwise fallback to generic run.
+        auto weaponRunAnim = [&]() -> std::size_t {
+            std::size_t anim = 0;
+            switch (data_.equippedWeaponType)
+            {
+            case WeaponType::Sword2H: case WeaponType::Axe2H: case WeaponType::Hammer2H:
+                anim = data_.twoHandRunAnimation; break;
+            case WeaponType::Bow:
+                anim = data_.bowRunAnimation; break;
+            case WeaponType::Sword1H: case WeaponType::Axe1H: case WeaponType::Mace1H:
+                anim = data_.oneHandRunAnimation; break;
+            case WeaponType::DualSword:
+                anim = data_.dualRunAnimation; break;
+            case WeaponType::Spear:
+                anim = data_.spearRunAnimation; break;
+            case WeaponType::Crossbow:
+                anim = data_.crossbowRunAnimation; break;
+            case WeaponType::Staff:
+                anim = data_.staffRunAnimation; break;
+            case WeaponType::RevDagger:
+                anim = data_.revDaggerRunAnimation; break;
+            case WeaponType::Claw:
+                anim = data_.knuckleRunAnimation; break;
+            case WeaponType::Dagger:
+                anim = data_.daggerRunAnimation; break;
+            // Javelin shares animation set with spear (no separate slots).
+            case WeaponType::Javelin:
+                anim = data_.spearRunAnimation; break;
+            default: break;
+            }
+            // Validate: the anim index must point to a parsed animation.
+            if (anim > 0 && anim < data_.animations.size() && data_.animations[anim].animation.parsed)
+                return anim;
+            return data_.runAnimation;  // fallback to generic run
+        };
+
         // ---- Animation selection ----
         std::size_t desiredAnimation = data_.idleAnimation;
         if (data_.hasMount)
         {
-            // Mounted: the rider plays its seated (vehicle) animations. Standard
-            // mounts use the same seated pose for walk and run (vehicleRun1);
-            // vehicleRun2 is reserved for special mounts (e.g. skateboard).
             if (moving)
                 desiredAnimation = data_.vehicleRun1Animation;
             else
                 desiredAnimation = data_.vehicleIdleAnimation;
         }
+        else if (dodgePlayTimer_ > 0.0f && dodgeAnimation_ > 0)
+        {
+            desiredAnimation = dodgeAnimation_;
+        }
+        else if (activeEmote_ > 0)
+        {
+            const std::size_t emoteAnims[] = {
+                data_.emote1Animation, data_.emote2Animation, data_.emote3Animation,
+                data_.emote4Animation, data_.emote5Animation, data_.emote6Animation,
+                data_.emote7Animation, data_.emote8Animation, data_.emote9Animation,
+                data_.emote10Animation,
+            };
+            const auto idx = static_cast<std::size_t>(activeEmote_ - 1);
+            if (idx < std::size(emoteAnims) && emoteAnims[idx] > 0)
+                desiredAnimation = emoteAnims[idx];
+        }
+        else if (sitState_ == 1)
+            desiredAnimation = data_.sitDownAnimation;
+        else if (sitState_ == 2)
+            desiredAnimation = data_.sitAnimation;
+        else if (sitState_ == 3)
+            desiredAnimation = data_.sitUpAnimation;
         else if (inWater_)
         {
             desiredAnimation = moving ? data_.swimAnimation : data_.swimIdleAnimation;
@@ -2042,7 +2190,7 @@ namespace phoenix::character
             else if (rightPressed && !forwardPressed)
                 desiredAnimation = data_.rightAnimation;
             else
-                desiredAnimation = input.fast ? data_.runAnimation : data_.walkAnimation;
+                desiredAnimation = input.fast ? weaponRunAnim() : data_.walkAnimation;
         }
         if (desiredAnimation != activeAnimation_)
         {

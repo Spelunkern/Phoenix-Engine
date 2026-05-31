@@ -543,6 +543,20 @@ namespace phoenix::ui
             } // else (assetsReady)
         }
 
+        // ---- Emotes ----
+        if (ImGui::TreeNode("Emotes"))
+        {
+            for (int i = 1; i <= 10; ++i)
+            {
+                char label[16];
+                std::snprintf(label, sizeof(label), "Anim %d", i);
+                if (ImGui::Button(label, ImVec2(60.0f, 0.0f)))
+                    result.emoteTriggered = i;
+                if (i % 5 != 0) ImGui::SameLine();
+            }
+            ImGui::TreePop();
+        }
+
         // ---- Weapon aura (procedural particles, layered) ----
         ImGui::Separator();
         if (ImGui::TreeNode("Weapon aura"))

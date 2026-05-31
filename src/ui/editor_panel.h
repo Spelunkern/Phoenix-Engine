@@ -43,6 +43,7 @@ namespace phoenix::ui
         bool debugGizmosChanged{};
         bool characterChanged{};
         bool weatherChanged{};
+        int emoteTriggered{};   // 0=none, 1-10=emote number (one-shot)
     };
 
     // Nearest existing index in a sorted/unsorted list (keeps part selections valid

@@ -1461,6 +1461,7 @@ int main(int, char**)
         fogCullDistance = apply_renderer_fog(renderer, runtime, fogEnabled, viewDistance, weatherMode);
     };
     applyFogSettings();
+    int pendingEmote = 0;   // emote triggered from ImGui, consumed next frame
 
     std::uint32_t terrainVertexCount{};
     std::uint32_t terrainIndexCount{};
@@ -2594,11 +2595,16 @@ int main(int, char**)
                 pInput.yawRight = window.is_key_down(SDLK_RIGHT);
                 pInput.pitchUp = window.is_key_down(SDLK_UP);
                 pInput.pitchDown = window.is_key_down(SDLK_DOWN);
+                pInput.sit = window.is_key_down(SDLK_c);
             }
             pInput.cameraDrag = !imguiWantsMouse && window.is_mouse_button_down(1);
             pInput.mouseDx = !imguiWantsMouse ? static_cast<float>(mouseDx) : 0.0f;
             pInput.mouseDy = !imguiWantsMouse ? static_cast<float>(mouseDy) : 0.0f;
             pInput.mouseWheel = !imguiWantsMouse ? static_cast<float>(mouseWheel) : 0.0f;
+
+            // Apply pending emote from ImGui (set last frame's panel result).
+            pInput.emote = pendingEmote;
+            pendingEmote = 0;  // consumed
 
             heightSamplerCtx.lastCharacterY = characterSystem.world_y();
             characterSystem.update(deltaSeconds, pInput);
@@ -2840,6 +2846,8 @@ int main(int, char**)
 
             if (panelResult.characterChanged)
                 reloadCharacterIntoRenderer();
+            if (panelResult.emoteTriggered > 0)
+                pendingEmote = panelResult.emoteTriggered;
 
             if (actorsEnabled != prevActorsEnabled)
             {
