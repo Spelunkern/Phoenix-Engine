@@ -962,10 +962,11 @@ namespace
         // Full detail for the entire clear-visibility zone; LOD only in the last
         // sliver where fog is nearly 100% opaque and geometry is indistinguishable.
         const float cullDist = view.distance;
+        // LOD transitions only in the final sliver — practically at the cull edge.
         const float lodThresholds[kLodLevels] = {
-            cullDist * 0.93f,   // LOD 0 → 1  (fog ~95%)
-            cullDist * 0.96f,   // LOD 1 → 2  (fog ~98%)
-            cullDist * 0.99f,   // LOD 2 → 3  (fog ~99.5%)
+            cullDist * 0.97f,   // LOD 0 → 1
+            cullDist * 0.985f,  // LOD 1 → 2
+            cullDist * 0.995f,  // LOD 2 → 3
             1e9f,
         };
 
@@ -2527,9 +2528,16 @@ int main(int, char**)
         if (playToggleDown && !playToggleWasDown && characterLoaded)
         {
             playableMode = !playableMode;
+            // Switching to free camera: start at the character's current position
+            // so the view is continuous (not a jump to some fixed map position).
+            if (!playableMode && characterSystem.ready())
+            {
+                float cx, cy, cz, cyaw, cpitch;
+                characterSystem.camera_state(cx, cy, cz, cyaw, cpitch);
+                runtime.set_camera_position(cx, cy, cz, cyaw, cpitch);
+            }
             // Re-entering playable mode drops the character at the free-camera
-            // location on every map (previously dungeons only), snapped to the
-            // nearest walkable collision surface.
+            // location on every map, snapped to the nearest walkable collision surface.
             if (playableMode && characterSystem.ready())
             {
                 float freeCamX{};

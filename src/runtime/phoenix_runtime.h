@@ -330,6 +330,7 @@ namespace phoenix::runtime
             float totalTime = 0.0f) const;
         std::filesystem::path sky_texture_path() const;
         void camera_state(float& x, float& y, float& z, float& yaw, float& pitch) const;
+        void set_camera_position(float x, float y, float z, float yaw, float pitch);
         void update_camera(float deltaSeconds, const CameraInput& input);
         std::string window_title(const std::string& rendererName, float fps, bool fogEnabled) const;
         const std::vector<std::string>& world_map_names() const { return state_.worldMapNames; }

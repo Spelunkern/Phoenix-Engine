@@ -2765,6 +2765,15 @@ namespace phoenix::runtime
         pitch = camera_.pitch;
     }
 
+    void PhoenixRuntime::set_camera_position(float x, float y, float z, float yaw, float pitch)
+    {
+        camera_.x = x;
+        camera_.y = y;
+        camera_.z = z;
+        camera_.yaw = yaw;
+        camera_.pitch = pitch;
+    }
+
     void PhoenixRuntime::update_camera(float deltaSeconds, const CameraInput& input)
     {
         if (input.look)
