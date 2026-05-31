@@ -2394,82 +2394,124 @@ namespace phoenix::runtime
         // This runs BEFORE vertex animation so the type-level movement state
         // is known when choosing walk/run/breath frames.
         // ==================================================================
+        // Strict distance culling: mobs outside the animation range DO NOT EXIST
+        // for the engine — no movement, no animation, no counting, nothing.
+        // This mirrors the native Shaiya client behaviour.
+        // ==================================================================
+        const float mobCullRangeSq = kAnimationRange * kAnimationRange;
+
+        // Helper: is this mob instance within simulation range of the camera?
+        auto mobInRange = [&](const auto& mob) {
+            if (mob.instanceIndex >= scene.baseInstances.size()) return false;
+            const auto& inst = scene.baseInstances[mob.instanceIndex];
+            const float dx = inst.position[0] - cameraX;
+            const float dz = inst.position[2] - cameraZ;
+            return dx * dx + dz * dz <= mobCullRangeSq;
+        };
+
         // Reset per-type movement counters.
         for (std::size_t i = actorVertexAnimationStart; i < scene.vertexAnimations.size(); ++i)
         {
             auto& a = scene.vertexAnimations[i];
-            if (a.isMob)
+            if (!a.isMob) continue;
+
+            a.movingCount = 0;
+            a.runningCount = 0;
+
+            // Check if ANY in-range instance of this type is still moving.
+            if (a.mobMoving)
             {
-                a.movingCount = 0;
-                a.runningCount = 0;
-                if (a.mobMoving)
+                bool anyNearbyMoving = false;
+                for (const auto& mob : scene.mobInstances)
                 {
-                    bool anyStillMoving = false;
+                    if (mob.animIndex == i && mob.moving && mobInRange(mob))
+                    {
+                        anyNearbyMoving = true;
+                        break;
+                    }
+                }
+                if (!anyNearbyMoving)
+                {
+                    // All nearby instances arrived or left range: reset the type.
+                    a.mobMoving = false;
+                    a.mobRunning = false;
+                    const auto seed = static_cast<std::uint32_t>(
+                        std::abs(a.worldX * 11.3f) + std::abs(a.worldZ * 7.7f) + totalTime * 3.1f);
+                    a.mobMoveTimer = kMobIdleMin + static_cast<float>(seed % 256) / 255.0f * (kMobIdleMax - kMobIdleMin);
+                    // Force-stop ALL instances of this type (including distant ones).
+                    for (auto& mob : scene.mobInstances)
+                        if (mob.animIndex == i) { mob.moving = false; mob.running = false; }
+                }
+            }
+            else
+            {
+                a.mobMoveTimer -= clampedDelta;
+                if (a.mobMoveTimer <= 0.0f)
+                {
+                    // Only start movement if at least one instance is in range.
+                    bool anyInRange = false;
                     for (const auto& mob : scene.mobInstances)
                     {
-                        if (mob.animIndex == i && mob.moving)
+                        if (mob.animIndex == i && mobInRange(mob))
                         {
-                            anyStillMoving = true;
+                            anyInRange = true;
                             break;
                         }
                     }
-                    if (!anyStillMoving)
+                    if (!anyInRange)
                     {
-                        a.mobMoving = false;
-                        a.mobRunning = false;
-                        const auto seed = static_cast<std::uint32_t>(
-                            std::abs(a.worldX * 11.3f) + std::abs(a.worldZ * 7.7f) + totalTime * 3.1f);
-                        a.mobMoveTimer = kMobIdleMin + static_cast<float>(seed % 256) / 255.0f * (kMobIdleMax - kMobIdleMin);
+                        // No nearby mobs of this type — re-arm the timer cheaply.
+                        a.mobMoveTimer = kMobIdleMin;
+                        continue;
                     }
-                }
-                else
-                {
-                    a.mobMoveTimer -= clampedDelta;
-                    if (a.mobMoveTimer <= 0.0f)
+
+                    a.mobMoving = true;
+                    const auto seed = static_cast<std::uint32_t>(
+                        std::abs(a.worldX * 3.7f) + std::abs(a.worldZ * 9.1f) + totalTime * 17.3f);
+                    const float runRoll = static_cast<float>((seed / 62800) % 100) / 100.0f;
+                    a.mobRunning = kMobRunChance > 0.0f && runRoll < kMobRunChance;
+                    // Only activate instances that are in range.
+                    for (auto& mob : scene.mobInstances)
                     {
-                        a.mobMoving = true;
-                        const auto seed = static_cast<std::uint32_t>(
-                            std::abs(a.worldX * 3.7f) + std::abs(a.worldZ * 9.1f) + totalTime * 17.3f);
-                        const float runRoll = static_cast<float>((seed / 62800) % 100) / 100.0f;
-                        a.mobRunning = kMobRunChance > 0.0f && runRoll < kMobRunChance;
-                        for (auto& mob : scene.mobInstances)
-                        {
-                            if (mob.animIndex != i || mob.instanceIndex >= scene.baseInstances.size())
-                                continue;
-                            const auto& inst = scene.baseInstances[mob.instanceIndex];
-                            const auto instanceSeed = seed + static_cast<std::uint32_t>(mob.instanceIndex) * 977u;
-                            const float angle = static_cast<float>(instanceSeed % 628) / 100.0f;
-                            const float radius = kMobRoamRadius * (0.3f + 0.7f * static_cast<float>((instanceSeed / 628) % 100) / 100.0f);
-                            mob.targetX = mob.spawnX + std::sin(angle) * radius;
-                            mob.targetZ = mob.spawnZ + std::cos(angle) * radius;
-                            mob.moving = true;
-                            mob.running = a.mobRunning;
-                            mob.yaw = std::atan2(mob.targetX - inst.position[0], mob.targetZ - inst.position[2]);
-                        }
+                        if (mob.animIndex != i) continue;
+                        if (!mobInRange(mob)) continue;
+                        const auto& inst = scene.baseInstances[mob.instanceIndex];
+                        const auto instanceSeed = seed + static_cast<std::uint32_t>(mob.instanceIndex) * 977u;
+                        const float angle = static_cast<float>(instanceSeed % 628) / 100.0f;
+                        const float radius = kMobRoamRadius * (0.3f + 0.7f * static_cast<float>((instanceSeed / 628) % 100) / 100.0f);
+                        mob.targetX = mob.spawnX + std::sin(angle) * radius;
+                        mob.targetZ = mob.spawnZ + std::cos(angle) * radius;
+                        mob.moving = true;
+                        mob.running = a.mobRunning;
+                        mob.yaw = std::atan2(mob.targetX - inst.position[0], mob.targetZ - inst.position[2]);
                     }
                 }
             }
         }
 
+        // Per-instance movement: only process in-range mobs.
         for (auto& mob : scene.mobInstances)
         {
-            if (mob.animIndex >= scene.vertexAnimations.size())
+            if (mob.animIndex >= scene.vertexAnimations.size()) continue;
+            if (mob.instanceIndex >= scene.baseInstances.size()) continue;
+            if (!mobInRange(mob))
+            {
+                // Out of range: freeze completely. Reset to spawn if was mid-move
+                // so it doesn't get stuck in a weird position when it comes back.
+                if (mob.moving)
+                {
+                    mob.moving = false;
+                    mob.running = false;
+                    auto& inst = scene.baseInstances[mob.instanceIndex];
+                    inst.position[0] = mob.spawnX;
+                    inst.position[2] = mob.spawnZ;
+                    if (!state_.world.isDungeon)
+                        inst.position[1] = terrain_height(mob.spawnX, mob.spawnZ);
+                }
                 continue;
-            if (mob.instanceIndex >= scene.baseInstances.size())
-                continue;
+            }
 
             auto& inst = scene.baseInstances[mob.instanceIndex];
-
-            // Skip movement simulation for mobs far from the camera — they are
-            // not visible and updating their position is wasted CPU. When they
-            // come back into range they continue from where they were (or restart
-            // from spawn if they were mid-move when culled).
-            {
-                const float dx = inst.position[0] - cameraX;
-                const float dz = inst.position[2] - cameraZ;
-                if (dx * dx + dz * dz > kAnimationRange * kAnimationRange * 1.5f * 1.5f)
-                    continue;
-            }
 
             if (mob.moving)
             {
@@ -2480,8 +2522,6 @@ namespace phoenix::runtime
                 const float distToTarget = std::sqrt(dxT * dxT + dzT * dzT);
                 if (distToTarget < kMobArriveThreshold)
                 {
-                    // Arrived at target: stop the whole type because all instances
-                    // share one vertex animation in the instanced renderer.
                     auto& anim = scene.vertexAnimations[mob.animIndex];
                     anim.mobMoving = false;
                     anim.mobRunning = false;
@@ -2489,31 +2529,20 @@ namespace phoenix::runtime
                         std::abs(curX * 11.3f) + std::abs(curZ * 7.7f) + totalTime * 3.1f);
                     anim.mobMoveTimer = kMobIdleMin + static_cast<float>(seed % 256) / 255.0f * (kMobIdleMax - kMobIdleMin);
                     for (auto& other : scene.mobInstances)
-                    {
                         if (other.animIndex == mob.animIndex)
-                        {
-                            other.moving = false;
-                            other.running = false;
-                        }
-                    }
+                        { other.moving = false; other.running = false; }
                 }
                 else
                 {
-                    // Move towards target.
                     const float speed = mob.running ? kMobRunSpeed : kMobWalkSpeed;
                     const float step = speed * clampedDelta;
                     const float nx = dxT / distToTarget;
                     const float nz = dzT / distToTarget;
                     inst.position[0] += nx * step;
                     inst.position[2] += nz * step;
-                    // Open world snaps to the terrain heightmap as the mob roams.
-                    // Dungeons have no heightmap (terrain_height ~= 0) and are
-                    // multi-level, so keep the mob's authored floor Y — otherwise it
-                    // sinks to the bottom the moment it moves.
                     if (!state_.world.isDungeon)
                         inst.position[1] = terrain_height(inst.position[0], inst.position[2]);
                     mob.yaw = std::atan2(nx, nz);
-                    // Face movement direction.
                     const float actorYaw = mob.yaw + 3.14159265f;
                     const float s = std::sin(actorYaw);
                     const float c = std::cos(actorYaw);
@@ -2521,12 +2550,8 @@ namespace phoenix::runtime
                     inst.forward[0] = s; inst.forward[1] = 0.0f; inst.forward[2] = c;
                 }
             }
-            else
-            {
-                mob.running = false;
-            }
 
-            // Accumulate per-type movement state.
+            // Only count in-range, moving mobs for the animation state.
             if (mob.moving)
             {
                 auto& anim = scene.vertexAnimations[mob.animIndex];
