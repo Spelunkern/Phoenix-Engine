@@ -959,16 +959,18 @@ namespace
 
         constexpr std::uint32_t kChunkQ = phoenix::runtime::PhoenixRuntime::kTerrainChunkQuads;
         constexpr int kLodLevels = phoenix::runtime::PhoenixRuntime::kTerrainLodLevels;
-        // LOD thresholds scale with the cull distance (≈ fogEnd) so that lower-
-        // detail levels always fall inside the fog gradient where reduced geometry
-        // is invisible. Full detail covers the near 30%, then each successive LOD
-        // fills an equal band until the cull boundary.
+        // LOD thresholds scale with the cull distance (≈ fogEnd). Transitions are
+        // placed deep enough into the fog gradient that the geometry simplification
+        // is invisible. With exponential fog (density = 1 - exp(-t²*3.5)):
+        //   65% of fogEnd ≈ 45% fog opacity → LOD 1 (1/4 tris) well masked
+        //   82% of fogEnd ≈ 75% fog opacity → LOD 2 (1/16 tris) hidden
+        //   95% of fogEnd ≈ 97% fog opacity → LOD 3 (1/64 tris) invisible
         const float cullDist = view.distance;   // already set to fogCullDistance
         const float lodThresholds[kLodLevels] = {
-            cullDist * 0.30f,   // LOD 0 → 1 (full → 1/4)
-            cullDist * 0.55f,   // LOD 1 → 2 (1/4 → 1/16)
-            cullDist * 0.80f,   // LOD 2 → 3 (1/16 → 1/64)
-            1e9f,               // LOD 3 (coarsest, beyond fog — culled anyway)
+            cullDist * 0.65f,   // LOD 0 → 1
+            cullDist * 0.82f,   // LOD 1 → 2
+            cullDist * 0.95f,   // LOD 2 → 3
+            1e9f,
         };
 
         ranges.reserve(lod.chunks.size());
@@ -2291,7 +2293,19 @@ int main(int, char**)
                     const float cx = (portal.box.min[0] + portal.box.max[0]) * 0.5f - halfMap;
                     const float cy = (portal.box.min[1] + portal.box.max[1]) * 0.5f;
                     const float cz = (portal.box.min[2] + portal.box.max[2]) * 0.5f - halfMap;
-                    effectManager.spawn(*portalDef, EffectAnchor::at(cx, cy + 1.4f, cz, 2.0f));
+                    // Vertical portal: rotate the basis so the Disc emitter's local
+                    // XZ plane maps to world XY (vertical), and the swirl axis (local Y)
+                    // points along world Z (horizontal, perpendicular to the disc face).
+                    // basis columns: X=(s,0,0)  Y=(0,0,-s)  Z=(0,s,0)
+                    constexpr float s = 2.0f;
+                    EffectAnchor anchor{};
+                    anchor.position[0] = cx;
+                    anchor.position[1] = cy + 1.8f;
+                    anchor.position[2] = cz;
+                    anchor.basis[0] = s;  anchor.basis[1] = 0;  anchor.basis[2] = 0;   // X col
+                    anchor.basis[3] = 0;  anchor.basis[4] = 0;  anchor.basis[5] = -s;  // Y col
+                    anchor.basis[6] = 0;  anchor.basis[7] = s;  anchor.basis[8] = 0;   // Z col
+                    effectManager.spawn(*portalDef, anchor);
                     ++portalCount;
                 }
                 std::ofstream log(phoenix::core::engine_log_path(), std::ios::app);
