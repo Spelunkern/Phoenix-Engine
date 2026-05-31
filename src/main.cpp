@@ -2302,6 +2302,16 @@ int main(int, char**)
     // flipped when done; the appearance UI stays disabled until then so there is no
     // concurrent reader of the caches while this thread writes them.
     backgroundAssetThread = std::thread([&]() {
+        // Lower the thread priority so the background preload yields CPU to the
+        // game loop. Before the deferred-loading change this work ran during the
+        // loading screen (invisible spike); now it runs while the game is
+        // interactive, so it must not compete with rendering.
+#ifdef _WIN32
+        SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_BELOW_NORMAL);
+#else
+        // POSIX: nice the thread (best-effort, no error check needed).
+        nice(10);
+#endif
         characterSystem.preload(runtime.state().assets.root);
         characterSystem.preload_items(runtime.state().assets.root);
         assetsFullyLoaded.store(true);
