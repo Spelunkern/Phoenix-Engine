@@ -950,42 +950,58 @@ namespace
     }
     std::vector<phoenix::renderer::TerrainDrawRange> build_visible_terrain_ranges(
         const phoenix::runtime::PhoenixRuntime& runtime,
-        const CameraView& view)
+        const CameraView& view,
+        const phoenix::runtime::PhoenixRuntime::TerrainLodInfo& lod)
     {
         std::vector<phoenix::renderer::TerrainDrawRange> ranges;
-        const auto& world = runtime.state().world;
-        if (!world.parsed || world.heightMapSide < 2 || world.isDungeon)
+        if (lod.chunks.empty() || runtime.state().world.isDungeon)
             return ranges;
 
-        const auto mapSize = static_cast<float>(std::max(1u, world.mapSize));
-        const auto halfMap = mapSize * 0.5f;
-        const auto grid = world.heightMapSide - 1;
-        const auto cellSize = mapSize / static_cast<float>(grid);
-        constexpr std::uint32_t kChunkQuads = 16;
-        const auto chunkCount = (grid + kChunkQuads - 1u) / kChunkQuads;
+        constexpr std::uint32_t kChunkQ = phoenix::runtime::PhoenixRuntime::kTerrainChunkQuads;
+        constexpr int kLodLevels = phoenix::runtime::PhoenixRuntime::kTerrainLodLevels;
+        // LOD distance thresholds: chunks closer than these use higher detail.
+        // LOD 0 (full): 0 – 80m    |  LOD 1 (1/4): 80 – 160m
+        // LOD 2 (1/16): 160 – 260m |  LOD 3 (1/64): 260m+
+        const float lodThresholds[kLodLevels] = { 80.0f, 160.0f, 260.0f, 1e9f };
 
-        ranges.reserve(static_cast<std::size_t>(chunkCount) * chunkCount);
-        for (std::uint32_t cz = 0; cz < chunkCount; ++cz)
+        ranges.reserve(lod.chunks.size());
+        for (std::uint32_t cz = 0; cz < lod.chunkCountZ; ++cz)
         {
-            for (std::uint32_t cx = 0; cx < chunkCount; ++cx)
+            for (std::uint32_t cx = 0; cx < lod.chunkCountX; ++cx)
             {
-                const auto minX = cx * kChunkQuads;
-                const auto minZ = cz * kChunkQuads;
-                const auto maxX = std::min(grid, minX + kChunkQuads);
-                const auto maxZ = std::min(grid, minZ + kChunkQuads);
-                const auto centerX = -halfMap + (static_cast<float>(minX + maxX) * 0.5f) * cellSize;
-                const auto centerZ = -halfMap + (static_cast<float>(minZ + maxZ) * 0.5f) * cellSize;
-                const auto extentX = static_cast<float>(maxX - minX) * cellSize * 0.5f;
-                const auto extentZ = static_cast<float>(maxZ - minZ) * cellSize * 0.5f;
+                const auto qMinX = cx * kChunkQ;
+                const auto qMinZ = cz * kChunkQ;
+                const auto qMaxX = std::min(lod.grid, qMinX + kChunkQ);
+                const auto qMaxZ = std::min(lod.grid, qMinZ + kChunkQ);
+                const auto centerX = -lod.halfMap + (static_cast<float>(qMinX + qMaxX) * 0.5f) * lod.cellSize;
+                const auto centerZ = -lod.halfMap + (static_cast<float>(qMinZ + qMaxZ) * 0.5f) * lod.cellSize;
+                const auto extentX = static_cast<float>(qMaxX - qMinX) * lod.cellSize * 0.5f;
+                const auto extentZ = static_cast<float>(qMaxZ - qMinZ) * lod.cellSize * 0.5f;
                 const auto radius = std::sqrt(extentX * extentX + extentZ * extentZ) + 50.0f;
                 if (!sphere_visible(view, centerX, 30.0f, centerZ, radius))
                     continue;
 
-                for (std::uint32_t z = minZ; z < maxZ; ++z)
+                // Pick LOD level based on distance to camera.
+                const float dx = centerX - view.x;
+                const float dz = centerZ - view.z;
+                const float dist = std::sqrt(dx * dx + dz * dz);
+                int lodLevel = kLodLevels - 1;
+                for (int l = 0; l < kLodLevels; ++l)
+                {
+                    if (dist < lodThresholds[l])
+                    {
+                        lodLevel = l;
+                        break;
+                    }
+                }
+
+                const auto chunkIdx = static_cast<std::size_t>(cz) * lod.chunkCountX + cx;
+                const auto& cl = lod.chunks[chunkIdx][lodLevel];
+                if (cl.indexCount > 0)
                 {
                     phoenix::renderer::TerrainDrawRange range{};
-                    range.firstIndex = (z * grid + minX) * 6u;
-                    range.indexCount = (maxX - minX) * 6u;
+                    range.firstIndex = cl.firstIndex;
+                    range.indexCount = cl.indexCount;
                     ranges.push_back(range);
                 }
             }
@@ -1442,6 +1458,7 @@ int main(int, char**)
 
     std::uint32_t terrainVertexCount{};
     std::uint32_t terrainIndexCount{};
+    phoenix::runtime::PhoenixRuntime::TerrainLodInfo terrainLodInfo;
     std::uint32_t objectInstanceCount{};
     std::uint32_t objectBatchCount{};
     bool showSoundGizmos = false;
@@ -1937,7 +1954,7 @@ int main(int, char**)
             return runtime.build_animated_object_scene();
         });
 
-        runAsyncVoid([&]() { runtime.build_terrain_mesh(terrainVertices, terrainIndices); }, 0.74f, "Building terrain");
+        runAsyncVoid([&]() { runtime.build_terrain_mesh(terrainVertices, terrainIndices, terrainLodInfo); }, 0.74f, "Building terrain");
         terrainVertexCount = static_cast<std::uint32_t>(terrainVertices.size());
         terrainIndexCount = static_cast<std::uint32_t>(terrainIndices.size());
         {
@@ -2715,7 +2732,7 @@ int main(int, char**)
             || std::abs(currentView.aspect - lastCullView.aspect) > 0.01f;
         if (visibilityNeedsUpdate)
         {
-            const auto visibleTerrainRanges = build_visible_terrain_ranges(runtime, currentView);
+            const auto visibleTerrainRanges = build_visible_terrain_ranges(runtime, currentView, terrainLodInfo);
             renderer.set_terrain_draw_ranges(visibleTerrainRanges);
             std::uint32_t visibleTerrainIndexCount{};
             for (const auto& range : visibleTerrainRanges)

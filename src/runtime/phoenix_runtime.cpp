@@ -1508,7 +1508,8 @@ namespace phoenix::runtime
 
     void PhoenixRuntime::build_terrain_mesh(
         std::vector<phoenix::renderer::TerrainVertex>& vertices,
-        std::vector<std::uint32_t>& indices) const
+        std::vector<std::uint32_t>& indices,
+        TerrainLodInfo& lodInfo) const
     {
         vertices.clear();
         indices.clear();
@@ -1626,11 +1627,71 @@ namespace phoenix::runtime
             indices.push_back(base + 3);
         }
 
+        // ---- Generate per-chunk LOD index sets ----
+        // The full-res indices are already in the buffer (stride 1). We now append
+        // reduced-detail index sets for each chunk at strides 2, 4, 8. Each LOD
+        // level skips quads, producing 1/4, 1/16, 1/64 of the triangles. The vertex
+        // buffer stays the same — only indices change.
+        {
+            constexpr std::uint32_t kChunkQ = kTerrainChunkQuads;
+            const auto chunkCountX = (grid + kChunkQ - 1u) / kChunkQ;
+            const auto chunkCountZ = chunkCountX;
+            lodInfo.chunkCountX = chunkCountX;
+            lodInfo.chunkCountZ = chunkCountZ;
+            lodInfo.grid = grid;
+            lodInfo.cellSize = stepWorld;
+            lodInfo.halfMap = halfMap;
+            lodInfo.chunks.resize(static_cast<std::size_t>(chunkCountX) * chunkCountZ);
+
+            const std::uint32_t strides[kTerrainLodLevels] = { 1, 2, 4, 8 };
+
+            for (std::uint32_t cz = 0; cz < chunkCountZ; ++cz)
+            {
+                for (std::uint32_t cx = 0; cx < chunkCountX; ++cx)
+                {
+                    const auto chunkIdx = static_cast<std::size_t>(cz) * chunkCountX + cx;
+                    const auto qMinX = cx * kChunkQ;
+                    const auto qMinZ = cz * kChunkQ;
+                    const auto qMaxX = std::min(grid, qMinX + kChunkQ);
+                    const auto qMaxZ = std::min(grid, qMinZ + kChunkQ);
+
+                    for (int lod = 0; lod < kTerrainLodLevels; ++lod)
+                    {
+                        const auto stride = strides[lod];
+                        const auto firstIdx = static_cast<std::uint32_t>(indices.size());
+                        for (std::uint32_t z = qMinZ; z < qMaxZ; z += stride)
+                        {
+                            const auto zNext = std::min(z + stride, qMaxZ);
+                            for (std::uint32_t x = qMinX; x < qMaxX; x += stride)
+                            {
+                                const auto xNext = std::min(x + stride, qMaxX);
+                                const auto a = z * vertexSide + x;
+                                const auto b = z * vertexSide + xNext;
+                                const auto c = zNext * vertexSide + x;
+                                const auto d = zNext * vertexSide + xNext;
+                                indices.push_back(a);
+                                indices.push_back(c);
+                                indices.push_back(b);
+                                indices.push_back(b);
+                                indices.push_back(c);
+                                indices.push_back(d);
+                            }
+                        }
+                        lodInfo.chunks[chunkIdx][lod].firstIndex = firstIdx;
+                        lodInfo.chunks[chunkIdx][lod].indexCount =
+                            static_cast<std::uint32_t>(indices.size()) - firstIdx;
+                    }
+                }
+            }
+        }
+
         {
             std::ofstream log(phoenix::core::engine_log_path(), std::ios::app);
-            log << "Terrain mesh build: terrain_water_only vertices=" << vertices.size()
+            log << "Terrain mesh: vertices=" << vertices.size()
                 << " indices=" << indices.size()
-                << "\n";
+                << " lodChunks=" << lodInfo.chunks.size()
+                << " (full=" << totalQuads * 6 << " + lod="
+                << (indices.size() - totalQuads * 6 - 6) << ")\n";
         }
         return;
 

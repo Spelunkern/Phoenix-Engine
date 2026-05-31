@@ -281,7 +281,26 @@ namespace phoenix::runtime
         bool load_world_map(std::size_t mapIndex);
         PreviewImage create_preview_image(std::uint32_t width, std::uint32_t height) const;
         PreviewImage create_3d_preview_image(std::uint32_t width, std::uint32_t height) const;
-        void build_terrain_mesh(std::vector<phoenix::renderer::TerrainVertex>& vertices, std::vector<std::uint32_t>& indices) const;
+        // LOD info for terrain chunks — returned alongside the mesh so the
+        // visibility builder can pick the right index range per distance.
+        static constexpr int kTerrainLodLevels = 4;   // stride 1, 2, 4, 8
+        static constexpr int kTerrainChunkQuads = 16;
+        struct TerrainChunkLod
+        {
+            std::uint32_t firstIndex{};
+            std::uint32_t indexCount{};
+        };
+        struct TerrainLodInfo
+        {
+            std::uint32_t chunkCountX{};
+            std::uint32_t chunkCountZ{};
+            std::uint32_t grid{};
+            float cellSize{};
+            float halfMap{};
+            // [chunkZ * chunkCountX + chunkX][lod]
+            std::vector<std::array<TerrainChunkLod, kTerrainLodLevels>> chunks;
+        };
+        void build_terrain_mesh(std::vector<phoenix::renderer::TerrainVertex>& vertices, std::vector<std::uint32_t>& indices, TerrainLodInfo& lodInfo) const;
         void build_debug_gizmo_mesh(
             bool includeSounds,
             bool includeMusic,
