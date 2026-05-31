@@ -446,6 +446,7 @@ namespace phoenix::character
         float cameraYaw_{};
         float cameraPitch_{ -0.16f };
         float cameraDistance_{ 6.2f };
+        float smoothCameraY_{};   // EMA-smoothed camera target Y (eliminates terrain jitter)
         float animationSeconds_{};
         std::size_t activeAnimation_{};
         std::size_t mountActiveAnimation_{};

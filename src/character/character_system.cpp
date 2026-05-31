@@ -1981,26 +1981,24 @@ namespace phoenix::character
             }
             else
             {
-                // Smooth terrain following: interpolate toward the ground height
-                // instead of snapping directly, so the character glides over the
-                // heightmap quads instead of visibly "jumping" at grid edges.
-                // The speed adapts to the gap so large slopes still track quickly.
-                if (groundInitialized_)
-                {
-                    const float gap = groundY - characterY_;
-                    const float smoothSpeed = std::max(8.0f, std::abs(gap) * 12.0f);
-                    if (std::abs(gap) < 0.02f)
-                        characterY_ = groundY;
-                    else if (gap > 0.0f)
-                        characterY_ += std::min(gap, smoothSpeed * clampedDelta);
-                    else
-                        characterY_ += std::max(gap, -smoothSpeed * clampedDelta);
-                }
-                else
-                {
-                    characterY_ = groundY;
-                }
+                characterY_ = groundY;
                 groundInitialized_ = true;
+            }
+        }
+
+        // Smooth the camera's Y target with an exponential moving average so
+        // the camera glides over terrain undulation instead of shaking with
+        // every heightmap sample change. The character model itself stays
+        // planted on the ground (characterY_ = groundY, exact).
+        {
+            const float targetCamY = characterY_ + 1.25f;
+            if (!groundInitialized_ || std::abs(smoothCameraY_ - targetCamY) > 10.0f)
+                smoothCameraY_ = targetCamY;   // first frame or teleport: snap
+            else
+            {
+                // Blend factor: ~0.08 per frame at 60fps, adapts to framerate.
+                const float blend = 1.0f - std::exp(-8.0f * clampedDelta);
+                smoothCameraY_ += (targetCamY - smoothCameraY_) * blend;
             }
         }
 
@@ -2645,6 +2643,7 @@ namespace phoenix::character
     {
         characterX_ = x;
         characterY_ = y;
+        smoothCameraY_ = y + 1.25f;
         characterZ_ = z;
         characterYaw_ = yaw;
         cameraYaw_ = yaw;
@@ -2665,7 +2664,8 @@ namespace phoenix::character
     void CharacterSystem::camera_state(float& x, float& y, float& z, float& yaw, float& pitch) const
     {
         // Third-person orbit camera behind the character.
-        const float lookTargetY = characterY_ + 1.25f;
+        // Uses the EMA-smoothed Y to eliminate terrain jitter.
+        const float lookTargetY = smoothCameraY_;
         const float dirX = std::cos(cameraPitch_) * std::sin(cameraYaw_);
         const float dirY = std::sin(cameraPitch_);
         const float dirZ = std::cos(cameraPitch_) * std::cos(cameraYaw_);
