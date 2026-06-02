@@ -350,6 +350,10 @@ namespace phoenix::character
         // swaps) use the caches once the background preload has completed.
         bool load(const std::filesystem::path& dataRoot, const CharacterAppearance& appearance, bool allowPreload = true);
 
+        // Clone mesh/animation data from an already-loaded character.
+        // Instant (no disk I/O) — only copies data, resets playable state.
+        void clone_from(const CharacterSystem& source);
+
         // Set the base texture layer index into the shared texture array.
         void set_texture_layer_base(std::uint32_t base) { textureLayerBase_ = base; }
 
@@ -362,6 +366,15 @@ namespace phoenix::character
         // Update playable mode: movement, physics, animation, vertex skinning.
         void update(float deltaSeconds, const PlayableInput& input);
 
+        // Lightweight update: movement + animation state only, NO skinning.
+        // For bots whose vertices are skinned on GPU.
+        void update_state_only(float deltaSeconds, const PlayableInput& input);
+
+        // Advance animation and re-skin at the current position without any
+        // physics, movement, or state-machine logic. Used for shared pose
+        // instances that just need a looping animation in-place.
+        void advance_pose(float deltaSeconds, std::size_t animationIndex);
+
         // Get the camera position/orientation for the third-person view.
         void camera_state(float& x, float& y, float& z, float& yaw, float& pitch) const;
         float camera_distance() const { return cameraDistance_; }
@@ -371,6 +384,14 @@ namespace phoenix::character
         const std::vector<std::uint32_t>& indices() const { return data_.indices; }
         const std::vector<CharacterBatch>& batches() const { return data_.batches; }
         const std::vector<std::filesystem::path>& texture_paths() const { return data_.texturePaths; }
+
+        // GPU skinning data access — for bot system to compute bone matrices
+        // without running full CPU skinning.
+        const CharacterData& character_data() const { return data_; }
+        const std::vector<CharacterGpuVertex>& bind_vertices() const { return data_.bindVertices; }
+        std::size_t active_animation() const { return activeAnimation_; }
+        float animation_seconds() const { return animationSeconds_; }
+        float world_yaw() const { return characterYaw_; }
         const std::vector<std::filesystem::path>& cached_texture_paths() const { return cachedTexturePaths_; }
         bool ready() const { return data_.loaded; }
 
@@ -475,6 +496,8 @@ namespace phoenix::character
         bool lastRight_{};
         float dodgePlayTimer_{};   // >0 while dodge animation is playing
         std::size_t dodgeAnimation_{};
+        float dodgeDirX_{};
+        float dodgeDirZ_{};
 
         HeightSampleFn heightFn_{};
         void* heightUserData_{};

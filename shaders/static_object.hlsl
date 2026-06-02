@@ -117,18 +117,43 @@ float4 PSMain(VSOutput input) : SV_TARGET
         float4 textureColor = terrainTexture.Sample(terrainSampler,
             float3(input.uv, (float)sampleLayer));
 
-        // Always discard nearly-transparent texels regardless of cutout flag.
-        // Marked cutout assets use a stricter threshold; others use a soft one.
-        if (alphaCutout)
-            clip(textureColor.a - 0.3);
-        else
-            clip(textureColor.a - 0.01);
+        // Character vertices have color=(0,0,0) marker — apply Shaiya character
+        // lighting (diffuse + glow) instead of world object lighting.
+        bool isCharacter = (input.color.r < 0.01 && input.color.g < 0.01 && input.color.b < 0.01);
+        if (isCharacter)
+        {
+            if (alphaCutout)
+                clip(textureColor.a - 0.08);
 
-        color = textureColor.rgb;
-        float3 n = normalize(input.normal);
-        float nDotL = dot(n, lightDir);
-        float lighting = saturate(nDotL) * 0.50 + 0.50;
-        color *= lighting;
+            color = textureColor.rgb;
+            float3 n = normalize(input.normal);
+            const float3 charLightDir = normalize(float3(-0.35, 0.85, -0.28));
+            float diffuse = saturate(dot(n, charLightDir));
+            float3 lit = color * (0.56 + diffuse * 0.72);
+
+            if (!alphaCutout)
+            {
+                float3 glow = color * textureColor.a * 0.30;
+                color = saturate(lit + glow);
+            }
+            else
+            {
+                color = lit;
+            }
+        }
+        else
+        {
+            if (alphaCutout)
+                clip(textureColor.a - 0.3);
+            else
+                clip(textureColor.a - 0.01);
+
+            color = textureColor.rgb;
+            float3 n = normalize(input.normal);
+            float nDotL = dot(n, lightDir);
+            float lighting = saturate(nDotL) * 0.50 + 0.50;
+            color *= lighting;
+        }
     }
     else
     {
@@ -148,12 +173,14 @@ float4 PSMain(VSOutput input) : SV_TARGET
     float linearDist = saturate((input.viewDepth - fogStart) / (fogEnd - fogStart));
 
     // Exponential fog — objects are fully covered well before cull boundary.
-    float fogDensity = 1.0 - exp(-linearDist * linearDist * 3.5);
+    float fogDensity = 1.0 - exp(-linearDist * linearDist * 5.0);
 
     // Height-based fog: lower areas accumulate more atmospheric haze.
+    // Fades out at long range so geometry at the cull edge is always hidden.
     float avgHeight = (camera.positionYaw.y + input.worldPos.y) * 0.5;
     float heightFog = saturate(1.0 - avgHeight / 350.0) * 0.4 + 0.6;
-    fogDensity *= heightFog;
+    float heightInfluence = saturate(1.0 - linearDist * 1.8);
+    fogDensity *= lerp(1.0, heightFog, heightInfluence);
 
     // Atmospheric desaturation — objects lose color before fading entirely.
     float desatFactor = saturate(linearDist * 1.6 - 0.1);

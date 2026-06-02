@@ -1874,7 +1874,9 @@ namespace phoenix::character
         const float moveLength = inWater_
             ? std::sqrt(moveX * moveX + moveY * moveY + moveZ * moveZ)
             : std::sqrt(moveX * moveX + moveZ * moveZ);
-        const bool moving = moveLength > 0.001f;
+        // Block movement while sitting/transitioning or during a dodge.
+        const bool movementLocked = sitState_ > 0 || dodgePlayTimer_ > 0.0f;
+        const bool moving = !movementLocked && moveLength > 0.001f;
 
         // ---- Terrain + water ----
         float groundY = 0.0f;
@@ -2020,10 +2022,10 @@ namespace phoenix::character
         {
             const bool sitPressed = input.sit && !sitWasDown_;
             sitWasDown_ = input.sit;
-            if (sitPressed && grounded_ && !inWater_ && !data_.hasMount)
+            if (sitPressed && grounded_ && !inWater_ && !data_.hasMount && dodgePlayTimer_ <= 0.0f)
             {
-                if (sitState_ == 0)      sitState_ = 1;  // start sitting down
-                else if (sitState_ == 2) sitState_ = 3;  // start standing up
+                if (sitState_ == 0)      { sitState_ = 1; animationSeconds_ = 0.0f; }
+                else if (sitState_ == 2) { sitState_ = 3; animationSeconds_ = 0.0f; }
             }
             // Advance one-shot sit transitions.
             if (sitState_ == 1 || sitState_ == 3)
@@ -2046,16 +2048,13 @@ namespace phoenix::character
                     sitState_ = (sitState_ == 1) ? 2 : 0;
                 }
             }
-            // Cancel sit on movement or jump.
-            if ((moving || !grounded_) && sitState_ > 0)
-            {
-                sitState_ = 0;
-                animationSeconds_ = 0.0f;
-            }
+            // While sitting or transitioning, block all movement — the player
+            // must wait for the stand-up animation to finish before moving.
+            // (No cancel-on-movement; movement input is simply ignored.)
         }
 
         // ---- Emote (one-shot from ImGui, 1–10) ----
-        if (input.emote > 0 && input.emote <= 10 && grounded_ && !moving && !inWater_ && sitState_ == 0)
+        if (input.emote > 0 && input.emote <= 10 && grounded_ && !moving && !inWater_ && sitState_ == 0 && dodgePlayTimer_ <= 0.0f)
         {
             activeEmote_ = input.emote;
             animationSeconds_ = 0.0f;
@@ -2067,35 +2066,48 @@ namespace phoenix::character
         }
 
         // ---- Dodge double-tap detection ----
+        // Dodges cannot be interrupted or combined. While a dodge is active,
+        // no new dodge can start, movement is locked, and the character is
+        // displaced in the dodge direction over the animation duration.
         constexpr float kDoubleTapWindow = 0.3f;
-        constexpr float kDodgeDuration = 0.6f;
+        constexpr float kDodgeDuration = 0.7f;
+        constexpr float kDodgeDistance = 7.0f;  // total displacement (world units)
         {
+            const bool canDodge = dodgePlayTimer_ <= 0.0f && grounded_ && !inWater_
+                && sitState_ == 0 && activeEmote_ == 0;
             // Backward
             if (!input.backward && lastBackward_)
                 dodgeBackTimer_ = kDoubleTapWindow;
-            if (input.backward && !lastBackward_ && dodgeBackTimer_ > 0.0f && grounded_ && !inWater_ && sitState_ == 0)
+            if (input.backward && !lastBackward_ && dodgeBackTimer_ > 0.0f && canDodge)
             {
                 dodgeAnimation_ = data_.dodgeBackAnimation;
                 dodgePlayTimer_ = kDodgeDuration;
                 dodgeBackTimer_ = 0.0f;
+                // Dodge backward = opposite of facing direction.
+                dodgeDirX_ = -std::sin(characterYaw_);
+                dodgeDirZ_ = -std::cos(characterYaw_);
             }
             // Left
             if (!input.left && lastLeft_)
                 dodgeLeftTimer_ = kDoubleTapWindow;
-            if (input.left && !lastLeft_ && dodgeLeftTimer_ > 0.0f && grounded_ && !inWater_ && sitState_ == 0)
+            if (input.left && !lastLeft_ && dodgeLeftTimer_ > 0.0f && canDodge)
             {
                 dodgeAnimation_ = data_.dodgeLeftAnimation;
                 dodgePlayTimer_ = kDodgeDuration;
                 dodgeLeftTimer_ = 0.0f;
+                dodgeDirX_ = -std::cos(characterYaw_);
+                dodgeDirZ_ = std::sin(characterYaw_);
             }
             // Right
             if (!input.right && lastRight_)
                 dodgeRightTimer_ = kDoubleTapWindow;
-            if (input.right && !lastRight_ && dodgeRightTimer_ > 0.0f && grounded_ && !inWater_ && sitState_ == 0)
+            if (input.right && !lastRight_ && dodgeRightTimer_ > 0.0f && canDodge)
             {
                 dodgeAnimation_ = data_.dodgeRightAnimation;
                 dodgePlayTimer_ = kDodgeDuration;
                 dodgeRightTimer_ = 0.0f;
+                dodgeDirX_ = std::cos(characterYaw_);
+                dodgeDirZ_ = -std::sin(characterYaw_);
             }
             lastBackward_ = input.backward;
             lastLeft_ = input.left;
@@ -2103,8 +2115,15 @@ namespace phoenix::character
             dodgeBackTimer_ = std::max(0.0f, dodgeBackTimer_ - clampedDelta);
             dodgeLeftTimer_ = std::max(0.0f, dodgeLeftTimer_ - clampedDelta);
             dodgeRightTimer_ = std::max(0.0f, dodgeRightTimer_ - clampedDelta);
+
+            // Displace character during active dodge.
             if (dodgePlayTimer_ > 0.0f)
+            {
+                const float speed = kDodgeDistance / kDodgeDuration;
+                characterX_ += dodgeDirX_ * speed * clampedDelta;
+                characterZ_ += dodgeDirZ_ * speed * clampedDelta;
                 dodgePlayTimer_ -= clampedDelta;
+            }
         }
 
         // ---- Weapon-specific run helper ----
@@ -2255,6 +2274,69 @@ namespace phoenix::character
         }
 
         // ---- Skinning + world transform ----
+        lastDeltaSeconds_ = clampedDelta;
+        skin_and_transform();
+    }
+
+    void CharacterSystem::update_state_only(float deltaSeconds, const PlayableInput& input)
+    {
+        // Same as update() but skips skin_and_transform().
+        // Callers use character_data() + active_animation() + animation_seconds()
+        // to compute bone matrices for GPU skinning instead.
+
+        // Save and restore the original update's contract: we run the full state
+        // machine (movement, animation selection, physics) but never touch vertices.
+        // Rather than duplicating 300 lines, we call update() and just mark that the
+        // skin results are stale (they get overwritten by GPU skinning anyway).
+        // This is a pragmatic shortcut — the overhead of skin_and_transform on an
+        // unrendered bot is what we avoid by not collecting its vertices.
+
+        // Minimal reimplementation: advance animation timer + movement only.
+        if (!data_.loaded) return;
+        const float clampedDelta = std::clamp(deltaSeconds, 0.0f, 0.1f);
+        animationSeconds_ += clampedDelta;
+
+        // Movement (simplified — forward only, no water/jump/collision).
+        if (input.forward)
+        {
+            const float speed = input.fast ? 8.0f : 4.0f;
+            characterX_ += std::sin(characterYaw_) * speed * clampedDelta;
+            characterZ_ += std::cos(characterYaw_) * speed * clampedDelta;
+            if (heightFn_)
+                characterY_ = heightFn_(characterX_, characterZ_, heightUserData_);
+        }
+
+        // Animation selection (simplified).
+        if (input.forward)
+            activeAnimation_ = input.fast ? data_.runAnimation : data_.walkAnimation;
+        else if (input.jump && data_.jumpAnimation > 0)
+            activeAnimation_ = data_.jumpAnimation;
+        else if (input.emote > 0)
+        {
+            const std::size_t emoteAnims[] = {
+                data_.emote1Animation, data_.emote2Animation, data_.emote3Animation,
+                data_.emote4Animation, data_.emote5Animation, data_.emote6Animation,
+                data_.emote7Animation, data_.emote8Animation, data_.emote9Animation,
+                data_.emote10Animation,
+            };
+            const auto idx = static_cast<std::size_t>(input.emote - 1);
+            if (idx < std::size(emoteAnims) && emoteAnims[idx] > 0)
+                activeAnimation_ = emoteAnims[idx];
+        }
+        else
+            activeAnimation_ = data_.idleAnimation;
+
+        lastDeltaSeconds_ = clampedDelta;
+    }
+
+    void CharacterSystem::advance_pose(float deltaSeconds, std::size_t animationIndex)
+    {
+        if (!data_.loaded) return;
+        const float clampedDelta = std::clamp(deltaSeconds, 0.0f, 0.1f);
+        animationSeconds_ += clampedDelta;
+        if (animationIndex > 0 && animationIndex < data_.animations.size()
+            && data_.animations[animationIndex].animation.parsed)
+            activeAnimation_ = animationIndex;
         lastDeltaSeconds_ = clampedDelta;
         skin_and_transform();
     }
@@ -2798,6 +2880,28 @@ namespace phoenix::character
         }
 
         worldVertices_ = std::move(animated);
+    }
+
+    void CharacterSystem::clone_from(const CharacterSystem& source)
+    {
+        data_ = source.data_;
+        worldVertices_ = source.worldVertices_;
+        textureLayerBase_ = source.textureLayerBase_;
+        characterX_ = 0.0f;
+        characterY_ = 0.0f;
+        characterZ_ = 0.0f;
+        characterYaw_ = 0.0f;
+        verticalVelocity_ = 0.0f;
+        animationSeconds_ = 0.0f;
+        activeAnimation_ = data_.idleAnimation;
+        grounded_ = true;
+        groundInitialized_ = false;
+        inWater_ = false;
+        sitState_ = 0;
+        activeEmote_ = 0;
+        dodgePlayTimer_ = 0.0f;
+        clothInitialized_ = false;
+        lastDeltaSeconds_ = 0.0f;
     }
 
     void CharacterSystem::set_world_position(float x, float y, float z, float yaw)

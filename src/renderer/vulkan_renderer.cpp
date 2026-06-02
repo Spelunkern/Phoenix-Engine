@@ -2602,6 +2602,7 @@ namespace phoenix::renderer
         impl_->animatedObjectsReady = false;
         impl_->debugReady = false;
         impl_->characterReady = false;
+        impl_->botCharacterReady = false;
     }
 
     bool VulkanRenderer::create_host_buffer(
@@ -3477,17 +3478,22 @@ namespace phoenix::renderer
 
     bool VulkanRenderer::update_character_vertices(const std::vector<TerrainVertex>& vertices)
     {
-        if (!impl_ || !impl_->characterReady || vertices.empty())
+        return update_character_vertices(vertices.data(), vertices.size());
+    }
+
+    bool VulkanRenderer::update_character_vertices(const TerrainVertex* data, std::size_t count)
+    {
+        if (!impl_ || !impl_->characterReady || !data || count == 0)
             return false;
 
-        const auto byteSize = vertices.size() * sizeof(TerrainVertex);
+        const auto byteSize = count * sizeof(TerrainVertex);
         if (byteSize > impl_->characterVertexCapacity)
             return false;
 
         void* mapped = nullptr;
         if (vkMapMemory(impl_->device, impl_->characterVertexMemory, 0, byteSize, 0, &mapped) != VK_SUCCESS)
             return false;
-        std::memcpy(mapped, vertices.data(), byteSize);
+        std::memcpy(mapped, data, byteSize);
         vkUnmapMemory(impl_->device, impl_->characterVertexMemory);
         return true;
     }
@@ -3534,6 +3540,157 @@ namespace phoenix::renderer
     {
         if (impl_)
             impl_->characterVisible = visible;
+    }
+
+    bool VulkanRenderer::set_bot_character_mesh(
+        const std::vector<TerrainVertex>& vertices,
+        const std::vector<std::uint32_t>& indices)
+    {
+        if (!ready_)
+            return false;
+
+        vkDeviceWaitIdle(impl_->device);
+
+        if (impl_->botCharacterVertexBuffer)
+            vkDestroyBuffer(impl_->device, impl_->botCharacterVertexBuffer, nullptr);
+        if (impl_->botCharacterVertexMemory)
+            vkFreeMemory(impl_->device, impl_->botCharacterVertexMemory, nullptr);
+        if (impl_->botCharacterIndexBuffer)
+            vkDestroyBuffer(impl_->device, impl_->botCharacterIndexBuffer, nullptr);
+        if (impl_->botCharacterIndexMemory)
+            vkFreeMemory(impl_->device, impl_->botCharacterIndexMemory, nullptr);
+        if (impl_->botCharacterInstanceBuffer)
+            vkDestroyBuffer(impl_->device, impl_->botCharacterInstanceBuffer, nullptr);
+        if (impl_->botCharacterInstanceMemory)
+            vkFreeMemory(impl_->device, impl_->botCharacterInstanceMemory, nullptr);
+
+        impl_->botCharacterVertexBuffer = {};
+        impl_->botCharacterVertexMemory = {};
+        impl_->botCharacterVertexMapped = nullptr;
+        impl_->botCharacterIndexBuffer = {};
+        impl_->botCharacterIndexMemory = {};
+        impl_->botCharacterInstanceBuffer = {};
+        impl_->botCharacterInstanceMemory = {};
+        impl_->botCharacterInstanceMapped = nullptr;
+        impl_->botCharacterVertexBytes = 0;
+        impl_->botCharacterVertexCapacity = 0;
+        impl_->botCharacterInstanceBytes = 0;
+        impl_->botCharacterInstanceCapacity = 0;
+        impl_->botCharacterBatches.clear();
+        impl_->botCharacterReady = false;
+
+        if (vertices.empty() || indices.empty())
+            return false;
+
+        const auto vertexBytes = vertices.size() * sizeof(TerrainVertex);
+        const auto indexBytes = indices.size() * sizeof(std::uint32_t);
+        const auto vertexCapacity = vertexBytes + vertexBytes / 2;
+
+        if (!create_host_buffer(nullptr, vertexCapacity, VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
+                impl_->botCharacterVertexBuffer, impl_->botCharacterVertexMemory,
+                &impl_->botCharacterVertexMapped)
+            || !create_device_local_buffer(indices.data(), indexBytes, VK_BUFFER_USAGE_INDEX_BUFFER_BIT,
+                impl_->botCharacterIndexBuffer, impl_->botCharacterIndexMemory))
+        {
+            log_line("Vulkan: bot character mesh upload failed");
+            return false;
+        }
+
+        impl_->botCharacterVertexCapacity = vertexCapacity;
+        if (!update_bot_character_vertices(vertices))
+            return false;
+
+        impl_->botCharacterReady = true;
+        impl_->botCharacterVisible = true;
+        return true;
+    }
+
+    bool VulkanRenderer::update_bot_character_vertices(const std::vector<TerrainVertex>& vertices)
+    {
+        if (!impl_ || !impl_->botCharacterVertexBuffer || vertices.empty())
+            return false;
+
+        const auto byteSize = vertices.size() * sizeof(TerrainVertex);
+        if (byteSize > impl_->botCharacterVertexCapacity)
+            return false;
+
+        if (impl_->botCharacterVertexMapped)
+        {
+            std::memcpy(impl_->botCharacterVertexMapped, vertices.data(), byteSize);
+        }
+        else
+        {
+            void* mapped{};
+            if (vkMapMemory(impl_->device, impl_->botCharacterVertexMemory, 0, byteSize, 0, &mapped) != VK_SUCCESS)
+                return false;
+            std::memcpy(mapped, vertices.data(), byteSize);
+            vkUnmapMemory(impl_->device, impl_->botCharacterVertexMemory);
+        }
+
+        impl_->botCharacterVertexBytes = byteSize;
+        return true;
+    }
+
+    bool VulkanRenderer::update_bot_character_instances(
+        const std::vector<ObjectInstance>& instances,
+        const std::vector<ObjectBatch>& batches)
+    {
+        if (!impl_ || !impl_->botCharacterReady)
+            return false;
+
+        if (instances.empty() || batches.empty())
+        {
+            impl_->botCharacterBatches.clear();
+            impl_->botCharacterInstanceBytes = 0;
+            return true;
+        }
+
+        const auto instanceBytes = instances.size() * sizeof(ObjectInstance);
+        if (!impl_->botCharacterInstanceBuffer || instanceBytes > impl_->botCharacterInstanceCapacity)
+        {
+            if (impl_->botCharacterInstanceBuffer || impl_->botCharacterInstanceMemory)
+                vkDeviceWaitIdle(impl_->device);
+            if (impl_->botCharacterInstanceBuffer)
+                vkDestroyBuffer(impl_->device, impl_->botCharacterInstanceBuffer, nullptr);
+            if (impl_->botCharacterInstanceMemory)
+                vkFreeMemory(impl_->device, impl_->botCharacterInstanceMemory, nullptr);
+            impl_->botCharacterInstanceBuffer = {};
+            impl_->botCharacterInstanceMemory = {};
+            impl_->botCharacterInstanceMapped = nullptr;
+
+            const auto capacity = instanceBytes + instanceBytes / 2 + sizeof(ObjectInstance) * 64;
+            if (!create_host_buffer(nullptr, capacity, VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
+                    impl_->botCharacterInstanceBuffer, impl_->botCharacterInstanceMemory,
+                    &impl_->botCharacterInstanceMapped))
+            {
+                log_line("Vulkan: bot character instance buffer creation failed");
+                return false;
+            }
+            impl_->botCharacterInstanceCapacity = capacity;
+        }
+
+        if (impl_->botCharacterInstanceMapped)
+        {
+            std::memcpy(impl_->botCharacterInstanceMapped, instances.data(), instanceBytes);
+        }
+        else
+        {
+            void* mapped{};
+            if (vkMapMemory(impl_->device, impl_->botCharacterInstanceMemory, 0, instanceBytes, 0, &mapped) != VK_SUCCESS)
+                return false;
+            std::memcpy(mapped, instances.data(), instanceBytes);
+            vkUnmapMemory(impl_->device, impl_->botCharacterInstanceMemory);
+        }
+
+        impl_->botCharacterInstanceBytes = instanceBytes;
+        impl_->botCharacterBatches = batches;
+        return true;
+    }
+
+    void VulkanRenderer::set_bot_character_visible(bool visible)
+    {
+        if (impl_)
+            impl_->botCharacterVisible = visible;
     }
 
     void VulkanRenderer::set_camera(float x, float y, float z, float yaw, float pitch, float aspect, float farPlane)
@@ -3798,6 +3955,16 @@ namespace phoenix::renderer
             std::memcpy(constants + 8, impl_->skyConstants, sizeof(impl_->skyConstants));
             std::memcpy(constants + 24, impl_->skyTuning, sizeof(impl_->skyTuning));
             constexpr auto kPushStages = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
+            VkPipeline lastBoundPipeline{};
+            auto bindPipeline = [&](VkPipeline pipeline) {
+                if (pipeline != lastBoundPipeline)
+                {
+                    vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
+                    vkCmdPushConstants(commandBuffer, impl_->terrainPipelineLayout,
+                        kPushStages, 0, sizeof(constants), constants);
+                    lastBoundPipeline = pipeline;
+                }
+            };
 
             if (impl_->terrainTexturesReady)
             {
@@ -3823,10 +3990,7 @@ namespace phoenix::renderer
 
             if (impl_->terrainReady)
             {
-                vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, impl_->terrainPipeline);
-                vkCmdPushConstants(commandBuffer, impl_->terrainPipelineLayout,
-                    kPushStages, 0, sizeof(constants), constants);
-
+                bindPipeline(impl_->terrainPipeline);
                 VkDeviceSize offset{};
                 vkCmdBindVertexBuffers(commandBuffer, 0, 1, &impl_->terrainVertexBuffer, &offset);
                 vkCmdBindIndexBuffer(commandBuffer, impl_->terrainIndexBuffer, 0, VK_INDEX_TYPE_UINT32);
@@ -3848,9 +4012,7 @@ namespace phoenix::renderer
             {
                 VkBuffer buffers[2]{ impl_->objectVertexBuffer, impl_->objectInstanceBuffer };
                 VkDeviceSize offsets[2]{ 0, 0 };
-                vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, impl_->staticObjectPipeline);
-                vkCmdPushConstants(commandBuffer, impl_->terrainPipelineLayout,
-                    kPushStages, 0, sizeof(constants), constants);
+                bindPipeline(impl_->staticObjectPipeline);
                 vkCmdBindVertexBuffers(commandBuffer, 0, 2, buffers, offsets);
                 vkCmdBindIndexBuffer(commandBuffer, impl_->objectIndexBuffer, 0, VK_INDEX_TYPE_UINT32);
 
@@ -3871,9 +4033,7 @@ namespace phoenix::renderer
             {
                 VkBuffer buffers[2]{ impl_->animatedObjectVertexBuffer, impl_->animatedObjectInstanceBuffer };
                 VkDeviceSize offsets[2]{ 0, 0 };
-                vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, impl_->staticObjectPipeline);
-                vkCmdPushConstants(commandBuffer, impl_->terrainPipelineLayout,
-                    kPushStages, 0, sizeof(constants), constants);
+                bindPipeline(impl_->staticObjectPipeline);
                 vkCmdBindVertexBuffers(commandBuffer, 0, 2, buffers, offsets);
                 vkCmdBindIndexBuffer(commandBuffer, impl_->animatedObjectIndexBuffer, 0, VK_INDEX_TYPE_UINT32);
                 for (const auto& batch : impl_->animatedObjectBatches)
@@ -3881,9 +4041,7 @@ namespace phoenix::renderer
             }
             if (impl_->debugVisible && impl_->debugReady)
             {
-                vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, impl_->terrainPipeline);
-                vkCmdPushConstants(commandBuffer, impl_->terrainPipelineLayout,
-                    kPushStages, 0, sizeof(constants), constants);
+                bindPipeline(impl_->terrainPipeline);
                 VkDeviceSize debugOffset{};
                 vkCmdBindVertexBuffers(commandBuffer, 0, 1, &impl_->debugVertexBuffer, &debugOffset);
                 vkCmdBindIndexBuffer(commandBuffer, impl_->debugIndexBuffer, 0, VK_INDEX_TYPE_UINT32);
@@ -3891,19 +4049,27 @@ namespace phoenix::renderer
             }
             if (impl_->characterVisible && impl_->characterReady)
             {
-                vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, impl_->terrainPipeline);
-                vkCmdPushConstants(commandBuffer, impl_->terrainPipelineLayout,
-                    kPushStages, 0, sizeof(constants), constants);
+                bindPipeline(impl_->terrainPipeline);
                 VkDeviceSize charOffset{};
                 vkCmdBindVertexBuffers(commandBuffer, 0, 1, &impl_->characterVertexBuffer, &charOffset);
                 vkCmdBindIndexBuffer(commandBuffer, impl_->characterIndexBuffer, 0, VK_INDEX_TYPE_UINT32);
                 vkCmdDrawIndexed(commandBuffer, impl_->characterIndexCount, 1, 0, 0, 0);
             }
+            if (impl_->botCharacterVisible && impl_->botCharacterReady
+                && impl_->botCharacterInstanceBuffer && !impl_->botCharacterBatches.empty()
+                && impl_->staticObjectPipeline)
+            {
+                VkBuffer buffers[2]{ impl_->botCharacterVertexBuffer, impl_->botCharacterInstanceBuffer };
+                VkDeviceSize offsets[2]{ 0, 0 };
+                bindPipeline(impl_->staticObjectPipeline);
+                vkCmdBindVertexBuffers(commandBuffer, 0, 2, buffers, offsets);
+                vkCmdBindIndexBuffer(commandBuffer, impl_->botCharacterIndexBuffer, 0, VK_INDEX_TYPE_UINT32);
+                for (const auto& batch : impl_->botCharacterBatches)
+                    vkCmdDrawIndexed(commandBuffer, batch.indexCount, batch.instanceCount, batch.firstIndex, 0, batch.firstInstance);
+            }
             if (impl_->terrainReady && impl_->waterDrawRange.indexCount > 0)
             {
-                vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, impl_->terrainPipeline);
-                vkCmdPushConstants(commandBuffer, impl_->terrainPipelineLayout,
-                    kPushStages, 0, sizeof(constants), constants);
+                bindPipeline(impl_->terrainPipeline);
                 VkDeviceSize offset{};
                 vkCmdBindVertexBuffers(commandBuffer, 0, 1, &impl_->terrainVertexBuffer, &offset);
                 vkCmdBindIndexBuffer(commandBuffer, impl_->terrainIndexBuffer, 0, VK_INDEX_TYPE_UINT32);
@@ -4187,6 +4353,26 @@ namespace phoenix::renderer
             vkDestroyBuffer(impl_->device, impl_->debugIndexBuffer, nullptr);
         if (impl_->debugIndexMemory)
             vkFreeMemory(impl_->device, impl_->debugIndexMemory, nullptr);
+        if (impl_->characterVertexBuffer)
+            vkDestroyBuffer(impl_->device, impl_->characterVertexBuffer, nullptr);
+        if (impl_->characterVertexMemory)
+            vkFreeMemory(impl_->device, impl_->characterVertexMemory, nullptr);
+        if (impl_->characterIndexBuffer)
+            vkDestroyBuffer(impl_->device, impl_->characterIndexBuffer, nullptr);
+        if (impl_->characterIndexMemory)
+            vkFreeMemory(impl_->device, impl_->characterIndexMemory, nullptr);
+        if (impl_->botCharacterVertexBuffer)
+            vkDestroyBuffer(impl_->device, impl_->botCharacterVertexBuffer, nullptr);
+        if (impl_->botCharacterVertexMemory)
+            vkFreeMemory(impl_->device, impl_->botCharacterVertexMemory, nullptr);
+        if (impl_->botCharacterIndexBuffer)
+            vkDestroyBuffer(impl_->device, impl_->botCharacterIndexBuffer, nullptr);
+        if (impl_->botCharacterIndexMemory)
+            vkFreeMemory(impl_->device, impl_->botCharacterIndexMemory, nullptr);
+        if (impl_->botCharacterInstanceBuffer)
+            vkDestroyBuffer(impl_->device, impl_->botCharacterInstanceBuffer, nullptr);
+        if (impl_->botCharacterInstanceMemory)
+            vkFreeMemory(impl_->device, impl_->botCharacterInstanceMemory, nullptr);
         if (impl_->terrainTextureArrayView)
             vkDestroyImageView(impl_->device, impl_->terrainTextureArrayView, nullptr);
         if (impl_->terrainTextureArray)

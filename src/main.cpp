@@ -25,11 +25,13 @@
 #include <cstdio>
 #include <cstring>
 #include <filesystem>
+#include <format>
 #include <fstream>
 #include <future>
 #include <limits>
 #include <map>
 #include <optional>
+#include <random>
 #include <set>
 #include <string>
 #include <string_view>
@@ -288,8 +290,895 @@ namespace
             if (comma == std::string::npos) continue;
             indices.push_back(std::atoi(clean.substr(0, comma).c_str()));
         }
+        std::ranges::sort(indices);
+        indices.erase(std::unique(indices.begin(), indices.end()), indices.end());
         return indices;
     }
+
+    std::vector<int> scan_csv_indices_column(const std::filesystem::path& csvPath, std::size_t column)
+    {
+        std::vector<int> indices;
+        std::ifstream file(csvPath);
+        if (!file)
+            return indices;
+        std::string line;
+        std::getline(file, line); // skip header
+        while (std::getline(file, line))
+        {
+            if (line.empty())
+                continue;
+            std::string clean;
+            clean.reserve(line.size());
+            for (char c : line)
+                if (c != '"') clean += c;
+
+            std::size_t pos = 0;
+            std::size_t current = 0;
+            while (pos <= clean.size())
+            {
+                const auto comma = clean.find(',', pos);
+                const auto end = comma == std::string::npos ? clean.size() : comma;
+                if (current == column)
+                {
+                    indices.push_back(std::atoi(clean.substr(pos, end - pos).c_str()));
+                    break;
+                }
+                if (comma == std::string::npos)
+                    break;
+                pos = comma + 1;
+                ++current;
+            }
+        }
+        std::ranges::sort(indices);
+        indices.erase(std::unique(indices.begin(), indices.end()), indices.end());
+        return indices;
+    }
+
+    bool contains_index(const std::vector<int>& values, int wanted)
+    {
+        return std::ranges::find(values, wanted) != values.end();
+    }
+
+    std::vector<int> common_armor_indices(const CharacterOption& option)
+    {
+        std::vector<int> indices;
+        for (const int index : option.upperIndices)
+        {
+            if (contains_index(option.lowerIndices, index)
+                && contains_index(option.handIndices, index)
+                && contains_index(option.footIndices, index))
+                indices.push_back(index);
+        }
+        return indices;
+    }
+
+    struct BotEquipmentPools
+    {
+        std::map<phoenix::character::WeaponType, std::vector<int>> itemIndices;
+        std::map<std::string, std::vector<int>> cloakIndicesByRace;
+        std::map<std::string, std::vector<int>> mountIndicesByClass;
+    };
+
+    BotEquipmentPools scan_bot_equipment_pools(const std::filesystem::path& dataRoot)
+    {
+        BotEquipmentPools pools;
+        const auto itemRoot = dataRoot / "Item";
+        const auto addItem = [&](phoenix::character::WeaponType type) {
+            if (type == phoenix::character::WeaponType::None)
+                return;
+            const auto typeId = static_cast<int>(type);
+            const auto csvPath = itemRoot / std::format("{:02d}.csv", typeId);
+            pools.itemIndices[type] = scan_csv_indices_column(csvPath, 2);
+        };
+
+        addItem(phoenix::character::WeaponType::Sword1H);
+        addItem(phoenix::character::WeaponType::Sword2H);
+        addItem(phoenix::character::WeaponType::Axe1H);
+        addItem(phoenix::character::WeaponType::Axe2H);
+        addItem(phoenix::character::WeaponType::DualSword);
+        addItem(phoenix::character::WeaponType::Spear);
+        addItem(phoenix::character::WeaponType::Mace1H);
+        addItem(phoenix::character::WeaponType::Hammer2H);
+        addItem(phoenix::character::WeaponType::RevDagger);
+        addItem(phoenix::character::WeaponType::Dagger);
+        addItem(phoenix::character::WeaponType::Javelin);
+        addItem(phoenix::character::WeaponType::Staff);
+        addItem(phoenix::character::WeaponType::Bow);
+        addItem(phoenix::character::WeaponType::Crossbow);
+        addItem(phoenix::character::WeaponType::Claw);
+        addItem(phoenix::character::WeaponType::ShieldLight);
+        addItem(phoenix::character::WeaponType::ShieldDark);
+
+        const auto cloakRoot = dataRoot / "Cloak";
+        for (const auto race : { "hu", "de", "el", "vi" })
+            pools.cloakIndicesByRace[race] = scan_csv_indices(cloakRoot / ("cloak_" + std::string(race) + ".csv"));
+
+        const auto vehicleRoot = dataRoot / "Vehicle";
+        for (const auto mountClass : { "hu", "de", "el", "vi" })
+            pools.mountIndicesByClass[mountClass] = scan_csv_indices_column(vehicleRoot / ("vehicle_" + std::string(mountClass) + "_01.csv"), 2);
+
+        return pools;
+    }
+
+    std::string race_abbrev_for_folder(std::string raceFolder)
+    {
+        raceFolder = lower_ascii(std::move(raceFolder));
+        if (raceFolder == "human") return "hu";
+        if (raceFolder == "deatheater") return "de";
+        if (raceFolder == "elf") return "el";
+        if (raceFolder == "vile") return "vi";
+        return raceFolder.substr(0, std::min<std::size_t>(2, raceFolder.size()));
+    }
+
+    // ---- Bot character stress-test system ----
+    // Bots are lightweight instances: they share a few skinned pose resources
+    // instead of cloning a full CharacterSystem per bot. This keeps the stress
+    // test focused on render throughput instead of duplicating skeleton/asset state.
+
+    // Packed for cache-friendly iteration.
+    struct BotCharacter
+    {
+        float x{}, y{}, z{}, yaw{};
+        float sinYaw{}, cosYaw{ 1.0f };
+        float originX{}, originZ{};
+        float targetX{}, targetZ{};
+        float moveTimer{};
+        float actionTimer{};
+        float effectTimer{};
+        std::uint16_t currentAction{};
+        std::uint16_t pose{};
+        std::uint16_t preset{};
+        std::uint8_t fastMove{};
+        std::uint8_t visible{};   // set during update, reused for instance building
+    };
+
+    // Pose IDs shared across all presets. Each preset may have a subset loaded.
+    enum BotPose : std::uint16_t
+    {
+        kPoseIdle = 0,
+        kPoseWalk,
+        kPoseRun,
+        kPoseJump,
+        kPoseSit,
+        kPoseDie,
+        kPoseAttack1,
+        kPoseAttack2,
+        kPoseDamage,
+        kPoseCast,
+        kPoseEmote1,
+        kPoseEmote2,
+        kPoseEmote3,
+        kPoseEmote4,
+        kPoseEmote5,
+        // Mounted
+        kPoseMountIdle,
+        kPoseMountRun,
+        kPoseCount
+    };
+
+    struct BotVisualPreset
+    {
+        phoenix::character::CharacterAppearance appearance;
+        std::array<phoenix::character::CharacterSystem, kPoseCount> poses;
+        std::array<bool, kPoseCount> poseValid{};
+        std::uint32_t textureBase{};
+        std::size_t vertexCount{};
+        std::size_t indexCount{};
+        bool ready{};
+        bool mounted{};
+    };
+
+    struct BotManager
+    {
+        std::vector<BotCharacter> bots;
+        std::mt19937 rng{ std::random_device{}() };
+
+        phoenix::character::CharacterSystem* sourceCharacter{};
+        std::vector<BotVisualPreset> visualPresets;
+        bool presetsBuilt{};
+        bool effectsEnabled{ true };
+        std::size_t lastBotCount{};
+        std::uint32_t frameCounter{};
+
+        // Pending effect spawns from bot update (processed by main loop).
+        struct PendingEffect
+        {
+            float x, y, z;
+            std::uint16_t catalogIndex;
+        };
+        std::vector<PendingEffect> pendingEffects;
+        std::vector<std::size_t> oneShotEffectIndices;
+
+        static std::size_t poseAnimIndex(BotPose pose, const phoenix::character::CharacterData& d)
+        {
+            auto first = [](std::initializer_list<std::size_t> anims) -> std::size_t {
+                for (auto a : anims) if (a > 0) return a;
+                return 0;
+            };
+            switch (pose)
+            {
+            case kPoseIdle:      return d.idleAnimation;
+            case kPoseWalk:      return d.walkAnimation;
+            case kPoseRun:       return d.runAnimation;
+            case kPoseJump:      return d.jumpAnimation;
+            case kPoseSit:       return d.sitAnimation;
+            case kPoseDie:       return d.dieAnimation;
+            case kPoseAttack1:   return first({d.oneHandAttack1Animation, d.twoHandAttack1Animation,
+                                    d.bowAttackAnimation, d.dualAttack1Animation, d.spearAttack1Animation});
+            case kPoseAttack2:   return first({d.oneHandAttack2Animation, d.twoHandAttack2Animation,
+                                    d.dualAttack2Animation, d.spearAttack2Animation});
+            case kPoseDamage:    return first({d.oneHandDamageAnimation, d.twoHandDamageAnimation,
+                                    d.bowDamageAnimation, d.dualDamageAnimation});
+            case kPoseCast:      return first({d.magicCast1Animation, d.buffCast1Animation,
+                                    d.magicCast2Animation});
+            case kPoseEmote1:    return d.emote1Animation;
+            case kPoseEmote2:    return d.emote2Animation;
+            case kPoseEmote3:    return d.emote3Animation;
+            case kPoseEmote4:    return d.emote4Animation;
+            case kPoseEmote5:    return d.emote5Animation;
+            case kPoseMountIdle: return d.vehicleIdleAnimation;
+            case kPoseMountRun:  return d.vehicleRun1Animation;
+            default:             return d.idleAnimation;
+            }
+        }
+
+        void cacheOneShotEffects()
+        {
+            if (!oneShotEffectIndices.empty()) return;
+            const auto& catalog = phoenix::effects::preset_catalog();
+            for (std::size_t i = 0; i < catalog.size(); ++i)
+            {
+                if (!catalog[i].loop && !catalog[i].projectile)
+                    oneShotEffectIndices.push_back(i);
+            }
+        }
+
+        std::vector<phoenix::renderer::TerrainVertex> poseVertices;
+        std::vector<std::uint32_t> poseIndices;
+        std::vector<phoenix::renderer::ObjectInstance> poseInstances;
+        std::vector<phoenix::renderer::ObjectBatch> poseBatches;
+        std::vector<std::vector<phoenix::renderer::ObjectInstance>> poseInstanceBuckets;
+        std::vector<std::uint32_t> poseFirstIndices;
+        std::vector<std::uint32_t> poseIndexCounts;
+        std::vector<std::size_t> poseVertexOffsets;
+        std::vector<std::size_t> poseVertexCounts;
+        std::vector<std::uint8_t> activePoseMask;
+        std::size_t previousPlayerVertCount{};
+        std::size_t previousPlayerIndexCount{};
+        std::size_t poseVertexCount{};
+        std::size_t poseIndexCount{};
+        float poseUpdateAccumulator{};
+        bool combinedTopologyDirty{ true };
+        bool poseMeshUploaded{};
+        bool poseVerticesDirty{ true };
+
+        float randomFloat(float lo, float hi)
+        {
+            return std::uniform_real_distribution<float>(lo, hi)(rng);
+        }
+        int randomInt(int lo, int hi)
+        {
+            return std::uniform_int_distribution<int>(lo, hi)(rng);
+        }
+
+        template <typename T>
+        const T& randomChoice(const std::vector<T>& values)
+        {
+            return values[static_cast<std::size_t>(randomInt(0, static_cast<int>(values.size()) - 1))];
+        }
+
+        float poseUpdateInterval() const
+        {
+            const auto count = bots.size();
+            if (count <= 32) return 1.0f / 12.0f;
+            if (count <= 128) return 1.0f / 18.0f;
+            if (count <= 512) return 1.0f / 24.0f;
+            return 1.0f / 30.0f;
+        }
+
+        void init(phoenix::character::CharacterSystem& player)
+        {
+            sourceCharacter = &player;
+            visualPresets.clear();
+            BotVisualPreset preset{};
+            preset.appearance = {};
+            preset.textureBase = 0;
+            for (auto& pose : preset.poses)
+            {
+                pose.clone_from(player);
+                pose.set_world_position(0.0f, 0.0f, 0.0f, 0.0f);
+            }
+            preset.vertexCount = player.world_vertices().size();
+            preset.indexCount = player.indices().size();
+            preset.ready = player.ready();
+            if (preset.ready)
+                visualPresets.push_back(std::move(preset));
+            presetsBuilt = true;
+            poseVerticesDirty = true;
+        }
+
+        void rebuild_shared_poses_if_needed()
+        {
+            if (!sourceCharacter || !sourceCharacter->ready())
+                return;
+            if (!visualPresets.empty())
+                return;
+            init(*sourceCharacter);
+        }
+
+        bool build_random_presets(
+            const std::filesystem::path& dataRoot,
+            const std::vector<CharacterOption>& characterOptions,
+            const BotEquipmentPools& equipmentPools,
+            std::uint32_t firstTextureSlot,
+            std::uint32_t maxTextureSlots,
+            std::vector<phoenix::renderer::DdsTexture>& textureSlots,
+            bool allowPreload)
+        {
+            if (characterOptions.empty() || maxTextureSlots == 0)
+                return false;
+
+            visualPresets.clear();
+            std::uint32_t nextTextureSlot = firstTextureSlot;
+            const auto endTextureSlot = firstTextureSlot + maxTextureSlots;
+            constexpr std::size_t kTargetPresetCount = 8;
+
+            static constexpr phoenix::character::WeaponType weaponTypes[] = {
+                phoenix::character::WeaponType::None,
+                phoenix::character::WeaponType::Sword1H,
+                phoenix::character::WeaponType::Sword2H,
+                phoenix::character::WeaponType::Axe1H,
+                phoenix::character::WeaponType::Axe2H,
+                phoenix::character::WeaponType::DualSword,
+                phoenix::character::WeaponType::Spear,
+                phoenix::character::WeaponType::Mace1H,
+                phoenix::character::WeaponType::Hammer2H,
+                phoenix::character::WeaponType::RevDagger,
+                phoenix::character::WeaponType::Dagger,
+                phoenix::character::WeaponType::Javelin,
+                phoenix::character::WeaponType::Staff,
+                phoenix::character::WeaponType::Bow,
+                phoenix::character::WeaponType::Crossbow,
+                phoenix::character::WeaponType::Claw,
+            };
+
+            for (std::size_t attempt = 0; attempt < kTargetPresetCount * 8 && visualPresets.size() < kTargetPresetCount; ++attempt)
+            {
+                const auto& option = randomChoice(characterOptions);
+                const auto armorIndices = common_armor_indices(option);
+                if (armorIndices.empty() || option.faceIndices.empty() || option.hairIndices.empty())
+                    continue;
+
+                phoenix::character::CharacterAppearance appearance{};
+                appearance.raceFolder = option.raceFolder;
+                appearance.prefix = option.prefix;
+                const int armor = randomChoice(armorIndices);
+                appearance.upperIndex = armor;
+                appearance.lowerIndex = armor;
+                appearance.handIndex = armor;
+                appearance.footIndex = armor;
+                appearance.faceIndex = randomChoice(option.faceIndices);
+                appearance.hairIndex = randomChoice(option.hairIndices);
+                appearance.helmetVisible = !option.helmetIndices.empty() && randomInt(0, 3) == 0;
+                appearance.helmetIndex = appearance.helmetVisible
+                    ? (contains_index(option.helmetIndices, armor) ? armor : randomChoice(option.helmetIndices))
+                    : -1;
+
+                const auto raceAbbrev = race_abbrev_for_folder(appearance.raceFolder);
+                if (randomInt(0, 4) == 0)
+                {
+                    if (const auto it = equipmentPools.cloakIndicesByRace.find(raceAbbrev);
+                        it != equipmentPools.cloakIndicesByRace.end() && !it->second.empty())
+                        appearance.cloakIndex = randomChoice(it->second);
+                    else
+                        appearance.cloakIndex = -1;
+                }
+                else
+                {
+                    appearance.cloakIndex = -1;
+                }
+
+                appearance.weaponType = phoenix::character::WeaponType::None;
+                appearance.weaponIndex = -1;
+                for (std::size_t tries = 0; tries < std::size(weaponTypes); ++tries)
+                {
+                    const auto type = weaponTypes[static_cast<std::size_t>(randomInt(0, static_cast<int>(std::size(weaponTypes)) - 1))];
+                    if (type == phoenix::character::WeaponType::None)
+                    {
+                        appearance.weaponType = type;
+                        break;
+                    }
+                    const auto it = equipmentPools.itemIndices.find(type);
+                    if (it != equipmentPools.itemIndices.end() && !it->second.empty())
+                    {
+                        appearance.weaponType = type;
+                        appearance.weaponIndex = randomChoice(it->second);
+                        break;
+                    }
+                }
+
+                const bool darkRace = phoenix::assets::lower_ascii(appearance.raceFolder).find("de") != std::string::npos
+                    || phoenix::assets::lower_ascii(appearance.raceFolder).find("vail") != std::string::npos;
+                appearance.shieldType = randomInt(0, 2) == 0
+                    ? phoenix::character::WeaponType::None
+                    : (darkRace ? phoenix::character::WeaponType::ShieldDark : phoenix::character::WeaponType::ShieldLight);
+                appearance.shieldIndex = -1;
+                if (appearance.shieldType != phoenix::character::WeaponType::None)
+                {
+                    if (const auto it = equipmentPools.itemIndices.find(appearance.shieldType);
+                        it != equipmentPools.itemIndices.end() && !it->second.empty())
+                        appearance.shieldIndex = randomChoice(it->second);
+                    else
+                        appearance.shieldType = phoenix::character::WeaponType::None;
+                }
+
+                // Rare mounted presets (~15% chance).
+                if (randomInt(0, 6) == 0)
+                {
+                    const char* mountClasses[] = { "hu", "de", "el", "vi" };
+                    for (std::size_t tries = 0; tries < std::size(mountClasses); ++tries)
+                    {
+                        const std::string mountClass = mountClasses[randomInt(0, 3)];
+                        if (const auto it = equipmentPools.mountIndicesByClass.find(mountClass);
+                            it != equipmentPools.mountIndicesByClass.end() && !it->second.empty())
+                        {
+                            appearance.mounted = true;
+                            appearance.mountClass = mountClass;
+                            appearance.mountIndex = randomChoice(it->second);
+                            break;
+                        }
+                    }
+                }
+
+                BotVisualPreset preset{};
+                preset.appearance = appearance;
+                preset.textureBase = nextTextureSlot;
+                preset.mounted = appearance.mounted;
+
+                // Load into pose slot 0 (idle) — all others clone from it.
+                if (!preset.poses[kPoseIdle].load(dataRoot, appearance, allowPreload)
+                    || !preset.poses[kPoseIdle].ready())
+                    continue;
+
+                const auto textureCount = static_cast<std::uint32_t>(preset.poses[kPoseIdle].texture_paths().size());
+                if (textureCount == 0 || nextTextureSlot + textureCount > endTextureSlot)
+                    break;
+
+                preset.poses[kPoseIdle].set_texture_layer_base(preset.textureBase);
+                for (std::uint32_t i = 0; i < textureCount; ++i)
+                    textureSlots[preset.textureBase + i] = phoenix::renderer::load_dds(preset.poses[kPoseIdle].texture_paths()[i]);
+
+                // Clone all pose slots from the loaded one.
+                for (std::size_t p = 1; p < kPoseCount; ++p)
+                {
+                    preset.poses[p].clone_from(preset.poses[kPoseIdle]);
+                    preset.poses[p].set_texture_layer_base(preset.textureBase);
+                    preset.poses[p].set_world_position(0.0f, 0.0f, 0.0f, 0.0f);
+                }
+                preset.poses[kPoseIdle].set_world_position(0.0f, 0.0f, 0.0f, 0.0f);
+
+                // Determine which poses are valid based on available animations.
+                const auto& d = preset.poses[kPoseIdle].character_data();
+                auto valid = [&](std::size_t animIdx) {
+                    return animIdx > 0 && animIdx < d.animations.size()
+                        && d.animations[animIdx].animation.parsed;
+                };
+                preset.poseValid[kPoseIdle]    = valid(d.idleAnimation);
+                preset.poseValid[kPoseWalk]    = valid(d.walkAnimation);
+                preset.poseValid[kPoseRun]     = valid(d.runAnimation);
+                preset.poseValid[kPoseJump]    = valid(d.jumpAnimation);
+                preset.poseValid[kPoseSit]     = valid(d.sitAnimation);
+                preset.poseValid[kPoseDie]     = valid(d.dieAnimation);
+                preset.poseValid[kPoseEmote1]  = valid(d.emote1Animation);
+                preset.poseValid[kPoseEmote2]  = valid(d.emote2Animation);
+                preset.poseValid[kPoseEmote3]  = valid(d.emote3Animation);
+                preset.poseValid[kPoseEmote4]  = valid(d.emote4Animation);
+                preset.poseValid[kPoseEmote5]  = valid(d.emote5Animation);
+                preset.poseValid[kPoseMountIdle] = preset.mounted && valid(d.vehicleIdleAnimation);
+                preset.poseValid[kPoseMountRun]  = preset.mounted && valid(d.vehicleRun1Animation);
+
+                // Weapon-specific attack/damage/cast.
+                preset.poseValid[kPoseAttack1] = valid(d.oneHandAttack1Animation)
+                    || valid(d.twoHandAttack1Animation) || valid(d.bowAttackAnimation)
+                    || valid(d.dualAttack1Animation) || valid(d.spearAttack1Animation);
+                preset.poseValid[kPoseAttack2] = valid(d.oneHandAttack2Animation)
+                    || valid(d.twoHandAttack2Animation) || valid(d.dualAttack2Animation);
+                preset.poseValid[kPoseDamage] = valid(d.oneHandDamageAnimation)
+                    || valid(d.twoHandDamageAnimation) || valid(d.bowDamageAnimation);
+                preset.poseValid[kPoseCast] = valid(d.magicCast1Animation)
+                    || valid(d.buffCast1Animation);
+
+                preset.vertexCount = preset.poses[kPoseIdle].world_vertices().size();
+                preset.indexCount = preset.poses[kPoseIdle].indices().size();
+                preset.ready = preset.vertexCount > 0 && preset.indexCount > 0;
+                if (!preset.ready)
+                    continue;
+
+                nextTextureSlot += textureCount;
+                visualPresets.push_back(std::move(preset));
+            }
+
+            presetsBuilt = !visualPresets.empty();
+            poseVerticesDirty = true;
+            poseMeshUploaded = false;
+            return presetsBuilt;
+        }
+
+        void spawn(int count, float centerX, float centerZ,
+            phoenix::character::HeightSampleFn heightFn, void* heightUserData)
+        {
+            if (visualPresets.empty())
+            {
+                if (!sourceCharacter || !sourceCharacter->ready())
+                    return;
+                rebuild_shared_poses_if_needed();
+            }
+            if (visualPresets.empty())
+                return;
+            bots.reserve(bots.size() + count);
+            for (int i = 0; i < count; ++i)
+            {
+                BotCharacter bot{};
+                bot.originX = centerX + randomFloat(-50.0f, 50.0f);
+                bot.originZ = centerZ + randomFloat(-50.0f, 50.0f);
+                bot.targetX = bot.originX + randomFloat(-30.0f, 30.0f);
+                bot.targetZ = bot.originZ + randomFloat(-30.0f, 30.0f);
+                float groundY = heightFn ? heightFn(bot.originX, bot.originZ, heightUserData) : 0.0f;
+                bot.x = bot.originX;
+                bot.y = groundY;
+                bot.z = bot.originZ;
+                bot.yaw = randomFloat(-3.14f, 3.14f);
+                bot.sinYaw = std::sin(bot.yaw);
+                bot.cosYaw = std::cos(bot.yaw);
+                bot.moveTimer = randomFloat(1.0f, 4.0f);
+                bot.actionTimer = randomFloat(2.0f, 8.0f);
+                bot.effectTimer = randomFloat(0.5f, 6.0f);
+                bot.currentAction = 1;
+                bot.pose = 1;
+                bot.preset = visualPresets.empty()
+                    ? static_cast<std::uint16_t>(0)
+                    : static_cast<std::uint16_t>(randomInt(0, static_cast<int>(visualPresets.size()) - 1));
+                bot.fastMove = randomInt(0, 2) == 0 ? 1 : 0;
+                bots.push_back(bot);
+            }
+        }
+
+        void clear()
+        {
+            bots.clear();
+            lastBotCount = 0;
+            poseVertices.clear();
+            poseIndices.clear();
+            poseInstances.clear();
+            poseBatches.clear();
+            poseInstanceBuckets.clear();
+            poseFirstIndices.clear();
+            poseIndexCounts.clear();
+            poseVertexOffsets.clear();
+            poseVertexCounts.clear();
+            activePoseMask.clear();
+            previousPlayerVertCount = 0;
+            previousPlayerIndexCount = 0;
+            poseVertexCount = 0;
+            poseIndexCount = 0;
+            poseUpdateAccumulator = 0.0f;
+            combinedTopologyDirty = true;
+            poseMeshUploaded = false;
+            poseVerticesDirty = true;
+        }
+
+        void update(float dt, float camX, float camZ, float cullDist,
+            phoenix::character::HeightSampleFn heightFn, void* heightUserData)
+        {
+            pendingEffects.clear();
+            if (bots.empty())
+                return;
+
+            ++frameCounter;
+            const float cullDistSq = cullDist * cullDist;
+            rebuild_shared_poses_if_needed();
+            cacheOneShotEffects();
+            activePoseMask.assign(visualPresets.size() * kPoseCount, 0);
+
+            const auto botCount = bots.size();
+            auto* botData = bots.data();
+            for (std::size_t bi = 0; bi < botCount; ++bi)
+            {
+                auto& bot = botData[bi];
+                const float dx = bot.x - camX;
+                const float dz = bot.z - camZ;
+                const float distSq = dx * dx + dz * dz;
+                bot.visible = distSq <= cullDistSq ? 1 : 0;
+                if (!bot.visible) continue;
+
+                bot.moveTimer -= dt;
+                bot.actionTimer -= dt;
+
+                const auto pi = std::min<std::uint16_t>(bot.preset,
+                    visualPresets.empty() ? 0 : static_cast<std::uint16_t>(visualPresets.size() - 1));
+                const bool isMounted = !visualPresets.empty() && visualPresets[pi].mounted;
+
+                if (bot.actionTimer <= 0.0f)
+                {
+                    // 0=idle, 1=move, 2=attack, 3=cast, 4=emote, 5=jump, 6=die, 7=damage, 8=sit
+                    bot.currentAction = static_cast<std::uint16_t>(randomInt(0, 8));
+                    bot.actionTimer = randomFloat(2.0f, 7.0f);
+                    if (bot.currentAction == 1) bot.moveTimer = 0.0f;
+                }
+                if (bot.moveTimer <= 0.0f && bot.currentAction == 1)
+                {
+                    bot.targetX = bot.originX + randomFloat(-50.0f, 50.0f);
+                    bot.targetZ = bot.originZ + randomFloat(-50.0f, 50.0f);
+                    bot.moveTimer = randomFloat(2.0f, 6.0f);
+                    bot.fastMove = randomInt(0, 2) == 0 ? 1 : 0;
+                }
+
+                bot.pose = isMounted ? kPoseMountIdle : kPoseIdle;
+                switch (bot.currentAction)
+                {
+                case 1: {
+                    const float tdx = bot.targetX - bot.x;
+                    const float tdz = bot.targetZ - bot.z;
+                    if (tdx * tdx + tdz * tdz > 1.0f)
+                    {
+                        const float speed = bot.fastMove ? 8.0f : 4.0f;
+                        bot.yaw = std::atan2(tdx, tdz);
+                        bot.sinYaw = std::sin(bot.yaw);
+                        bot.cosYaw = std::cos(bot.yaw);
+                        bot.x += bot.sinYaw * speed * dt;
+                        bot.z += bot.cosYaw * speed * dt;
+                        if (heightFn)
+                        {
+                            const bool nearBot = distSq < 2500.0f;
+                            if (nearBot || (frameCounter & 3u) == (bi & 3u))
+                                bot.y = heightFn(bot.x, bot.z, heightUserData);
+                        }
+                        if (isMounted)
+                            bot.pose = kPoseMountRun;
+                        else
+                            bot.pose = bot.fastMove ? kPoseRun : kPoseWalk;
+                    }
+                    break;
+                }
+                case 2: bot.pose = kPoseAttack1 + static_cast<std::uint16_t>(randomInt(0, 1)); bot.currentAction = 0; break;
+                case 3: bot.pose = kPoseCast; bot.currentAction = 0; break;
+                case 4: bot.pose = static_cast<std::uint16_t>(kPoseEmote1 + randomInt(0, 4)); bot.currentAction = 0; break;
+                case 5: bot.pose = kPoseJump; bot.currentAction = 0; break;
+                case 6: bot.pose = kPoseDie; bot.currentAction = 0; break;
+                case 7: bot.pose = kPoseDamage; bot.currentAction = 0; break;
+                case 8: bot.pose = kPoseSit; bot.currentAction = 0; break;
+                default: break;
+                }
+                // Fall back to idle if the chosen pose isn't available for this preset.
+                if (!visualPresets.empty() && !visualPresets[pi].poseValid[bot.pose])
+                    bot.pose = isMounted ? kPoseMountIdle : kPoseIdle;
+
+                // Random one-shot effect (only near bots, capped per frame).
+                bot.effectTimer -= dt;
+                if (effectsEnabled && bot.effectTimer <= 0.0f && distSq < 6400.0f
+                    && !oneShotEffectIndices.empty() && pendingEffects.size() < 8)
+                {
+                    bot.effectTimer = randomFloat(1.5f, 8.0f);
+                    PendingEffect pe{};
+                    pe.x = bot.x; pe.y = bot.y; pe.z = bot.z;
+                    pe.catalogIndex = static_cast<std::uint16_t>(
+                        oneShotEffectIndices[static_cast<std::size_t>(
+                            randomInt(0, static_cast<int>(oneShotEffectIndices.size()) - 1))]);
+                    pendingEffects.push_back(pe);
+                }
+
+                if (!visualPresets.empty())
+                {
+                    const auto poseIdx = std::min<std::uint16_t>(bot.pose, kPoseCount - 1);
+                    activePoseMask[static_cast<std::size_t>(pi) * kPoseCount + poseIdx] = 1;
+                }
+            }
+
+            if (!visualPresets.empty())
+            {
+                poseUpdateAccumulator += dt;
+                const auto interval = poseUpdateInterval();
+                if (poseVerticesDirty || poseUpdateAccumulator >= interval)
+                {
+                    const auto poseDt = poseVerticesDirty
+                        ? std::min(dt, interval)
+                        : poseUpdateAccumulator;
+                    poseUpdateAccumulator = 0.0f;
+
+                    // Collect active poses to skin.
+                    struct PoseSkinWork
+                    {
+                        phoenix::character::CharacterSystem* pose;
+                        std::size_t animIdx;
+                    };
+                    std::vector<PoseSkinWork> skinWork;
+                    skinWork.reserve(32);
+
+                    for (std::size_t presetIndex = 0; presetIndex < visualPresets.size(); ++presetIndex)
+                    {
+                        auto& preset = visualPresets[presetIndex];
+                        const auto& data = preset.poses[kPoseIdle].character_data();
+                        for (std::size_t poseIndex = 0; poseIndex < kPoseCount; ++poseIndex)
+                        {
+                            const auto maskIndex = presetIndex * kPoseCount + poseIndex;
+                            if (maskIndex >= activePoseMask.size() || activePoseMask[maskIndex] == 0)
+                                continue;
+                            if (!preset.poseValid[poseIndex])
+                                continue;
+                            const auto animIdx = poseAnimIndex(static_cast<BotPose>(poseIndex), data);
+                            skinWork.push_back({ &preset.poses[poseIndex], animIdx });
+                        }
+                    }
+
+                    // Parallel pose skinning across all CPU cores.
+                    const auto workCount = skinWork.size();
+                    const auto threadCount = std::max(1u, std::thread::hardware_concurrency());
+                    if (workCount <= 2 || threadCount <= 1)
+                    {
+                        for (auto& w : skinWork)
+                            w.pose->advance_pose(poseDt, w.animIdx);
+                    }
+                    else
+                    {
+                        std::atomic<std::size_t> nextIdx{ 0 };
+                        auto worker = [&]() {
+                            for (;;)
+                            {
+                                const auto i = nextIdx.fetch_add(1, std::memory_order_relaxed);
+                                if (i >= workCount) break;
+                                skinWork[i].pose->advance_pose(poseDt, skinWork[i].animIdx);
+                            }
+                        };
+                        std::vector<std::thread> threads;
+                        threads.reserve(threadCount - 1);
+                        for (std::uint32_t t = 1; t < threadCount; ++t)
+                            threads.emplace_back(worker);
+                        worker();
+                        for (auto& t : threads) t.join();
+                    }
+
+                    poseVerticesDirty = true;
+                }
+            }
+        }
+
+        bool updatePoseMesh(phoenix::renderer::VulkanRenderer& renderer)
+        {
+            if (visualPresets.empty())
+                return false;
+
+            if (poseMeshUploaded && !poseVerticesDirty)
+                return true;
+
+            const auto expectedSlots = visualPresets.size() * kPoseCount;
+            const bool topologyChanged = !poseMeshUploaded
+                || poseFirstIndices.size() != expectedSlots
+                || poseVertexOffsets.size() != expectedSlots;
+
+            if (topologyChanged)
+            {
+                poseVertices.clear();
+                poseIndices.clear();
+                poseFirstIndices.clear();
+                poseIndexCounts.clear();
+                poseVertexOffsets.clear();
+                poseVertexCounts.clear();
+                const auto slotCount = visualPresets.size() * kPoseCount;
+                poseFirstIndices.reserve(slotCount);
+                poseIndexCounts.reserve(slotCount);
+                poseVertexOffsets.reserve(slotCount);
+                poseVertexCounts.reserve(slotCount);
+            }
+
+            std::size_t poseSlot = 0;
+            for (const auto& preset : visualPresets)
+            {
+                for (const auto& poseCharacter : preset.poses)
+                {
+                    const auto& verts = poseCharacter.world_vertices();
+                    const auto* tv = reinterpret_cast<const phoenix::renderer::TerrainVertex*>(verts.data());
+                    if (topologyChanged)
+                    {
+                        const auto vertexOffset = static_cast<std::uint32_t>(poseVertices.size());
+                        poseVertexOffsets.push_back(poseVertices.size());
+                        poseVertexCounts.push_back(verts.size());
+                        poseVertices.insert(poseVertices.end(), tv, tv + verts.size());
+                        const auto firstIndex = static_cast<std::uint32_t>(poseIndices.size());
+                        for (auto idx : poseCharacter.indices())
+                            poseIndices.push_back(idx + vertexOffset);
+                        poseFirstIndices.push_back(firstIndex);
+                        poseIndexCounts.push_back(static_cast<std::uint32_t>(poseCharacter.indices().size()));
+                    }
+                    else if (poseSlot < activePoseMask.size() && activePoseMask[poseSlot] != 0
+                        && poseSlot < poseVertexOffsets.size() && poseSlot < poseVertexCounts.size())
+                    {
+                        const auto dstOffset = poseVertexOffsets[poseSlot];
+                        const auto dstCount = std::min<std::size_t>(poseVertexCounts[poseSlot], verts.size());
+                        if (dstOffset + dstCount <= poseVertices.size())
+                            std::memcpy(poseVertices.data() + dstOffset, tv, dstCount * sizeof(phoenix::renderer::TerrainVertex));
+                    }
+                    ++poseSlot;
+                }
+            }
+
+            poseVertexCount = poseVertices.size();
+            poseIndexCount = poseIndices.size();
+            if (topologyChanged)
+            {
+                poseMeshUploaded = renderer.set_bot_character_mesh(poseVertices, poseIndices);
+                poseVerticesDirty = !poseMeshUploaded;
+                return poseMeshUploaded;
+            }
+
+            const auto updated = renderer.update_bot_character_vertices(poseVertices);
+            poseVerticesDirty = !updated;
+            return updated;
+        }
+
+        bool updatePoseInstances(
+            phoenix::renderer::VulkanRenderer& renderer)
+        {
+            if (!poseMeshUploaded || visualPresets.empty())
+                return false;
+
+            const auto batchCount = visualPresets.size() * kPoseCount;
+            if (poseFirstIndices.size() != batchCount || poseIndexCounts.size() != batchCount)
+                return false;
+            if (poseInstanceBuckets.size() != batchCount)
+                poseInstanceBuckets.resize(batchCount);
+            for (auto& bucket : poseInstanceBuckets)
+                bucket.clear();
+
+            // Use cached visibility + sin/cos from update() — no distance check or trig here.
+            const auto botCount = bots.size();
+            const auto* botData = bots.data();
+            const auto presetMax = visualPresets.empty()
+                ? static_cast<std::uint16_t>(0)
+                : static_cast<std::uint16_t>(visualPresets.size() - 1);
+            for (std::size_t bi = 0; bi < botCount; ++bi)
+            {
+                const auto& bot = botData[bi];
+                if (!bot.visible) continue;
+
+                phoenix::renderer::ObjectInstance inst{};
+                inst.right[0] = bot.cosYaw;  inst.right[2] = -bot.sinYaw;
+                inst.up[1] = 1.0f;
+                inst.forward[0] = bot.sinYaw; inst.forward[2] = bot.cosYaw;
+                inst.position[0] = bot.x;
+                inst.position[1] = bot.y;
+                inst.position[2] = bot.z;
+                inst.position[3] = 1.0f;
+                const auto batchIndex = static_cast<std::size_t>(std::min(bot.preset, presetMax)) * kPoseCount
+                    + std::min<std::uint16_t>(bot.pose, kPoseCount - 1);
+                poseInstanceBuckets[batchIndex].push_back(inst);
+            }
+
+            poseInstances.clear();
+            poseBatches.clear();
+            std::size_t totalInstances = 0;
+            for (const auto& bucket : poseInstanceBuckets)
+                totalInstances += bucket.size();
+            poseInstances.reserve(totalInstances);
+            poseBatches.reserve(32);
+
+            // Only emit batches that have at least one instance — avoids sending
+            // 100+ empty draw calls to the GPU.
+            for (std::size_t batchIndex = 0; batchIndex < batchCount; ++batchIndex)
+            {
+                const auto& bucket = poseInstanceBuckets[batchIndex];
+                if (bucket.empty()) continue;
+                phoenix::renderer::ObjectBatch batch{};
+                batch.firstIndex = poseFirstIndices[batchIndex];
+                batch.indexCount = poseIndexCounts[batchIndex];
+                batch.firstInstance = static_cast<std::uint32_t>(poseInstances.size());
+                batch.instanceCount = static_cast<std::uint32_t>(bucket.size());
+                poseInstances.insert(poseInstances.end(), bucket.begin(), bucket.end());
+                poseBatches.push_back(batch);
+            }
+
+            return renderer.update_bot_character_instances(poseInstances, poseBatches);
+        }
+    };
 
     std::vector<CharacterOption> scan_character_options(const std::filesystem::path& dataRoot)
     {
@@ -958,17 +1847,7 @@ namespace
             return ranges;
 
         constexpr std::uint32_t kChunkQ = phoenix::runtime::PhoenixRuntime::kTerrainChunkQuads;
-        constexpr int kLodLevels = phoenix::runtime::PhoenixRuntime::kTerrainLodLevels;
-        // Full detail for the entire clear-visibility zone; LOD only in the last
-        // sliver where fog is nearly 100% opaque and geometry is indistinguishable.
         const float cullDist = view.distance;
-        // LOD transitions only in the final sliver — practically at the cull edge.
-        const float lodThresholds[kLodLevels] = {
-            cullDist * 0.97f,   // LOD 0 → 1
-            cullDist * 0.985f,  // LOD 1 → 2
-            cullDist * 0.995f,  // LOD 2 → 3
-            1e9f,
-        };
 
         ranges.reserve(lod.chunks.size());
         for (std::uint32_t cz = 0; cz < lod.chunkCountZ; ++cz)
@@ -987,22 +1866,14 @@ namespace
                 if (!sphere_visible(view, centerX, 30.0f, centerZ, radius))
                     continue;
 
-                // Pick LOD level based on distance to camera.
                 const float dx = centerX - view.x;
                 const float dz = centerZ - view.z;
                 const float dist = std::sqrt(dx * dx + dz * dz);
-                int lodLevel = kLodLevels - 1;
-                for (int l = 0; l < kLodLevels; ++l)
-                {
-                    if (dist < lodThresholds[l])
-                    {
-                        lodLevel = l;
-                        break;
-                    }
-                }
+                if (dist - radius > cullDist)
+                    continue;
 
                 const auto chunkIdx = static_cast<std::size_t>(cz) * lod.chunkCountX + cx;
-                const auto& cl = lod.chunks[chunkIdx][lodLevel];
+                const auto& cl = lod.chunks[chunkIdx][0];
                 if (cl.indexCount > 0)
                 {
                     phoenix::renderer::TerrainDrawRange range{};
@@ -1398,6 +2269,7 @@ int main(int, char**)
     phoenix::renderer::ParticleBatch particleBatch;
     std::vector<phoenix::renderer::ParticleInstance> particleScratch;
     phoenix::character::CharacterAppearance characterAppearance{};
+    BotManager botManager;
 
     std::size_t defaultMap{};
     const auto& startupMaps = runtime.world_map_names();
@@ -1423,6 +2295,7 @@ int main(int, char**)
     }
 
     auto characterOptions = scan_character_options(runtime.state().assets.root);
+    auto botEquipmentPools = scan_bot_equipment_pools(runtime.state().assets.root);
     // The full character/item caches (all races + BC3 textures, ~93MB, several
     // seconds) used to be built synchronously here. To launch fast we now skip that:
     // the default character (Humf on map 1) loads via on-demand disk fallback, and
@@ -1623,6 +2496,7 @@ int main(int, char**)
     };
 
     constexpr std::size_t kCharacterTextureSlotReserve = 32;
+    constexpr std::size_t kBotTextureSlotReserve = 256;
 
     const auto reloadCharacterIntoRenderer = [&]() {
         if (characterTextureBaseSlot == 0 || !terrainTexturesUploaded)
@@ -1839,10 +2713,11 @@ int main(int, char**)
         runtime.set_effect_texture_base(0);
 
         // Load character textures into the texture array after water frames.
-        // Reserve kCharacterTextureSlotReserve slots so appearance swaps don't resize the GPU array.
+        // Reserve character + bot slots so appearance swaps and bot spawns don't resize the GPU array.
         {
-            const auto reservedEnd = characterTextureBaseSlot + kCharacterTextureSlotReserve;
-            terrainTextures.resize(reservedEnd); // fills reserved slots with empty (invalid) textures
+            const auto botTextureBaseSlot = characterTextureBaseSlot + kCharacterTextureSlotReserve;
+            const auto reservedEnd = botTextureBaseSlot + kBotTextureSlotReserve;
+            terrainTextures.resize(reservedEnd);
 
             const auto loadCharTextures = [&]() {
                 const auto& charTexPaths = characterSystem.texture_paths();
@@ -1885,6 +2760,23 @@ int main(int, char**)
             else
             {
                 loadCharTextures();
+            }
+
+            if (characterLoaded)
+            {
+                botManager.build_random_presets(
+                    runtime.state().assets.root,
+                    characterOptions,
+                    botEquipmentPools,
+                    static_cast<std::uint32_t>(botTextureBaseSlot),
+                    static_cast<std::uint32_t>(kBotTextureSlotReserve),
+                    terrainTextures,
+                    assetsFullyLoaded.load());
+
+                std::ofstream log(phoenix::core::engine_log_path(), std::ios::app);
+                log << "Bot visual presets: " << botManager.visualPresets.size()
+                    << " textureBase=" << botTextureBaseSlot
+                    << " reserved=" << kBotTextureSlotReserve << "\n";
             }
         }
 
@@ -2411,7 +3303,8 @@ int main(int, char**)
                 runtime.update_animated_object_scene(animatedObjectScene, totalTime, deltaSeconds, camX, camY, camZ, actorVertexAnimationStart, true);
 
                 // Compute bone matrices for visible actors and queue GPU dispatches.
-                std::vector<float> allBoneMatrices;
+                static std::vector<float> allBoneMatrices;
+                allBoneMatrices.clear();
                 for (std::size_t i = actorVertexAnimationStart; i < animatedObjectScene.vertexAnimations.size(); ++i)
                 {
                     const auto& anim = animatedObjectScene.vertexAnimations[i];
@@ -2673,11 +3566,37 @@ int main(int, char**)
                 }
             }
 
-            // Upload animated vertices.
+            botManager.update(deltaSeconds, cameraX, cameraZ, fogCullDistance,
+                character_height_sampler, &heightSamplerCtx);
+
+            // Spawn one-shot effects queued by bots.
+            if (!botManager.pendingEffects.empty())
+            {
+                const auto& catalog = phoenix::effects::preset_catalog();
+                for (const auto& pe : botManager.pendingEffects)
+                {
+                    if (pe.catalogIndex < catalog.size())
+                        effectManager.spawn(catalog[pe.catalogIndex],
+                            phoenix::effects::EffectAnchor::at(pe.x, pe.y + 1.0f, pe.z));
+                }
+            }
+
             const auto& charVerts = characterSystem.world_vertices();
             const auto* tv = reinterpret_cast<const phoenix::renderer::TerrainVertex*>(charVerts.data());
-            std::vector<phoenix::renderer::TerrainVertex> charFrame(tv, tv + charVerts.size());
-            renderer.update_character_vertices(charFrame);
+
+            renderer.update_character_vertices(tv, charVerts.size());
+            if (botManager.bots.empty())
+            {
+                renderer.set_bot_character_visible(false);
+            }
+            else
+            {
+                if (botManager.updatePoseMesh(renderer))
+                {
+                    botManager.updatePoseInstances(renderer);
+                    renderer.set_bot_character_visible(true);
+                }
+            }
         }
         else
         {
@@ -2848,6 +3767,43 @@ int main(int, char**)
                 reloadCharacterIntoRenderer();
             if (panelResult.emoteTriggered > 0)
                 pendingEmote = panelResult.emoteTriggered;
+
+            // ---- Bot stress test window ----
+            if (playableMode && characterLoaded && characterSystem.ready())
+            {
+                ImGui::SetNextWindowPos(ImVec2(static_cast<float>(renderer.surface_width()) - 220.0f, 10.0f), ImGuiCond_FirstUseEver);
+                ImGui::SetNextWindowSize(ImVec2(210.0f, 0.0f), ImGuiCond_FirstUseEver);
+                if (ImGui::Begin("Bot Test", nullptr, ImGuiWindowFlags_AlwaysAutoResize))
+                {
+                    ImGui::Text("Bots: %d", static_cast<int>(botManager.bots.size()));
+                    if (ImGui::Button("Spawn 10", ImVec2(95.0f, 0.0f)))
+                    {
+                        if (!botManager.presetsBuilt)
+                            botManager.init(characterSystem);
+                        botManager.spawn(10, characterSystem.world_x(), characterSystem.world_z(),
+                            character_height_sampler, &heightSamplerCtx);
+                    }
+                    ImGui::SameLine();
+                    if (ImGui::Button("Spawn 100", ImVec2(95.0f, 0.0f)))
+                    {
+                        if (!botManager.presetsBuilt)
+                            botManager.init(characterSystem);
+                        botManager.spawn(100, characterSystem.world_x(), characterSystem.world_z(),
+                            character_height_sampler, &heightSamplerCtx);
+                    }
+                    if (ImGui::Button("Clear All", ImVec2(195.0f, 0.0f)))
+                    {
+                        botManager.clear();
+                        effectManager.clear();
+                        reloadCharacterIntoRenderer();
+                    }
+                    const bool prevEffects = botManager.effectsEnabled;
+                    ImGui::Checkbox("Bot Effects", &botManager.effectsEnabled);
+                    if (prevEffects && !botManager.effectsEnabled)
+                        effectManager.clear();
+                }
+                ImGui::End();
+            }
 
             if (actorsEnabled != prevActorsEnabled)
             {
@@ -3152,6 +4108,7 @@ int main(int, char**)
         {
             const auto mapIdx = *pendingMapLoad;
             pendingMapLoad.reset();
+            botManager.clear();
             renderer.enter_loading_mode();
             showLoading(0.05f, "Changing map");
             if (runAsync([&]() { return runtime.load_world_map(mapIdx); }, 0.10f, "Loading world"))

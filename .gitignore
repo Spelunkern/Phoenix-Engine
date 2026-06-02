@@ -4,16 +4,14 @@
 /x64/
 /Debug/
 /Release/
+/build/
+/build-*/
 /.vs/
 /.claude/
 
 # Local runtime data and extracted assets
 /Data/
 /**/Data/
-
-# Portable CMake extracted locally by scripts/build.sh from the bundled tarball
-# in external/cmake/ (the tarball itself is tracked; the extraction is not).
-/.cmake-portable/
 
 # Logs and local state
 /Logs/

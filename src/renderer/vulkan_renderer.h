@@ -133,7 +133,14 @@ namespace phoenix::renderer
         // Fast mesh swap: reuses existing GPU buffers when large enough, no vkDeviceWaitIdle.
         bool update_character_mesh(const std::vector<TerrainVertex>& vertices, const std::vector<std::uint32_t>& indices);
         bool update_character_vertices(const std::vector<TerrainVertex>& vertices);
+        bool update_character_vertices(const TerrainVertex* data, std::size_t count);
         void set_character_visible(bool visible);
+        bool set_bot_character_mesh(const std::vector<TerrainVertex>& vertices, const std::vector<std::uint32_t>& indices);
+        bool update_bot_character_vertices(const std::vector<TerrainVertex>& vertices);
+        bool update_bot_character_instances(
+            const std::vector<ObjectInstance>& instances,
+            const std::vector<ObjectBatch>& batches);
+        void set_bot_character_visible(bool visible);
         bool upload_terrain_textures(const std::vector<DdsTexture>& textures);
         bool upload_terrain_texture_layers(std::uint32_t firstLayer, const std::vector<DdsTexture>& textures);
         // Procedural weapon-effect particles. set_particle_instances uploads the

@@ -4,6 +4,28 @@ All notable changes to Phoenix Engine are documented here. Dates are ISO-8601.
 
 ## [Unreleased]
 
+## [v0.4] - 2026-06-02
+
+### Added
+- Phoenix Engine project polish for open-source publishing: CMake presets,
+  Linux build guide updates, Gentoo/Nix notes, release checklist updates, and a
+  Nix development shell.
+- Bot stress-test equipment randomization now uses valid indices discovered from
+  character, item, cloak, and vehicle CSV data instead of fixed hardcoded ranges.
+- Depth prepass shader assets and renderer-side support for the current v0.4
+  rendering path.
+
+### Changed
+- Removed vendored portable CMake from the repository. CMake is now a normal
+  system dependency on Windows and Linux.
+- Updated Windows and Linux build scripts to use the standard CMake preset flow.
+- Refined character, bot, renderer, shader, water/sky/effects, and performance
+  work accumulated for the v0.4 engine preview.
+
+### Notes
+- Runtime `Data/` remains excluded from the repository and should be distributed
+  separately.
+
 ### Added
 - **Effects system** (`src/effects/effect_system.*`): our own procedural,
   texture-free particle effects engine built on the existing billboard pipeline.

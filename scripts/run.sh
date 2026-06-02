@@ -4,7 +4,10 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-BIN="$ROOT/build/PhoenixEngine"
+BIN="$ROOT/build/linux-release/PhoenixEngine"
+if [ ! -x "$BIN" ] && [ -x "$ROOT/build/PhoenixEngine" ]; then
+    BIN="$ROOT/build/PhoenixEngine"
+fi
 
 [ -x "$BIN" ] || { echo "Binary not found. Build first:  ./scripts/build.sh" >&2; exit 1; }
 

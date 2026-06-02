@@ -366,16 +366,16 @@ float4 PSMain(VSOutput input) : SV_TARGET
 
     // Exponential fog curve — much more natural than linear squared.
     // Dense near the end, gentle at the start.
-    float fogDensity = 1.0 - exp(-linearDist * linearDist * 3.5);
+    float fogDensity = 1.0 - exp(-linearDist * linearDist * 5.0);
 
     // Height-based fog attenuation: lower altitudes get more fog.
-    // Camera height relative to world and fragment height both matter.
+    // Fades out at long range so terrain at the cull edge is always hidden.
     float cameraHeight = camera.positionYaw.y;
     float fragHeight = input.worldPos.y;
     float avgHeight = (cameraHeight + fragHeight) * 0.5;
-    // Fog is densest below ~50 units, fades above ~300.
     float heightFog = saturate(1.0 - avgHeight / 350.0) * 0.4 + 0.6;
-    fogDensity *= heightFog;
+    float heightInfluence = saturate(1.0 - linearDist * 1.8);
+    fogDensity *= lerp(1.0, heightFog, heightInfluence);
 
     // Atmospheric desaturation: distant objects lose color before disappearing.
     // Mimics Rayleigh scattering — blue haze at medium distances.

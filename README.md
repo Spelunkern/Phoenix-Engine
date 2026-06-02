@@ -47,7 +47,7 @@ Phoenix Engine does not assume deep technical knowledge from final users. Everyo
 - Character appearance loading with race, armor, face, hair, weapon, shield, and cloak/mantle selection.
 - Per-race/class weapon and shield attach-bone mapping, with a default starting loadout (one-hand sword + light shield + cloak).
 - Mounts/vehicles: ride seated on the mount's bone, mount animations, and faster-than-foot movement.
-- Procedural weapon "aura" effects: fully shader-generated layered particles (no asset files) with birth→death colour gradients and element presets (fire, ice, holy, poison, shadow, arcane).
+- Procedural weapon "aura" effects: fully shader-generated layered particles (no asset files) with birth-to-death colour gradients and element presets (fire, ice, holy, poison, shadow, arcane).
 - NPC and monster loading from server/map data with nameplates, scale, idle/walk animation, and distance culling.
 - CSV-based data formats replacing legacy binary formats for monster definitions, NPC data, server metadata, and spawn maps (see [Data Formats](#data-formats)).
 - Map ambience support for music and sound zones with distance-based fade behavior (OGG Vorbis via miniaudio).
@@ -82,7 +82,7 @@ docs/          Public documentation and release notes.
 | Windows 10/11 | Primary | Visual Studio 2022 / MSBuild |
 | Linux (X11/Wayland) | Supported | CMake + GCC/Clang |
 
-Both platforms share the same codebase. The platform layer uses SDL2, the renderer uses Vulkan through volk, and the audio system uses miniaudio with stb_vorbis — all cross-platform.
+Both platforms share the same codebase. The platform layer uses SDL2, the renderer uses Vulkan through volk, and the audio system uses miniaudio with stb_vorbis.
 
 ## Requirements
 
@@ -90,36 +90,37 @@ Both platforms share the same codebase. The platform layer uses SDL2, the render
 
 - Visual Studio 2022 Build Tools with MSVC v143.
 - Windows SDK.
+- CMake 3.20+ installed on `PATH`.
 - A Vulkan-capable GPU and current graphics driver.
 
-SDL2 is vendored in the repository. No additional downloads needed.
+SDL2 is vendored in the repository.
 
 ### Linux
 
 - GCC 13+ or Clang 17+ (C++23 required).
-- CMake 3.20+ — a portable copy is bundled in `external/cmake/`, so a system install is optional (`scripts/build.sh` uses it automatically when `cmake` is absent).
+- CMake 3.20+ installed on `PATH`.
 - SDL2 development libraries.
 - Vulkan-capable GPU and driver with ICD loader (Vulkan headers are vendored).
 
 Install dependencies on Debian/Ubuntu:
 
 ```bash
-sudo apt install build-essential pkg-config libsdl2-dev libvulkan1 mesa-vulkan-drivers
+sudo apt install build-essential cmake pkg-config libsdl2-dev libvulkan1 mesa-vulkan-drivers
 ```
 
 On Fedora:
 
 ```bash
-sudo dnf install gcc-c++ pkgconf SDL2-devel vulkan-loader mesa-vulkan-drivers
+sudo dnf install gcc-c++ cmake pkgconf SDL2-devel vulkan-loader mesa-vulkan-drivers
 ```
 
 On Arch:
 
 ```bash
-sudo pacman -S base-devel pkgconf sdl2 vulkan-icd-loader
+sudo pacman -S base-devel cmake pkgconf sdl2 vulkan-icd-loader
 ```
 
-See [BUILD_LINUX.md](BUILD_LINUX.md) for the full Linux guide (`scripts/build.sh` inspects prerequisites and prints exact install commands for your distro).
+Gentoo and Nix instructions are documented in [BUILD_LINUX.md](BUILD_LINUX.md). `scripts/build.sh` inspects prerequisites and prints install hints for Debian/Ubuntu, Fedora, Arch, openSUSE, Gentoo, and Nix.
 
 ## Build
 
@@ -137,6 +138,13 @@ Or directly:
 & 'C:\BuildTools\MSBuild\Current\Bin\MSBuild.exe' .\PhoenixEngine.sln /p:Configuration=Release /p:Platform=x64 /m
 ```
 
+Or with CMake presets:
+
+```powershell
+cmake --preset windows-vs2022-x64
+cmake --build --preset windows-release
+```
+
 Output: `bin\x64\Release\PhoenixEngine.exe`
 
 ### Linux
@@ -148,13 +156,13 @@ Output: `bin\x64\Release\PhoenixEngine.exe`
 Or manually:
 
 ```bash
-cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
-cmake --build build -j$(nproc)
+cmake --preset linux-release
+cmake --build --preset linux-release -j$(nproc)
 ```
 
-Output: `build/PhoenixEngine`. Run it from the repo root with `./scripts/run.sh` so `shaders/` and `Data/` resolve correctly.
+Output: `build/linux-release/PhoenixEngine`. Run it from the repo root with `./scripts/run.sh` so `shaders/` and `Data/` resolve correctly.
 
-The repository vendors Vulkan Headers, volk, Dear ImGui, and DXC binaries used for shader compilation. A full Vulkan SDK install is not required for this project layout.
+The repository vendors Vulkan Headers, volk, Dear ImGui, and DXC binaries used for shader compilation. A full Vulkan SDK install is not required for this project layout, but CMake must be installed separately.
 
 ## Shader Compilation
 

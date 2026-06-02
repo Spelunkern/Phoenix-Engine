@@ -189,9 +189,25 @@ namespace phoenix::renderer
         std::uint32_t characterIndexCount{};
         std::size_t characterVertexBytes{};
         std::size_t characterVertexCapacity{};   // allocated capacity for vertex buffer
+        void* characterVertexMapped{};
         std::size_t characterIndexCapacity{};    // allocated capacity for index buffer (bytes)
         bool characterReady{};
         bool characterVisible{};
+        VkBuffer botCharacterVertexBuffer{};
+        VkDeviceMemory botCharacterVertexMemory{};
+        void* botCharacterVertexMapped{};
+        VkBuffer botCharacterIndexBuffer{};
+        VkDeviceMemory botCharacterIndexMemory{};
+        VkBuffer botCharacterInstanceBuffer{};
+        VkDeviceMemory botCharacterInstanceMemory{};
+        void* botCharacterInstanceMapped{};
+        std::size_t botCharacterVertexBytes{};
+        std::size_t botCharacterVertexCapacity{};
+        std::size_t botCharacterInstanceBytes{};
+        std::size_t botCharacterInstanceCapacity{};
+        std::vector<ObjectBatch> botCharacterBatches;
+        bool botCharacterReady{};
+        bool botCharacterVisible{};
 
         VkDescriptorPool descriptorPool{};
         VkDescriptorSetLayout descriptorSetLayout{};

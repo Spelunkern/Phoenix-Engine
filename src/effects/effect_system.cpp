@@ -271,9 +271,13 @@ namespace phoenix::effects
             }
         }
 
-        // Despawn finished one-shots once all their particles have died.
+        // Despawn finished one-shots once all their particles have died,
+        // or force-kill if they've been alive too long (safety timeout).
+        constexpr float kMaxEffectAge = 6.0f;
         instances_.erase(
             std::remove_if(instances_.begin(), instances_.end(), [](const Instance& inst) {
+                if (!inst.def.loop && inst.ageS > kMaxEffectAge)
+                    return true;
                 if (inst.emitting)
                     return false;
                 for (const auto& rt : inst.runtime)
