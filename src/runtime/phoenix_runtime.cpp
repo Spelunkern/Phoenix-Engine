@@ -127,26 +127,14 @@ namespace phoenix::runtime
         {
             const auto lowerName = phoenix::assets::lower_ascii(std::string(textureName));
             constexpr std::string_view cutoutTokens[] = {
-                "leaf",
-                "leav",
-                "tree",
-                "grass",
-                "bush",
-                "flower",
-                "plant",
-                "weed",
-                "branch",
-                "vine",
-                "fern",
-                "shrub",
+                "leaf", "leav", "tree", "grass", "bush", "flower", "plant",
+                "weed", "branch", "vine", "fern", "shrub",
             };
-
             for (const auto token : cutoutTokens)
             {
                 if (lowerName.find(token) != std::string::npos)
                     return true;
             }
-
             return false;
         }
 
@@ -155,28 +143,16 @@ namespace phoenix::runtime
             auto lowerName = phoenix::assets::lower_ascii(std::string(assetName));
             auto lowerPath = phoenix::assets::lower_ascii(assetPath.string());
             std::ranges::replace(lowerPath, '\\', '/');
-
             constexpr std::string_view cutoutTokens[] = {
-                "/tree/",
-                "/grass/",
-                "tree",
-                "leaf",
-                "leav",
-                "bush",
-                "plant",
-                "grass",
-                "branch",
-                "vine",
-                "fern",
-                "shrub",
+                "/tree/", "/grass/",
+                "tree", "leaf", "leav", "bush", "plant", "grass",
+                "branch", "vine", "fern", "shrub",
             };
-
             for (const auto token : cutoutTokens)
             {
                 if (lowerName.find(token) != std::string::npos || lowerPath.find(token) != std::string::npos)
                     return true;
             }
-
             return false;
         }
 
@@ -2403,6 +2379,18 @@ namespace phoenix::runtime
             return dx * dx + dz * dz <= mobCullRangeSq;
         };
 
+        // Build per-type index so inner loops don't scan all mob instances.
+        // One-time allocation amortised across frames (reuses capacity).
+        static thread_local std::vector<std::vector<std::size_t>> mobsByType;
+        mobsByType.resize(scene.vertexAnimations.size());
+        for (auto& bucket : mobsByType) bucket.clear();
+        for (std::size_t mi = 0; mi < scene.mobInstances.size(); ++mi)
+        {
+            const auto ai = scene.mobInstances[mi].animIndex;
+            if (ai < mobsByType.size())
+                mobsByType[ai].push_back(mi);
+        }
+
         // Reset per-type movement counters.
         for (std::size_t i = actorVertexAnimationStart; i < scene.vertexAnimations.size(); ++i)
         {
@@ -2411,30 +2399,25 @@ namespace phoenix::runtime
 
             a.movingCount = 0;
             a.runningCount = 0;
+            const auto& typeMobs = i < mobsByType.size() ? mobsByType[i] : mobsByType[0];
 
-            // Check if ANY in-range instance of this type is still moving.
             if (a.mobMoving)
             {
                 bool anyNearbyMoving = false;
-                for (const auto& mob : scene.mobInstances)
+                for (const auto mi : typeMobs)
                 {
-                    if (mob.animIndex == i && mob.moving && mobInRange(mob))
-                    {
-                        anyNearbyMoving = true;
-                        break;
-                    }
+                    const auto& mob = scene.mobInstances[mi];
+                    if (mob.moving && mobInRange(mob)) { anyNearbyMoving = true; break; }
                 }
                 if (!anyNearbyMoving)
                 {
-                    // All nearby instances arrived or left range: reset the type.
                     a.mobMoving = false;
                     a.mobRunning = false;
                     const auto seed = static_cast<std::uint32_t>(
                         std::abs(a.worldX * 11.3f) + std::abs(a.worldZ * 7.7f) + totalTime * 3.1f);
                     a.mobMoveTimer = kMobIdleMin + static_cast<float>(seed % 256) / 255.0f * (kMobIdleMax - kMobIdleMin);
-                    // Force-stop ALL instances of this type (including distant ones).
-                    for (auto& mob : scene.mobInstances)
-                        if (mob.animIndex == i) { mob.moving = false; mob.running = false; }
+                    for (const auto mi : typeMobs)
+                    { scene.mobInstances[mi].moving = false; scene.mobInstances[mi].running = false; }
                 }
             }
             else
@@ -2442,19 +2425,13 @@ namespace phoenix::runtime
                 a.mobMoveTimer -= clampedDelta;
                 if (a.mobMoveTimer <= 0.0f)
                 {
-                    // Only start movement if at least one instance is in range.
                     bool anyInRange = false;
-                    for (const auto& mob : scene.mobInstances)
+                    for (const auto mi : typeMobs)
                     {
-                        if (mob.animIndex == i && mobInRange(mob))
-                        {
-                            anyInRange = true;
-                            break;
-                        }
+                        if (mobInRange(scene.mobInstances[mi])) { anyInRange = true; break; }
                     }
                     if (!anyInRange)
                     {
-                        // No nearby mobs of this type — re-arm the timer cheaply.
                         a.mobMoveTimer = kMobIdleMin;
                         continue;
                     }
@@ -2464,10 +2441,9 @@ namespace phoenix::runtime
                         std::abs(a.worldX * 3.7f) + std::abs(a.worldZ * 9.1f) + totalTime * 17.3f);
                     const float runRoll = static_cast<float>((seed / 62800) % 100) / 100.0f;
                     a.mobRunning = kMobRunChance > 0.0f && runRoll < kMobRunChance;
-                    // Only activate instances that are in range.
-                    for (auto& mob : scene.mobInstances)
+                    for (const auto mi : typeMobs)
                     {
-                        if (mob.animIndex != i) continue;
+                        auto& mob = scene.mobInstances[mi];
                         if (!mobInRange(mob)) continue;
                         const auto& inst = scene.baseInstances[mob.instanceIndex];
                         const auto instanceSeed = seed + static_cast<std::uint32_t>(mob.instanceIndex) * 977u;
@@ -2522,9 +2498,11 @@ namespace phoenix::runtime
                     const auto seed = static_cast<std::uint32_t>(
                         std::abs(curX * 11.3f) + std::abs(curZ * 7.7f) + totalTime * 3.1f);
                     anim.mobMoveTimer = kMobIdleMin + static_cast<float>(seed % 256) / 255.0f * (kMobIdleMax - kMobIdleMin);
-                    for (auto& other : scene.mobInstances)
-                        if (other.animIndex == mob.animIndex)
-                        { other.moving = false; other.running = false; }
+                    if (mob.animIndex < mobsByType.size())
+                    {
+                        for (const auto oi : mobsByType[mob.animIndex])
+                        { scene.mobInstances[oi].moving = false; scene.mobInstances[oi].running = false; }
+                    }
                 }
                 else
                 {
@@ -2571,7 +2549,10 @@ namespace phoenix::runtime
                 const auto& frameVertices = animation.frames[frame];
                 const auto count = std::min<std::size_t>(animation.vertexCount, frameVertices.size());
                 if (static_cast<std::size_t>(animation.firstVertex) + count <= scene.vertices.size())
+                {
                     std::copy_n(frameVertices.begin(), count, scene.vertices.begin() + animation.firstVertex);
+                    scene.mark_vertices_dirty(animation.firstVertex, static_cast<std::uint32_t>(count));
+                }
                 continue;
             }
 
@@ -2586,6 +2567,18 @@ namespace phoenix::runtime
                 * (kAnimationRange + animation.boundingRadius);
             if (distSq > effectiveRangeSq)
                 continue;
+
+            // LOD: reduce skinning frequency for distant actors.
+            // Close actors update every frame, mid-range every 3rd, far every 6th.
+            {
+                const float nearSq = 60.0f * 60.0f;
+                const float midSq = 140.0f * 140.0f;
+                const auto frameHash = static_cast<std::uint32_t>(i);
+                if (distSq > midSq && (frameHash + static_cast<std::uint32_t>(totalTime * 30.0f)) % 6 != 0)
+                    continue;
+                if (distSq > nearSq && (frameHash + static_cast<std::uint32_t>(totalTime * 30.0f)) % 3 != 0)
+                    continue;
+            }
 
             const auto& breathAnim = animation.animations.breath;
             const auto& idleAnim = animation.animations.idle;
@@ -2606,6 +2599,7 @@ namespace phoenix::runtime
                 phoenix::world::skin_actor_vertices(animation.skinData, span, anim, frameF);
                 animation.cachedFrame = discreteFrame;
                 animation.cachedAnim = &anim;
+                scene.mark_vertices_dirty(animation.firstVertex, animation.vertexCount);
             };
 
             auto animFrameCount = [](const phoenix::world::CharacterAnimation& anim) -> float {

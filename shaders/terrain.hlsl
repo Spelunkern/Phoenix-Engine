@@ -328,11 +328,10 @@ float4 PSMain(VSOutput input) : SV_TARGET
             }
             else
             {
-                // World objects — unchanged.
-                if (alphaCutout)
-                    clip(textureColor.a - 0.3);
-                else
-                    clip(textureColor.a - 0.01);
+                // World objects — universal alpha test. Any pixel with
+                // alpha below the threshold is transparent, regardless of
+                // whether the asset was tagged as cutout or not.
+                clip(textureColor.a - 0.3);
                 color = textureColor.rgb;
                 if (isWater)
                 {

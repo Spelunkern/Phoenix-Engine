@@ -3,6 +3,7 @@
 #include "core/logging.h"
 #include "renderer/dds_loader.h"
 #include "platform/sdl_window.h"
+#include "ui/cpu_profiler.h"
 
 #include "imgui.h"
 #include "imgui_impl_vulkan.h"
@@ -3211,6 +3212,52 @@ namespace phoenix::renderer
         return true;
     }
 
+    bool VulkanRenderer::update_animated_object_vertices_range(
+        const TerrainVertex* vertices, std::uint32_t firstVertex, std::uint32_t vertexCount)
+    {
+        if (!impl_ || !impl_->animatedObjectsReady || vertexCount == 0)
+            return false;
+        const auto offsetBytes = static_cast<std::size_t>(firstVertex) * sizeof(TerrainVertex);
+        const auto rangeBytes = static_cast<std::size_t>(vertexCount) * sizeof(TerrainVertex);
+        if (offsetBytes + rangeBytes > impl_->animatedObjectVertexBytes)
+            return false;
+        if (impl_->animatedObjectVertexMapped)
+        {
+            std::memcpy(static_cast<char*>(impl_->animatedObjectVertexMapped) + offsetBytes,
+                        vertices + firstVertex, rangeBytes);
+            return true;
+        }
+        void* mapped = nullptr;
+        if (vkMapMemory(impl_->device, impl_->animatedObjectVertexMemory,
+                        offsetBytes, rangeBytes, 0, &mapped) != VK_SUCCESS)
+            return false;
+        std::memcpy(mapped, vertices + firstVertex, rangeBytes);
+        vkUnmapMemory(impl_->device, impl_->animatedObjectVertexMemory);
+        return true;
+    }
+
+    bool VulkanRenderer::update_animated_object_instances(
+        const std::vector<ObjectInstance>& instances)
+    {
+        if (!impl_ || !impl_->animatedObjectsReady)
+            return false;
+        const auto instanceBytes = instances.size() * sizeof(ObjectInstance);
+        if (instanceBytes > impl_->animatedObjectInstanceBytes)
+            return false;
+        if (instanceBytes > 0 && impl_->animatedObjectInstanceMapped)
+            std::memcpy(impl_->animatedObjectInstanceMapped, instances.data(), instanceBytes);
+        else if (instanceBytes > 0)
+        {
+            void* mapped = nullptr;
+            if (vkMapMemory(impl_->device, impl_->animatedObjectInstanceMemory,
+                            0, instanceBytes, 0, &mapped) != VK_SUCCESS)
+                return false;
+            std::memcpy(mapped, instances.data(), instanceBytes);
+            vkUnmapMemory(impl_->device, impl_->animatedObjectInstanceMemory);
+        }
+        return true;
+    }
+
     bool VulkanRenderer::upload_skin_source_vertices(const void* data, std::size_t count)
     {
         if (!impl_ || !impl_->skinPipelineReady || count == 0 || !data)
@@ -3828,9 +3875,13 @@ namespace phoenix::renderer
             return;
 
         const auto frame = frameIndex_ % kMaxFramesInFlight;
+
+        { CPU_PROFILE_SCOPE("GPU Fence Wait");
         vkWaitForFences(impl_->device, 1, &impl_->inFlight[frame], VK_TRUE, UINT64_MAX);
+        }
 
         std::uint32_t imageIndex{};
+        { CPU_PROFILE_SCOPE("Swapchain Acquire");
         const auto acquire = vkAcquireNextImageKHR(
             impl_->device,
             impl_->swapchain,
@@ -3840,18 +3891,18 @@ namespace phoenix::renderer
             &imageIndex);
         if (acquire == VK_ERROR_OUT_OF_DATE_KHR)
         {
-            // Swapchain invalidated (e.g. minimize/restore): rebuild and skip this
-            // frame. Without this the window stays frozen until a manual resize.
             recreate_swapchain();
             return;
         }
         if (acquire != VK_SUCCESS && acquire != VK_SUBOPTIMAL_KHR)
             return;
+        }
         vkResetFences(impl_->device, 1, &impl_->inFlight[frame]);
 
         const auto commandBuffer = impl_->commandBuffers[frame];
         vkResetCommandBuffer(commandBuffer, 0);
 
+        CPU_PROFILE_SCOPE("Cmd Record+Submit");
         VkCommandBufferBeginInfo beginInfo{ VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO };
         beginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
         vkBeginCommandBuffer(commandBuffer, &beginInfo);

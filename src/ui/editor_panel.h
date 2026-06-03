@@ -17,7 +17,13 @@ namespace phoenix::ui
         Snowstorm,
         Sunset,
         Night,
+        Dawn,
+        Dusk,
+        MidAfternoon,
+        Overcast,
     };
+
+
 
     // One selectable character preset discovered by scanning the data folder.
     struct CharacterOption

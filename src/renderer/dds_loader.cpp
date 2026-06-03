@@ -474,13 +474,57 @@ namespace phoenix::renderer
             std::vector<std::uint8_t> bc3(bc1Blocks * 16);
             for (std::size_t i = 0; i < bc1Blocks; ++i)
             {
+                const auto* src = mip.data() + i * 8;
                 auto* dst = bc3.data() + i * 16;
-                // Opaque alpha block: alpha0=255, alpha1=255, all indices 0.
-                dst[0] = 0xFF;
-                dst[1] = 0xFF;
-                std::memset(dst + 2, 0, 6);
+
+                const auto c0 = static_cast<std::uint16_t>(src[0])
+                    | (static_cast<std::uint16_t>(src[1]) << 8);
+                const auto c1 = static_cast<std::uint16_t>(src[2])
+                    | (static_cast<std::uint16_t>(src[3]) << 8);
+
+                if (c0 <= c1)
+                {
+                    // BC1 transparent mode: index 3 = transparent pixel.
+                    // Build a BC3 alpha block: alpha0=255, alpha1=0 (explicit
+                    // endpoints), then set each texel's 3-bit index to 0 (=255)
+                    // or 1 (=0) based on the BC1 2-bit colour index.
+                    dst[0] = 0xFF; // alpha0 = fully opaque
+                    dst[1] = 0x00; // alpha1 = fully transparent
+
+                    // Decode BC1 colour indices (2 bits each, 16 texels = 32 bits = 4 bytes).
+                    const std::uint32_t colorBits =
+                        static_cast<std::uint32_t>(src[4])
+                        | (static_cast<std::uint32_t>(src[5]) << 8)
+                        | (static_cast<std::uint32_t>(src[6]) << 16)
+                        | (static_cast<std::uint32_t>(src[7]) << 24);
+
+                    // BC3 alpha indices: 3 bits per texel, 16 texels = 48 bits = 6 bytes.
+                    // Index 0 = alpha0 (255/opaque), index 1 = alpha1 (0/transparent).
+                    std::uint64_t alphaBits = 0;
+                    for (int t = 0; t < 16; ++t)
+                    {
+                        const auto colorIdx = (colorBits >> (t * 2)) & 3u;
+                        // BC1 transparent mode: index 3 = transparent.
+                        const std::uint64_t alphaIdx = (colorIdx == 3) ? 1u : 0u;
+                        alphaBits |= alphaIdx << (t * 3);
+                    }
+                    dst[2] = static_cast<std::uint8_t>(alphaBits & 0xFF);
+                    dst[3] = static_cast<std::uint8_t>((alphaBits >> 8) & 0xFF);
+                    dst[4] = static_cast<std::uint8_t>((alphaBits >> 16) & 0xFF);
+                    dst[5] = static_cast<std::uint8_t>((alphaBits >> 24) & 0xFF);
+                    dst[6] = static_cast<std::uint8_t>((alphaBits >> 32) & 0xFF);
+                    dst[7] = static_cast<std::uint8_t>((alphaBits >> 40) & 0xFF);
+                }
+                else
+                {
+                    // BC1 opaque mode: no transparency.
+                    dst[0] = 0xFF;
+                    dst[1] = 0xFF;
+                    std::memset(dst + 2, 0, 6);
+                }
+
                 // Copy the BC1 colour block unchanged.
-                std::memcpy(dst + 8, mip.data() + i * 8, 8);
+                std::memcpy(dst + 8, src, 8);
             }
             mip = std::move(bc3);
         }
@@ -667,6 +711,65 @@ namespace phoenix::renderer
     }
 
     // ── Full texture → BC3 normalisation ─────────────────────────────────
+    bool texture_has_alpha_cutout(const DdsTexture& texture)
+    {
+        if (!texture.valid)
+            return false;
+
+        // BC3: each 16-byte block starts with alpha0 (byte 0) and alpha1 (byte 1).
+        // If any block has either endpoint below 250, the texture uses alpha.
+        constexpr std::uint32_t kBc3Format = 137; // VK_FORMAT_BC3_UNORM_BLOCK
+        if (texture.compressed && texture.vkFormat == kBc3Format && !texture.mipData.empty())
+        {
+            const auto& mip0 = texture.mipData[0];
+            const auto blockCount = mip0.size() / 16;
+            std::size_t transparentBlocks = 0;
+            for (std::size_t i = 0; i < blockCount; ++i)
+            {
+                const auto alpha0 = mip0[i * 16 + 0];
+                const auto alpha1 = mip0[i * 16 + 1];
+                if (alpha0 < 200 || alpha1 < 200)
+                    ++transparentBlocks;
+            }
+            // If more than 2% of blocks have non-opaque alpha, it's a cutout texture.
+            return transparentBlocks > blockCount / 50;
+        }
+
+        // BC1: check if the format encodes 1-bit alpha (c0 <= c1 means transparent).
+        constexpr std::uint32_t kBc1Format = 133; // VK_FORMAT_BC1_RGBA_UNORM_BLOCK
+        if (texture.compressed && texture.vkFormat == kBc1Format && !texture.mipData.empty())
+        {
+            const auto& mip0 = texture.mipData[0];
+            const auto blockCount = mip0.size() / 8;
+            std::size_t transparentBlocks = 0;
+            for (std::size_t i = 0; i < blockCount; ++i)
+            {
+                const auto c0 = static_cast<std::uint16_t>(mip0[i * 8 + 0])
+                               | (static_cast<std::uint16_t>(mip0[i * 8 + 1]) << 8);
+                const auto c1 = static_cast<std::uint16_t>(mip0[i * 8 + 2])
+                               | (static_cast<std::uint16_t>(mip0[i * 8 + 3]) << 8);
+                if (c0 <= c1) // BC1 transparent mode
+                    ++transparentBlocks;
+            }
+            return transparentBlocks > blockCount / 50;
+        }
+
+        // Uncompressed RGBA: check alpha channel directly.
+        if (!texture.rgba.empty() && texture.width > 0 && texture.height > 0)
+        {
+            const auto pixelCount = static_cast<std::size_t>(texture.width) * texture.height;
+            std::size_t transparentPixels = 0;
+            for (std::size_t i = 0; i < pixelCount; ++i)
+            {
+                if (texture.rgba[i * 4 + 3] < 200)
+                    ++transparentPixels;
+            }
+            return transparentPixels > pixelCount / 50;
+        }
+
+        return false;
+    }
+
     void convert_texture_to_bc3(DdsTexture& texture,
                                 std::uint32_t targetWidth,
                                 std::uint32_t targetHeight,

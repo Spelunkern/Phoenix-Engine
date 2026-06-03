@@ -1,4 +1,5 @@
 #include "ui/editor_panel.h"
+#include "ui/cpu_profiler.h"
 
 #include "imgui.h"
 
@@ -60,8 +61,27 @@ namespace phoenix::ui
             weatherFog = { 0.035f, 0.045f, 0.075f };
             skyTuning[3] = 4.0f;
         }
+        else if (weatherMode == WeatherMode::Dawn)
+        {
+            weatherFog = { 0.62f, 0.48f, 0.42f };
+            skyTuning[3] = 5.0f;
+        }
+        else if (weatherMode == WeatherMode::Dusk)
+        {
+            weatherFog = { 0.38f, 0.22f, 0.32f };
+            skyTuning[3] = 6.0f;
+        }
+        else if (weatherMode == WeatherMode::MidAfternoon)
+        {
+            weatherFog = { 0.82f, 0.72f, 0.52f };
+            skyTuning[3] = 7.0f;
+        }
+        else if (weatherMode == WeatherMode::Overcast)
+        {
+            weatherFog = { 0.52f, 0.54f, 0.56f };
+            skyTuning[3] = 8.0f;
+        }
         renderer.set_sky_tuning(skyTuning.data(), static_cast<std::uint32_t>(skyTuning.size()));
-
         if (!fogEnabled && !dungeon)
         {
             renderer.set_sky_settings(
@@ -96,6 +116,11 @@ namespace phoenix::ui
         {
             fogStart = std::max(28.0f, viewDistance * 0.16f);
             fogEnd = std::max(fogStart + 75.0f, viewDistance * 0.52f);
+        }
+        else if (weatherMode == WeatherMode::Overcast)
+        {
+            fogStart = std::max(60.0f, viewDistance * 0.28f);
+            fogEnd = std::max(fogStart + 100.0f, viewDistance * 0.72f);
         }
         // Dungeons: override fog to a short black range regardless of slider.
         if (dungeon)
@@ -211,11 +236,11 @@ namespace phoenix::ui
             || std::abs(previousActorViewDistance - actorViewDistance) > 1.0f;
 
         const WeatherMode previousWeatherMode = weatherMode;
-        const char* weatherItems[] = { "Default", "Storm", "Snowstorm", "Sunset", "Night" };
+        const char* weatherItems[] = { "Default", "Storm", "Snowstorm", "Sunset", "Night", "Dawn", "Dusk", "Mid-Afternoon", "Overcast" };
         int weatherIndex = static_cast<int>(weatherMode);
         ImGui::SetNextItemWidth(160.0f);
         if (ImGui::Combo("Weather", &weatherIndex, weatherItems, IM_ARRAYSIZE(weatherItems)))
-            weatherMode = static_cast<WeatherMode>(std::clamp(weatherIndex, 0, 4));
+            weatherMode = static_cast<WeatherMode>(std::clamp(weatherIndex, 0, 8));
         result.weatherChanged = weatherMode != previousWeatherMode;
 
         // ---- Debug overlays ----
@@ -245,6 +270,11 @@ namespace phoenix::ui
             ImGui::Checkbox("Effects##win", &showEffectsWindow);
             ImGui::SameLine();
             ImGui::Checkbox("Actor anim##win", &showActorAnimWindow);
+            ImGui::SameLine();
+            {
+                auto& profiler = phoenix::ui::cpu_profiler();
+                ImGui::Checkbox("CPU##win", &profiler.visible);
+            }
             result.debugGizmosChanged = prevSounds != showSoundGizmos
                 || prevMusic != showMusicGizmos
                 || prevPortals != showPortalGizmos

@@ -233,6 +233,17 @@ namespace phoenix::runtime
         std::vector<VertexAnimation> vertexAnimations;
         std::vector<InstanceAnimation> instanceAnimations;
         std::vector<MobInstanceState> mobInstances;
+
+        // Dirty vertex range tracking — only upload modified regions to GPU.
+        std::uint32_t dirtyVertexMin{ 0xFFFFFFFFu };
+        std::uint32_t dirtyVertexMax{};
+        void mark_vertices_dirty(std::uint32_t first, std::uint32_t count)
+        {
+            dirtyVertexMin = std::min(dirtyVertexMin, first);
+            dirtyVertexMax = std::max(dirtyVertexMax, first + count);
+        }
+        void clear_dirty() { dirtyVertexMin = 0xFFFFFFFFu; dirtyVertexMax = 0; }
+        bool has_dirty_vertices() const { return dirtyVertexMin < dirtyVertexMax; }
     };
 
     // World-space collision triangles with spatial grid for fast queries.

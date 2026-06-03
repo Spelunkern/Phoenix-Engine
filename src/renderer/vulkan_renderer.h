@@ -110,6 +110,10 @@ namespace phoenix::renderer
         bool update_animated_object_scene(
             const std::vector<TerrainVertex>& vertices,
             const std::vector<ObjectInstance>& instances);
+        bool update_animated_object_vertices_range(
+            const TerrainVertex* vertices, std::uint32_t firstVertex, std::uint32_t vertexCount);
+        bool update_animated_object_instances(
+            const std::vector<ObjectInstance>& instances);
         bool update_terrain_indices(const std::vector<std::uint32_t>& indices);
         void set_static_object_batches(const std::vector<ObjectBatch>& batches);
         bool upload_indirect_draw_data(

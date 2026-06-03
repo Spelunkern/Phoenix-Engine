@@ -8,6 +8,7 @@
 #include "platform/sdl_window.h"
 #include "renderer/dds_loader.h"
 #include "renderer/vulkan_renderer.h"
+#include "ui/cpu_profiler.h"
 #include "ui/editor_panel.h"
 #include "ui/perf_hud.h"
 #include "world/actor_scene.h"
@@ -27,6 +28,7 @@
 #include <cstring>
 #include <filesystem>
 #include <format>
+#include <iomanip>
 #include <fstream>
 #include <future>
 #include <limits>
@@ -48,6 +50,8 @@
 #include <psapi.h>
 #include <winternl.h>
 #pragma comment(lib, "ntdll.lib")
+#else
+#include <malloc.h>
 #endif
 
 namespace
@@ -1608,6 +1612,43 @@ namespace
             return;
         }
 
+        if (weatherMode == WeatherMode::Dawn)
+        {
+            background->AddRectFilled(
+                ImVec2(0.0f, 0.0f),
+                ImVec2(width, height),
+                IM_COL32(255, 160, 80, 12));
+            return;
+        }
+
+        if (weatherMode == WeatherMode::Dusk)
+        {
+            background->AddRectFilled(
+                ImVec2(0.0f, 0.0f),
+                ImVec2(width, height),
+                IM_COL32(60, 20, 80, 40));
+            return;
+        }
+
+        if (weatherMode == WeatherMode::MidAfternoon)
+        {
+            background->AddRectFilled(
+                ImVec2(0.0f, 0.0f),
+                ImVec2(width, height),
+                IM_COL32(255, 200, 120, 10));
+            return;
+        }
+
+        if (weatherMode == WeatherMode::Overcast)
+        {
+            background->AddRectFilled(
+                ImVec2(0.0f, 0.0f),
+                ImVec2(width, height),
+                IM_COL32(140, 145, 155, 22));
+            return;
+        }
+
+        // Snowstorm particles (only reached by WeatherMode::Snowstorm).
         background->AddRectFilled(
             ImVec2(0.0f, 0.0f),
             ImVec2(width, height),
@@ -2393,6 +2434,9 @@ int main(int, char**)
     perfHud.gpuName = renderer.adapter_name();
     perfHud.renderer = &renderer;
 
+    auto& cpuProfiler = phoenix::ui::cpu_profiler();
+    cpuProfiler.initialize();
+
     const auto uploadDebugGizmos = [&]() {
         std::vector<phoenix::renderer::TerrainVertex> debugVertices;
         std::vector<std::uint32_t> debugIndices;
@@ -2870,6 +2914,7 @@ int main(int, char**)
         runAsyncVoid([&]() { runtime.build_terrain_mesh(terrainVertices, terrainIndices, terrainLodInfo); }, 0.74f, "Building terrain");
         terrainVertexCount = static_cast<std::uint32_t>(terrainVertices.size());
         terrainIndexCount = static_cast<std::uint32_t>(terrainIndices.size());
+
         {
             std::ofstream log(phoenix::core::engine_log_path(), std::ios::app);
             log << "Terrain mesh: vertices=" << terrainVertices.size()
@@ -2885,6 +2930,10 @@ int main(int, char**)
             auto preview = runtime.create_3d_preview_image(previewWidth, previewHeight);
             renderer.set_preview_image(preview.width, preview.height, preview.bgra);
         }
+
+        // Free terrain mesh CPU data — now in GPU buffers.
+        { std::vector<phoenix::renderer::TerrainVertex>().swap(terrainVertices);
+          std::vector<std::uint32_t>().swap(terrainIndices); }
 
         showLoading(0.82f, "Building objects");
         staticObjectScene = objectFuture.get();
@@ -3167,6 +3216,36 @@ int main(int, char**)
                 << " animated sub-batches\n";
         }
 
+        // ---- Release CPU-side data already uploaded to GPU ----
+        // Vertices and indices are now in GPU buffers; instances/batches/bounds
+        // are still needed for actor grid rebuild and frustum culling.
+        {
+            std::size_t freedMB = 0;
+            const auto countBytes = [](auto& vec) {
+                const auto bytes = vec.capacity() * sizeof(typename std::remove_reference_t<decltype(vec)>::value_type);
+                vec.clear();
+                vec.shrink_to_fit();
+                return bytes;
+            };
+            freedMB += countBytes(staticObjectScene.vertices);
+            freedMB += countBytes(staticObjectScene.indices);
+            freedMB += countBytes(actorScene.vertices);
+            freedMB += countBytes(actorScene.indices);
+            freedMB += countBytes(actorScene.animatedVertices);
+            freedMB += countBytes(actorScene.animatedIndices);
+            freedMB += countBytes(actorScene.animatedBaseInstances);
+            freedMB += countBytes(actorScene.animatedInstances);
+            freedMB += countBytes(actorScene.animatedBatches);
+            freedMB += countBytes(actorScene.animatedBatchBounds);
+            freedMB += countBytes(actorScene.instances);
+            freedMB += countBytes(actorScene.batches);
+            freedMB += countBytes(actorScene.batchBounds);
+            freedMB += countBytes(actorScene.texturePaths);
+            freedMB += countBytes(actorScene.vertexAnimations);
+            std::ofstream log(phoenix::core::engine_log_path(), std::ios::app);
+            log << "RAM freed (post-GPU upload): " << (freedMB / (1024 * 1024)) << " MB\n";
+        }
+
         // Upload character mesh (initial bind pose).
         if (characterLoaded && characterSystem.ready())
             uploadCharacterMesh();
@@ -3231,6 +3310,53 @@ int main(int, char**)
 
         forceVisibilityUpdate = true;
         showLoading(1.0f, "Ready");
+
+        // Trim process working set — return freed pages to the OS.
+        // Without this, the CRT heap retains released allocations as
+        // committed pages and the process RSS stays at its peak.
+#ifdef _WIN32
+        SetProcessWorkingSetSize(GetCurrentProcess(),
+            static_cast<SIZE_T>(-1), static_cast<SIZE_T>(-1));
+#elif __has_include(<malloc.h>)
+        malloc_trim(0);
+#endif
+
+        // ---- RAM audit: log what's still in memory ----
+        {
+            std::ofstream log(phoenix::core::engine_log_path(), std::ios::app);
+            log << "=== RAM audit (post-load) ===\n";
+            const auto& st = runtime.state();
+            const auto vecMB = [](auto& v) { return (v.capacity() * sizeof(typename std::remove_reference_t<decltype(v)>::value_type)) / (1024.0 * 1024.0); };
+            log << "  DataIndex: byRelativePath=" << st.assets.byRelativePath.size()
+                << " byFileName=" << st.assets.byFileName.size() << "\n";
+            log << "  WLD heightSamples: " << std::fixed << std::setprecision(1) << vecMB(st.world.heightSamples) << " MB\n";
+            log << "  WLD terrainTextureMap: " << vecMB(st.world.terrainTextureMap) << " MB\n";
+            log << "  WLD objectSections: " << st.world.objectSections.size() << "\n";
+            log << "  entityAssets: " << st.entityAssets.size() << "\n";
+            log << "  worldAssets: " << st.worldAssets.size() << "\n";
+            log << "  sceneObjects: " << st.sceneObjects.size() << "\n";
+            log << "  assetTexturePaths: " << st.assetTexturePaths.size() << "\n";
+            log << "  maniAnimations: " << st.maniAnimations.size() << "\n";
+            log << "  staticObjectScene.instances: " << staticObjectScene.instances.size()
+                << " batches: " << staticObjectScene.batches.size()
+                << " batchBounds: " << staticObjectScene.batchBounds.size()
+                << " verts: " << staticObjectScene.vertices.size()
+                << " indices: " << staticObjectScene.indices.size() << "\n";
+            log << "  animatedObjectScene.vertices: " << animatedObjectScene.vertices.size()
+                << " (" << std::fixed << std::setprecision(1) << vecMB(animatedObjectScene.vertices) << " MB)"
+                << " instances: " << animatedObjectScene.instances.size()
+                << " mobs: " << animatedObjectScene.mobInstances.size() << "\n";
+            std::size_t animFrameBytes = 0;
+            for (const auto& va : animatedObjectScene.vertexAnimations)
+                for (const auto& f : va.frames)
+                    animFrameBytes += f.capacity() * sizeof(phoenix::renderer::TerrainVertex);
+            log << "  animatedObjectScene.vertexAnimation frames: " << (animFrameBytes / (1024 * 1024)) << " MB\n";
+            log << "  worldCollisionMesh: " << worldCollisionMesh.triangles.size()
+                << " tris (" << std::fixed << std::setprecision(1)
+                << (worldCollisionMesh.triangles.capacity() * sizeof(phoenix::runtime::WorldCollisionMesh::Triangle) / (1024.0 * 1024.0)) << " MB)\n";
+            log << "  actorScene.labels: " << actorScene.labels.size() << "\n";
+            log << "=== end RAM audit ===\n";
+        }
     };
 
     uploadCurrentWorld();
@@ -3296,6 +3422,7 @@ int main(int, char**)
         ++framesSinceTitleUpdate;
         totalTime += deltaSeconds;
         perfHud.push_frametime(deltaSeconds);
+        cpuProfiler.begin_frame();
         renderer.update_water_time(totalTime);
         if (!animatedObjectScene.vertices.empty())
         {
@@ -3314,7 +3441,9 @@ int main(int, char**)
                 const float kAnimationRange = std::min(fogCullDistance, runtime.actor_anim_tuning().animationRange);
 
                 // Run animation update (mob movement, VANI, gesture timing) but skip CPU skinning.
+                { CPU_PROFILE_SCOPE("Actor Update");
                 runtime.update_animated_object_scene(animatedObjectScene, totalTime, deltaSeconds, camX, camY, camZ, actorVertexAnimationStart, true);
+                }
 
                 // Compute bone matrices for visible actors and queue GPU dispatches.
                 static std::vector<float> allBoneMatrices;
@@ -3333,6 +3462,18 @@ int main(int, char**)
                     const float effectiveRange = kAnimationRange + anim.boundingRadius;
                     if (distSq > effectiveRange * effectiveRange)
                         continue;
+
+                    // LOD: reduce skinning frequency for distant actors.
+                    {
+                        constexpr float nearSq = 60.0f * 60.0f;
+                        constexpr float midSq = 140.0f * 140.0f;
+                        const auto frameHash = static_cast<std::uint32_t>(i);
+                        const auto frameCount = static_cast<std::uint32_t>(totalTime * 30.0f);
+                        if (distSq > midSq && (frameHash + frameCount) % 6 != 0)
+                            continue;
+                        if (distSq > nearSq && (frameHash + frameCount) % 3 != 0)
+                            continue;
+                    }
 
                     // Determine active animation and frame (mirrors CPU logic).
                     const auto& breathAnim = anim.animations.breath;
@@ -3411,10 +3552,24 @@ int main(int, char**)
             else
             {
                 // CPU skinning fallback path (unchanged).
+                { CPU_PROFILE_SCOPE("Actor Update (CPU skin)");
                 runtime.update_animated_object_scene(animatedObjectScene, totalTime, deltaSeconds, camX, camY, camZ, actorVertexAnimationStart);
+                }
             }
 
-            renderer.update_animated_object_scene(animatedObjectScene.vertices, animatedObjectScene.instances);
+            { CPU_PROFILE_SCOPE("Actor GPU Upload");
+            // Instances always need uploading (mob positions change).
+            renderer.update_animated_object_instances(animatedObjectScene.instances);
+            // Vertices: only upload the dirty range instead of the entire buffer.
+            if (animatedObjectScene.has_dirty_vertices())
+            {
+                renderer.update_animated_object_vertices_range(
+                    animatedObjectScene.vertices.data(),
+                    animatedObjectScene.dirtyVertexMin,
+                    animatedObjectScene.dirtyVertexMax - animatedObjectScene.dirtyVertexMin);
+                animatedObjectScene.clear_dirty();
+            }
+            }
         }
 
         const auto fogToggleDown = window.is_key_down(SDLK_f);
@@ -3514,7 +3669,9 @@ int main(int, char**)
             pendingEmote = 0;  // consumed
 
             heightSamplerCtx.lastCharacterY = characterSystem.world_y();
+            { CPU_PROFILE_SCOPE("Character");
             characterSystem.update(deltaSeconds, pInput);
+            }
             characterSystem.camera_state(cameraX, cameraY, cameraZ, cameraYaw, cameraPitch);
 
             // ---- Portal teleport ----
@@ -3580,8 +3737,10 @@ int main(int, char**)
                 }
             }
 
+            { CPU_PROFILE_SCOPE("Bots");
             botManager.update(deltaSeconds, cameraX, cameraZ, fogCullDistance,
                 character_height_sampler, &heightSamplerCtx);
+            }
 
             // Spawn one-shot effects queued by bots.
             if (!botManager.pendingEffects.empty())
@@ -3690,6 +3849,7 @@ int main(int, char**)
             || std::abs(currentView.aspect - lastCullView.aspect) > 0.01f;
         if (visibilityNeedsUpdate)
         {
+            CPU_PROFILE_SCOPE("Visibility Cull");
             const auto visibleTerrainRanges = build_visible_terrain_ranges(runtime, currentView, terrainLodInfo);
             renderer.set_terrain_draw_ranges(visibleTerrainRanges);
             std::uint32_t visibleTerrainIndexCount{};
@@ -3909,6 +4069,7 @@ int main(int, char**)
                 if (mob.moving) ++mobsMovingNow;
             perfHud.mobsMoving = mobsMovingNow;
             draw_perf_hud(perfHud, static_cast<float>(renderer.surface_width()));
+            phoenix::ui::draw_cpu_profiler(cpuProfiler);
 
             // ---- Effects spawner ----
             if (showEffectsWindow)
@@ -4104,9 +4265,11 @@ int main(int, char**)
 
         // Gather all scene particles (weapon aura + world/attack/portal effects)
         // into one batch and upload once: alpha-blended first, then additive.
+        { CPU_PROFILE_SCOPE("Effects");
         particleBatch.clear();
         weaponEffect.update(deltaSeconds, characterSystem.weapon_attachment(), particleBatch);
         effectManager.update(deltaSeconds, particleBatch);
+        }
         {
             particleScratch.clear();
             particleScratch.reserve(particleBatch.alpha.size() + particleBatch.additive.size());
@@ -4118,11 +4281,33 @@ int main(int, char**)
 
         renderer.render_frame();
 
+        cpuProfiler.end_frame(deltaSeconds);
+
         if (pendingMapLoad)
         {
             const auto mapIdx = *pendingMapLoad;
             pendingMapLoad.reset();
             botManager.clear();
+
+            // Release previous map data BEFORE loading the new one to avoid
+            // both maps coexisting in RAM (doubles peak memory).
+            {
+                staticObjectScene.instances.clear(); staticObjectScene.instances.shrink_to_fit();
+                staticObjectScene.batches.clear(); staticObjectScene.batches.shrink_to_fit();
+                staticObjectScene.batchBounds.clear(); staticObjectScene.batchBounds.shrink_to_fit();
+                animatedObjectScene.vertices.clear(); animatedObjectScene.vertices.shrink_to_fit();
+                animatedObjectScene.indices.clear(); animatedObjectScene.indices.shrink_to_fit();
+                animatedObjectScene.baseInstances.clear(); animatedObjectScene.baseInstances.shrink_to_fit();
+                animatedObjectScene.instances.clear(); animatedObjectScene.instances.shrink_to_fit();
+                animatedObjectScene.batches.clear(); animatedObjectScene.batches.shrink_to_fit();
+                animatedObjectScene.vertexAnimations.clear(); animatedObjectScene.vertexAnimations.shrink_to_fit();
+                animatedObjectScene.mobInstances.clear(); animatedObjectScene.mobInstances.shrink_to_fit();
+                worldCollisionMesh.triangles.clear(); worldCollisionMesh.triangles.shrink_to_fit();
+                worldCollisionMesh.grid.clear();
+                actorScene.labels.clear(); actorScene.labels.shrink_to_fit();
+                actorGrid = {};
+            }
+
             renderer.enter_loading_mode();
             showLoading(0.05f, "Changing map");
             if (runAsync([&]() { return runtime.load_world_map(mapIdx); }, 0.10f, "Loading world"))
