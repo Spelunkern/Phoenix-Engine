@@ -1,5 +1,7 @@
 #include "world/mani_loader.h"
 
+#include "assets/data_index.h"
+
 #include <bit>
 #include <cstdint>
 #include <fstream>
@@ -29,16 +31,8 @@ namespace phoenix::world
     ManiAnimation load_mani(const std::filesystem::path& path)
     {
         ManiAnimation animation{};
-        std::ifstream stream(path, std::ios::binary | std::ios::ate);
-        if (!stream)
-            return animation;
-
-        const auto fileSize = stream.tellg();
-        stream.seekg(0, std::ios::beg);
-
-        std::vector<std::uint8_t> data(static_cast<std::size_t>(fileSize));
-        stream.read(reinterpret_cast<char*>(data.data()), static_cast<std::streamsize>(data.size()));
-        if (!stream || data.size() < 96)
+        auto data = assets::read_file_binary(path);
+        if (data.size() < 96)
             return animation;
 
         const auto version = read_u32(data, 0);

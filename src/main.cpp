@@ -1,3 +1,4 @@
+#include "assets/data_index.h"
 #include "audio/audio_system.h"
 #include "character/character_system.h"
 #include "character/weapon_effect.h"
@@ -273,7 +274,7 @@ namespace
     std::vector<int> scan_csv_indices(const std::filesystem::path& csvPath)
     {
         std::vector<int> indices;
-        std::ifstream file(csvPath);
+        auto file = phoenix::assets::open_ifstream(csvPath);
         if (!file)
             return indices;
         std::string line;
@@ -298,7 +299,7 @@ namespace
     std::vector<int> scan_csv_indices_column(const std::filesystem::path& csvPath, std::size_t column)
     {
         std::vector<int> indices;
-        std::ifstream file(csvPath);
+        auto file = phoenix::assets::open_ifstream(csvPath);
         if (!file)
             return indices;
         std::string line;
@@ -362,7 +363,7 @@ namespace
     BotEquipmentPools scan_bot_equipment_pools(const std::filesystem::path& dataRoot)
     {
         BotEquipmentPools pools;
-        const auto itemRoot = dataRoot / "Item";
+        const auto itemRoot = phoenix::assets::resolve_existing_path_case_insensitive(dataRoot / "Item");
         const auto addItem = [&](phoenix::character::WeaponType type) {
             if (type == phoenix::character::WeaponType::None)
                 return;
@@ -389,11 +390,11 @@ namespace
         addItem(phoenix::character::WeaponType::ShieldLight);
         addItem(phoenix::character::WeaponType::ShieldDark);
 
-        const auto cloakRoot = dataRoot / "Cloak";
+        const auto cloakRoot = phoenix::assets::resolve_existing_path_case_insensitive(dataRoot / "Cloak");
         for (const auto race : { "hu", "de", "el", "vi" })
             pools.cloakIndicesByRace[race] = scan_csv_indices(cloakRoot / ("cloak_" + std::string(race) + ".csv"));
 
-        const auto vehicleRoot = dataRoot / "Vehicle";
+        const auto vehicleRoot = phoenix::assets::resolve_existing_path_case_insensitive(dataRoot / "Vehicle");
         for (const auto mountClass : { "hu", "de", "el", "vi" })
             pools.mountIndicesByClass[mountClass] = scan_csv_indices_column(vehicleRoot / ("vehicle_" + std::string(mountClass) + "_01.csv"), 2);
 
@@ -745,8 +746,21 @@ namespace
                     break;
 
                 preset.poses[kPoseIdle].set_texture_layer_base(preset.textureBase);
+                const auto& texPaths = preset.poses[kPoseIdle].texture_paths();
+                bool allTexturesValid = true;
                 for (std::uint32_t i = 0; i < textureCount; ++i)
-                    textureSlots[preset.textureBase + i] = phoenix::renderer::load_dds(preset.poses[kPoseIdle].texture_paths()[i]);
+                {
+                    // Use BC3 cache when available (correct format, no disk I/O).
+                    const auto* cached = preset.poses[kPoseIdle].bc3_texture_for(texPaths[i]);
+                    if (cached)
+                        textureSlots[preset.textureBase + i] = *cached;
+                    else
+                        textureSlots[preset.textureBase + i] = phoenix::renderer::load_dds(texPaths[i]);
+                    if (!textureSlots[preset.textureBase + i].valid)
+                        allTexturesValid = false;
+                }
+                if (!allTexturesValid)
+                    continue;
 
                 // Clone all pose slots from the loaded one.
                 for (std::size_t p = 1; p < kPoseCount; ++p)
@@ -1182,8 +1196,8 @@ namespace
 
     std::vector<CharacterOption> scan_character_options(const std::filesystem::path& dataRoot)
     {
-        const auto characterRoot = dataRoot / "Character";
-        if (!std::filesystem::exists(characterRoot))
+        const auto characterRoot = phoenix::assets::resolve_existing_path_case_insensitive(dataRoot / "Character");
+        if (characterRoot.empty() || !std::filesystem::exists(characterRoot))
             return {};
 
         constexpr std::string_view partFiles[] = { "upper", "lower", "hand", "foot", "helmet", "face", "hair" };

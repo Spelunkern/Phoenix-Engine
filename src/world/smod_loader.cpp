@@ -1,5 +1,7 @@
 #include "world/smod_loader.h"
 
+#include "assets/data_index.h"
+
 #include <bit>
 #include <fstream>
 #include <string>
@@ -66,16 +68,8 @@ namespace phoenix::world
     {
         SmodModel model{};
 
-        std::ifstream stream(path, std::ios::binary | std::ios::ate);
-        if (!stream)
-            return model;
-
-        const auto fileSize = stream.tellg();
-        stream.seekg(0, std::ios::beg);
-
-        std::vector<std::uint8_t> data(static_cast<std::size_t>(fileSize));
-        stream.read(reinterpret_cast<char*>(data.data()), static_cast<std::streamsize>(data.size()));
-        if (!stream || data.size() < 4)
+        auto data = assets::read_file_binary(path);
+        if (data.size() < 4)
             return model;
 
         std::size_t offset = 0;

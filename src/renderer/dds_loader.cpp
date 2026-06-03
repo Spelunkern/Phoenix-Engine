@@ -1,6 +1,8 @@
 #define _CRT_SECURE_NO_WARNINGS
 #include "renderer/dds_loader.h"
 
+#include "assets/data_index.h"
+
 #include <algorithm>
 #include <climits>
 #include <cmath>
@@ -33,23 +35,10 @@ namespace phoenix::renderer
             return value;
         }
 
-        std::vector<std::uint8_t> read_file_binary(const std::filesystem::path& path)
-        {
-            std::ifstream file(path, std::ios::binary | std::ios::ate);
-            if (!file)
-                return {};
-            const auto size = static_cast<std::size_t>(file.tellg());
-            file.seekg(0);
-            std::vector<std::uint8_t> data(size);
-            if (!file.read(reinterpret_cast<char*>(data.data()), static_cast<std::streamsize>(size)))
-                data.clear();
-            return data;
-        }
-
         DdsTexture load_bmp(const std::filesystem::path& path)
         {
             DdsTexture result{};
-            auto data = read_file_binary(path);
+            auto data = ::phoenix::assets::read_file_binary(path);
             if (data.size() < 54 || data[0] != 'B' || data[1] != 'M')
                 return result;
 
@@ -94,7 +83,7 @@ namespace phoenix::renderer
         DdsTexture load_tga(const std::filesystem::path& path)
         {
             DdsTexture result{};
-            auto data = read_file_binary(path);
+            auto data = ::phoenix::assets::read_file_binary(path);
             if (data.size() < 18)
                 return result;
 
@@ -371,13 +360,14 @@ namespace phoenix::renderer
 
     DdsTexture load_dds(const std::filesystem::path& path)
     {
-        const auto extension = path.extension().string();
-        if (extension != ".dds" && extension != ".DDS")
+        auto extension = path.extension().string();
+        for (auto& c : extension) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+        if (extension != ".dds")
             return {};
 
         DdsTexture result{};
 
-        auto data = read_file_binary(path);
+        auto data = ::phoenix::assets::read_file_binary(path);
         if (data.size() < 128)
             return result;
 
@@ -719,9 +709,9 @@ namespace phoenix::renderer
             rgba.resize(fallbackSize);
             for (std::size_t p = 0; p < static_cast<std::size_t>(targetWidth) * targetHeight; ++p)
             {
-                rgba[p * 4 + 0] = 90;
-                rgba[p * 4 + 1] = 130;
-                rgba[p * 4 + 2] = 60;
+                rgba[p * 4 + 0] = 255;
+                rgba[p * 4 + 1] = 0;
+                rgba[p * 4 + 2] = 255;
                 rgba[p * 4 + 3] = 255;
             }
             texture.width = targetWidth;

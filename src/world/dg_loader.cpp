@@ -1,5 +1,6 @@
 #include "world/dg_loader.h"
 
+#include "assets/data_index.h"
 #include "core/logging.h"
 
 #include <algorithm>
@@ -261,16 +262,8 @@ namespace phoenix::world
     {
         DgModel model{};
 
-        std::ifstream stream(path, std::ios::binary | std::ios::ate);
-        if (!stream)
-            return model;
-
-        const auto fileSize = stream.tellg();
-        stream.seekg(0, std::ios::beg);
-
-        std::vector<std::uint8_t> data(static_cast<std::size_t>(fileSize));
-        stream.read(reinterpret_cast<char*>(data.data()), static_cast<std::streamsize>(data.size()));
-        if (!stream || data.size() < 36)
+        auto data = assets::read_file_binary(path);
+        if (data.size() < 36)
             return model;
 
         Reader reader{ data };

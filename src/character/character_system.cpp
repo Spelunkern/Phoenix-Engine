@@ -513,7 +513,7 @@ namespace phoenix::character
         std::optional<ItemEntry> resolve_item_from_csv(
             const std::filesystem::path& csvPath, int recordIndex)
         {
-            std::ifstream file(csvPath);
+            auto file = assets::open_ifstream(csvPath);
             if (!file)
                 return std::nullopt;
             std::string line;
@@ -567,7 +567,7 @@ namespace phoenix::character
             const std::filesystem::path& animationRoot)
         {
             std::vector<CharacterAnimationChoice> animations;
-            std::ifstream file(csvPath);
+            auto file = assets::open_ifstream(csvPath);
             if (!file)
                 return animations;
             std::string line;
@@ -712,7 +712,7 @@ namespace phoenix::character
         PartTable load_part_table_csv(const std::filesystem::path& csvPath)
         {
             PartTable table;
-            std::ifstream file(csvPath);
+            auto file = assets::open_ifstream(csvPath);
             if (!file)
                 return table;
             std::string line;
@@ -865,7 +865,7 @@ namespace phoenix::character
         cachedBc3Textures_.clear();
         bc3CacheReady_ = false;
 
-        const auto characterRoot = dataRoot / "Character";
+        const auto characterRoot = resolve_ci(dataRoot / "Character");
         if (!std::filesystem::exists(characterRoot))
             return false;
 
@@ -985,7 +985,7 @@ namespace phoenix::character
         if (itemCacheReady_)
             return true;
 
-        const auto itemRoot = dataRoot / "Item";
+        const auto itemRoot = resolve_ci(dataRoot / "Item");
         const auto meshRoot = itemRoot / "3do";
         if (!std::filesystem::exists(meshRoot))
             return false;
@@ -1042,10 +1042,10 @@ namespace phoenix::character
         if (allowPreload)
             preload(dataRoot);
 
-        const auto root = dataRoot / "Character" / appearance.raceFolder;
-        const auto meshRoot = root / "3DC";
-        const auto textureRoot = root / "DDS";
-        const auto animationRoot = root / "ANI";
+        const auto root = resolve_ci(dataRoot / "Character" / appearance.raceFolder);
+        const auto meshRoot = resolve_ci(root / "3DC");
+        const auto textureRoot = resolve_ci(root / "DDS");
+        const auto animationRoot = resolve_ci(root / "ANI");
 
         data_ = {};
         worldVertices_.clear();
@@ -1284,7 +1284,7 @@ namespace phoenix::character
         }
 
         // ---- Load weapon/shield (3DO items) ----
-        const auto itemRoot = dataRoot / "Item";
+        const auto itemRoot = resolve_ci(dataRoot / "Item");
         const auto itemMeshRoot = itemRoot / "3do";
         const auto itemDdsRoot = itemRoot / "dds";
 
@@ -1410,13 +1410,13 @@ namespace phoenix::character
 
             // New flattened layout: Data/Cloak/3DC/ (all races' meshes),
             // Data/Cloak/DDS/ (all races' textures), Data/Cloak/cloak_{race}.csv.
-            const auto cloakMeshDir = dataRoot / "Cloak" / "3DC";
+            const auto cloakMeshDir = resolve_ci(dataRoot / "Cloak" / "3DC");
 
             // Resolve texture name from the per-race CSV (cloak_index,dds).
             const auto csvPath = resolve_ci(dataRoot / "Cloak" / ("cloak_" + raceAbbrev + ".csv"));
             std::string cloakTextureName;
             {
-                std::ifstream csvStream(csvPath);
+                auto csvStream = assets::open_ifstream(csvPath);
                 if (csvStream)
                 {
                     std::string line;
@@ -1583,7 +1583,7 @@ namespace phoenix::character
         // (vehicle_{class}_01.csv) maps RecordIndex -> meshes/textures/anim files.
         if (appearance.mounted)
         {
-            const auto vehicleRoot = dataRoot / "Vehicle";
+            const auto vehicleRoot = resolve_ci(dataRoot / "Vehicle");
             const auto csvPath = resolve_ci(vehicleRoot / ("vehicle_" + appearance.mountClass + "_01.csv"));
 
             // Minimal quoted-CSV field splitter (handles "" escapes).
@@ -1621,7 +1621,7 @@ namespace phoenix::character
 
             std::vector<std::string> row;
             {
-                std::ifstream csv(csvPath);
+                auto csv = assets::open_ifstream(csvPath);
                 if (csv)
                 {
                     std::string line;

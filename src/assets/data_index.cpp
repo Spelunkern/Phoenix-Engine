@@ -89,13 +89,21 @@ namespace phoenix::assets
         if (assetName.empty())
             return {};
 
-        const auto requested = std::filesystem::path(std::string(assetName));
+        // Normalize backslash separators from Windows-style asset references.
+        std::string normalizedName(assetName);
+        std::replace(normalizedName.begin(), normalizedName.end(), '\\', '/');
+        const auto requested = std::filesystem::path(normalizedName);
         if (requested.is_absolute() && std::filesystem::exists(requested))
             return requested;
 
         const auto direct = root / requested;
         if (std::filesystem::exists(direct))
             return direct;
+
+        // Case-insensitive fallback for Linux.
+        const auto ciDirect = resolve_existing_path_case_insensitive(direct);
+        if (!ciDirect.empty())
+            return ciDirect;
 
         const auto key = normalize_key(requested);
         if (const auto it = byRelativePath.find(key); it != byRelativePath.end())
@@ -119,10 +127,16 @@ namespace phoenix::assets
         if (assetName.empty())
             return {};
 
-        const auto requested = std::filesystem::path(std::string(assetName));
+        std::string normalizedName(assetName);
+        std::replace(normalizedName.begin(), normalizedName.end(), '\\', '/');
+        const auto requested = std::filesystem::path(normalizedName);
         const auto direct = root / requested;
         if (std::filesystem::exists(direct))
             return direct;
+
+        const auto ciDirect = resolve_existing_path_case_insensitive(direct);
+        if (!ciDirect.empty())
+            return ciDirect;
 
         if (const auto it = byRelativePath.find(normalize_key(requested)); it != byRelativePath.end())
             return it->second;
@@ -201,5 +215,29 @@ namespace phoenix::assets
         }
 
         return {};
+    }
+
+    std::ifstream open_ifstream(const std::filesystem::path& path, std::ios::openmode mode)
+    {
+        std::ifstream stream(path, mode);
+        if (stream)
+            return stream;
+        const auto resolved = resolve_existing_path_case_insensitive(path);
+        if (!resolved.empty())
+            return std::ifstream(resolved, mode);
+        return stream;
+    }
+
+    std::vector<std::uint8_t> read_file_binary(const std::filesystem::path& path)
+    {
+        auto file = open_ifstream(path, std::ios::binary | std::ios::ate);
+        if (!file)
+            return {};
+        const auto size = static_cast<std::size_t>(file.tellg());
+        file.seekg(0);
+        std::vector<std::uint8_t> data(size);
+        if (!file.read(reinterpret_cast<char*>(data.data()), static_cast<std::streamsize>(size)))
+            data.clear();
+        return data;
     }
 }

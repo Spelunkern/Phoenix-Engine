@@ -1,5 +1,7 @@
 #include "world/character_loader.h"
 
+#include "assets/data_index.h"
+
 #include <bit>
 #include <fstream>
 #include <string_view>
@@ -38,14 +40,8 @@ namespace phoenix::world
 
         bool read_file(const std::filesystem::path& path, std::vector<std::uint8_t>& data)
         {
-            std::ifstream stream(path, std::ios::binary | std::ios::ate);
-            if (!stream)
-                return false;
-            const auto fileSize = stream.tellg();
-            stream.seekg(0, std::ios::beg);
-            data.assign(static_cast<std::size_t>(fileSize), 0);
-            stream.read(reinterpret_cast<char*>(data.data()), static_cast<std::streamsize>(data.size()));
-            return static_cast<bool>(stream);
+            data = assets::read_file_binary(path);
+            return !data.empty();
         }
 
         bool read_matrix(const std::vector<std::uint8_t>& data, std::size_t& offset, float (&matrix)[16])

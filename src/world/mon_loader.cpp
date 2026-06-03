@@ -1,5 +1,7 @@
 #include "world/mon_loader.h"
 
+#include "assets/data_index.h"
+
 #include <cstdlib>
 #include <fstream>
 #include <string>
@@ -95,7 +97,7 @@ namespace phoenix::world
     {
         MonsterTable table{};
 
-        std::ifstream file(path);
+        auto file = assets::open_ifstream(path);
         if (!file)
             return table;
 

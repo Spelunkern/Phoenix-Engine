@@ -2,9 +2,11 @@
 
 #include <cstdint>
 #include <filesystem>
+#include <fstream>
 #include <string>
 #include <string_view>
 #include <unordered_map>
+#include <vector>
 
 namespace phoenix::assets
 {
@@ -36,4 +38,10 @@ namespace phoenix::assets
 
     DataIndex index_data_directory(const std::filesystem::path& dataRoot);
     std::filesystem::path resolve_texture_asset(const DataIndex& assets, std::string textureName);
+
+    // Case-insensitive file I/O: try the path as-is first (fast on Windows/correct
+    // case), then fall back to resolve_existing_path_case_insensitive on failure.
+    std::ifstream open_ifstream(const std::filesystem::path& path,
+                                std::ios::openmode mode = std::ios::in);
+    std::vector<std::uint8_t> read_file_binary(const std::filesystem::path& path);
 }

@@ -1,5 +1,7 @@
 #include "world/eft_loader.h"
 
+#include "assets/data_index.h"
+
 #include <cstring>
 #include <fstream>
 
@@ -177,15 +179,9 @@ namespace phoenix::world
     {
         EftFile eft;
 
-        std::ifstream file(path, std::ios::binary | std::ios::ate);
-        if (!file) return eft;
-
-        const auto fileSize = static_cast<std::size_t>(file.tellg());
+        auto buffer = assets::read_file_binary(path);
+        const auto fileSize = buffer.size();
         if (fileSize < 7) return eft;
-
-        std::vector<std::uint8_t> buffer(fileSize);
-        file.seekg(0);
-        file.read(reinterpret_cast<char*>(buffer.data()), static_cast<std::streamsize>(fileSize));
 
         EftReader r;
         r.data = buffer.data();

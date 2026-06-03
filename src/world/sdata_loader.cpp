@@ -1,5 +1,7 @@
 #include "world/sdata_loader.h"
 
+#include "assets/data_index.h"
+
 #include <cstdlib>
 #include <fstream>
 #include <string>
@@ -9,7 +11,7 @@ namespace phoenix::world
     MonsterSData load_monster_sdata(const std::filesystem::path& path)
     {
         MonsterSData out{};
-        std::ifstream file(path);
+        auto file = assets::open_ifstream(path);
         if (!file)
             return out;
         std::string line;
@@ -45,7 +47,7 @@ namespace phoenix::world
     NpcQuestSData load_npcquest_sdata(const std::filesystem::path& path)
     {
         NpcQuestSData out{};
-        std::ifstream file(path);
+        auto file = assets::open_ifstream(path);
         if (!file)
             return out;
         std::string line;

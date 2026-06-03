@@ -867,11 +867,12 @@ namespace phoenix::world
         // only uses it to derive the CSV folder (parent/"svmap"/<mapId>). Passing
         // it through a file-existence resolver would wrongly yield an empty path,
         // so it must be handed over verbatim.
-        const auto svmap = load_svmap(dataRoot / "World" / (mapStem + ".svmap"));
+        const auto worldDir = fsci::resolve_existing_path_case_insensitive(dataRoot / "World");
+        const auto svmap = load_svmap(worldDir / (mapStem + ".svmap"));
         if (!svmap.parsed)
         {
             std::ofstream log(phoenix::core::engine_log_path(), std::ios::app);
-            log << "Actor scene: failed to parse svmap " << (dataRoot / "World" / (mapStem + ".svmap")).string() << "\n";
+            log << "Actor scene: failed to parse svmap " << (worldDir / (mapStem + ".svmap")).string() << "\n";
             return scene;
         }
 

@@ -1,6 +1,7 @@
 #define _CRT_SECURE_NO_WARNINGS
 #include "runtime/phoenix_runtime.h"
 
+#include "assets/data_index.h"
 #include "core/logging.h"
 #include "world/dg_loader.h"
 #include "world/eft_loader.h"
@@ -34,6 +35,11 @@ namespace phoenix::runtime
         constexpr std::uint32_t kAssetCutoutLayerBase = 2048;
         constexpr std::uint32_t kMaxAssetTextureLayers = 960;
         constexpr std::uint32_t kWaterTextureLayer = 62;
+
+        inline std::filesystem::path resolve_ci(const std::filesystem::path& path)
+        {
+            return assets::resolve_existing_path_case_insensitive(path);
+        }
 
         bool is_world_asset_extension(std::string extension)
         {
@@ -228,15 +234,8 @@ namespace phoenix::runtime
 
         std::array<float, 3> average_dds_bc_color(const std::filesystem::path& path)
         {
-            std::ifstream input(path, std::ios::binary | std::ios::ate);
-            if (!input)
-                return { 0.34f, 0.48f, 0.22f };
-
-            const auto fileSize = input.tellg();
-            input.seekg(0, std::ios::beg);
-            std::vector<std::uint8_t> data(static_cast<std::size_t>(fileSize));
-            input.read(reinterpret_cast<char*>(data.data()), static_cast<std::streamsize>(data.size()));
-            if (!input || data.size() < 128 || read_le_u32(data, 0) != 0x20534444u)
+            auto data = assets::read_file_binary(path);
+            if (data.size() < 128 || read_le_u32(data, 0) != 0x20534444u)
                 return { 0.34f, 0.48f, 0.22f };
 
             const auto height = read_le_u32(data, 12);
@@ -348,7 +347,7 @@ namespace phoenix::runtime
     bool PhoenixRuntime::initialize(const std::filesystem::path& executableDir, bool loadDefaultMap)
     {
         state_.dataRoot = find_data_root(executableDir);
-        state_.entityRoot = state_.dataRoot / "Entity";
+        state_.entityRoot = assets::resolve_existing_path_case_insensitive(state_.dataRoot / "Entity");
         state_.assets = phoenix::assets::index_data_directory(state_.dataRoot);
         scan_entity_assets();
         scan_world_maps();
@@ -540,7 +539,7 @@ namespace phoenix::runtime
         state_.worldMapPaths.clear();
         state_.worldMapNames.clear();
 
-        const auto worldRoot = state_.dataRoot / "World";
+        const auto worldRoot = resolve_ci(state_.dataRoot / "World");
         if (!std::filesystem::exists(worldRoot))
             return;
 
@@ -581,7 +580,7 @@ namespace phoenix::runtime
         state_.skyFileNames.clear();
         state_.skyFileNames.push_back("");
 
-        const auto skyRoot = state_.dataRoot / "Sky";
+        const auto skyRoot = resolve_ci(state_.dataRoot / "Sky");
         if (!std::filesystem::exists(skyRoot))
             return;
 
@@ -606,7 +605,7 @@ namespace phoenix::runtime
     {
         state_.terrainTextureNames.clear();
 
-        const auto terrainRoot = state_.dataRoot / "Terrain" / "Detail";
+        const auto terrainRoot = resolve_ci(state_.dataRoot / "Terrain" / "Detail");
         if (!std::filesystem::exists(terrainRoot))
             return;
 
@@ -1274,7 +1273,7 @@ namespace phoenix::runtime
         if (!path.empty() && std::filesystem::exists(path))
             return path;
 
-        const auto skyPath = state_.dataRoot / "Sky" / fileName;
+        const auto skyPath = resolve_ci(state_.dataRoot / "Sky" / fileName);
         if (std::filesystem::exists(skyPath))
             return skyPath;
 
@@ -1292,11 +1291,11 @@ namespace phoenix::runtime
         const auto oggName = stem + ".ogg";
 
         const std::filesystem::path roots[] = {
-            state_.dataRoot / "Sound",
-            state_.dataRoot / "Sounds",
-            state_.dataRoot / "Music",
-            state_.dataRoot / "BGM",
-            state_.dataRoot / "Audio",
+            resolve_ci(state_.dataRoot / "Sound"),
+            resolve_ci(state_.dataRoot / "Sounds"),
+            resolve_ci(state_.dataRoot / "Music"),
+            resolve_ci(state_.dataRoot / "BGM"),
+            resolve_ci(state_.dataRoot / "Audio"),
         };
 
         auto path = state_.assets.resolve(oggName);
@@ -1389,13 +1388,8 @@ namespace phoenix::runtime
             return false;
 
         // Parse WTR: 16-byte header + N entries of 256 bytes (filename string padded).
-        std::ifstream file(wtrPath, std::ios::binary | std::ios::ate);
-        if (!file) return false;
-        const auto fileSize = static_cast<std::size_t>(file.tellg());
-        if (fileSize < 16) return false;
-        file.seekg(0);
-        std::vector<std::uint8_t> data(fileSize);
-        file.read(reinterpret_cast<char*>(data.data()), static_cast<std::streamsize>(fileSize));
+        auto data = assets::read_file_binary(wtrPath);
+        if (data.size() < 16) return false;
 
         float tileSize{};
         std::memcpy(&tileSize, data.data(), 4);
@@ -1412,7 +1406,7 @@ namespace phoenix::runtime
         for (std::uint32_t i = 0; i < frameCount; ++i)
         {
             const auto offset = 16 + static_cast<std::size_t>(i) * entrySize;
-            if (offset + entrySize > fileSize)
+            if (offset + entrySize > data.size())
                 break;
 
             // Read null-terminated filename.
@@ -2877,7 +2871,7 @@ namespace phoenix::runtime
             return false;
 
         // Find the EFT file in Data/Effect.
-        const auto effectDir = state_.dataRoot / "Effect";
+        const auto effectDir = resolve_ci(state_.dataRoot / "Effect");
         auto eftPath = effectDir / state_.world.effectFileName;
 
         if (!std::filesystem::exists(eftPath) && std::filesystem::exists(effectDir))
