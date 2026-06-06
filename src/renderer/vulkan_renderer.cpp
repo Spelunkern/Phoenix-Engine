@@ -3588,7 +3588,7 @@ rgba_texture_fallback:
         if (instanceBytes > 0 && impl_->animatedObjectInstanceMapped)
             std::memcpy(impl_->animatedObjectInstanceMapped, instances.data(), instanceBytes);
 
-        // Legacy fallback (should not happen with persistent mapping).
+        // Fallback if persistent mapping is unavailable.
         if (vertexBytes > 0 && !impl_->animatedObjectVertexMapped)
         {
             void* mapped = nullptr;

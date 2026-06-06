@@ -122,7 +122,7 @@ namespace phoenix::core
                       << "# Started: " << timestamp() << "\n\n";
         }
 
-        // Legacy engine log (kept for backward compat).
+        // Engine log file.
         std::ofstream legacyLog(gEngineLogPath, std::ios::trunc);
         if (legacyLog)
         {
@@ -182,7 +182,7 @@ namespace phoenix::core
         if (catLog)
             catLog << "[" << ts << "] " << message << "\n";
 
-        // Mirror to legacy engine log.
+        // Mirror to engine log.
         std::ofstream legacyLog(gEngineLogPath, std::ios::app);
         if (legacyLog)
             legacyLog << "[" << ts << "] [" << label << "] " << message << "\n";

@@ -1469,10 +1469,8 @@ namespace phoenix::character
                 }
             }
 
-            // Load a cloak 3DC mesh by filename from the 3dc/ folder.
-            // Phase 1: all cloak designs use the same generic {prefix}_mentle_*.3dc meshes.
+            // All mantle designs use the same generic {prefix}_mentle_*.3dc meshes.
             // The _l variant is the main cloth body; _hl is a longer heavy variant (fallback).
-            // The _s variant is a shorter duplicate of _l — skipped for Phase 1.
             auto loadCloakMesh = [&](const std::string& filename, CharacterData::WeaponPart& outPart) -> bool {
                 const auto meshPath = resolve_ci(cloakMeshDir / filename);
                 auto model = world::load_cloak_3dc(meshPath);
@@ -2556,10 +2554,9 @@ namespace phoenix::character
             transformItemPart(data_.weapon, static_cast<std::size_t>(weaponBoneIndex));
         if (data_.hasShield && shieldBoneIndex >= 0)
             transformItemPart(data_.shield, static_cast<std::size_t>(shieldBoneIndex));
-        // Cloak vertices are in character-local space (not bone-local), so they
+        // Mantle vertices are in character-local space (not bone-local), so they
         // are left at their bind positions here. The world transform applied below
-        // (yaw + translation) correctly positions them in the world. Bone-following
-        // cloth simulation is deferred to Phase 2.
+        // (yaw + translation) correctly positions them in the world.
         (void)cloakBodyBoneIndex;
         (void)cloakShoulderBoneIndex;
 

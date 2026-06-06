@@ -1188,8 +1188,7 @@ namespace phoenix::runtime
         if (stem.empty())
             return {};
 
-        // Phoenix World: use the world's own field/ folder if available.
-        // Fallback: legacy Data/World/field/<mapId>/ layout.
+        // Use the world's own field/ folder, or fall back to Data/World/field/<mapId>/.
         auto fieldDir = state_.world.phoenixWorldFieldDir;
         if (fieldDir.empty())
             fieldDir = resolve_ci(state_.dataRoot / "World" / "field" / stem);
