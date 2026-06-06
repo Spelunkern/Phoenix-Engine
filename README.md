@@ -207,20 +207,9 @@ See [docs/ASSETS.md](docs/ASSETS.md) for more details.
 - Mouse wheel: zoom in playable mode or move camera in viewer mode.
 - `Shift`: faster movement.
 - `P`: toggle playable mode.
-- `F`: toggle fog.
-- ImGui panel: map loading, distances, overlays, audio toggles, character/loadout selection, mount, weapon aura, and weather/sky style.
+- ImGui panel: map loading, fog, distances, overlays, audio toggles, character/loadout selection, mount, weapon aura, and weather/sky style.
 
-## Data Formats
-
-Phoenix Engine replaces several legacy binary formats with human-readable CSV files. This makes the data easier to inspect, edit, and version-control without specialized tooling.
-
-| Legacy Format | CSV Replacement | Content |
-|---------------|----------------|---------|
-| `.mon` (binary) | `mob.csv`, `npc.csv` | Monster and NPC model definitions: mesh/texture parts, animation slots, sounds, scale, height. |
-| `.sdata` (binary) | `monster.csv`, `NpcQuest.csv` | Server-side metadata: monster model IDs, sizes, display names; NPC quest references. |
-| `.svmap` (binary) | `svmap/{mapId}/` folder | Spawn and placement data split into `metadata.csv`, `monster_areas.csv`, `monster_spawns.csv`, `npcs.csv`, `npc_positions.csv`. |
-
-### World CSV Format
+## World CSV Format
 
 Each world directory (`Data/World/worldN/`) contains:
 
@@ -239,4 +228,15 @@ Audio references (originally `.wav`) are resolved to `.ogg` (Vorbis) files on di
 
 The engine also loads the original WLD, DG, 3DC, SMOD, and ANI binary formats for world geometry, models, and animations.
 
-## Open Source Notes
+## License
+
+BSD 2-Clause License
+
+Copyright (c) 2025-2026, Phoenix Engine contributors. All rights reserved.
+
+Redistribution and use in source and binary forms, with or without modification, are permitted provided that the following conditions are met:
+
+1. Redistributions of source code must retain the above copyright notice, this list of conditions and the following disclaimer.
+2. Redistributions in binary form must reproduce the above copyright notice, this list of conditions and the following disclaimer in the documentation and/or other materials provided with the distribution.
+
+THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
