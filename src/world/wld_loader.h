@@ -40,6 +40,7 @@ namespace phoenix::world
     {
         std::int32_t buildingAssetId{};
         std::int32_t maniAssetIndex{};
+        std::string buildingAssetName;
         float position[3]{};
         float rotationForward[3]{};
         float rotationUp[3]{};
@@ -142,6 +143,10 @@ namespace phoenix::world
         bool parsed{};
         bool parsedSky{};
         bool wrotePreview{};
+        // When loaded from Phoenix Worlds, the self-contained world directory.
+        std::filesystem::path phoenixWorldDir;
+        // When loaded from Phoenix Worlds, field lightmaps live here.
+        std::filesystem::path phoenixWorldFieldDir;
     };
 
     WldAnalysis analyze_wld(const std::filesystem::path& path, const std::filesystem::path& previewPath);

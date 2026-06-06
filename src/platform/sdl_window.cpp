@@ -39,6 +39,35 @@ namespace phoenix::platform
             case SDL_QUIT:
                 return false;
 
+            case SDL_WINDOWEVENT:
+                switch (event.window.event)
+                {
+                case SDL_WINDOWEVENT_MINIMIZED:
+                case SDL_WINDOWEVENT_HIDDEN:
+                    minimized_ = true;
+                    break;
+                case SDL_WINDOWEVENT_RESTORED:
+                case SDL_WINDOWEVENT_SHOWN:
+                case SDL_WINDOWEVENT_MAXIMIZED:
+                    minimized_ = false;
+                    restoredEvent_ = true;
+                    break;
+                case SDL_WINDOWEVENT_SIZE_CHANGED:
+                    if (event.window.data1 > 0 && event.window.data2 > 0)
+                    {
+                        minimized_ = false;
+                        restoredEvent_ = true;
+                    }
+                    else
+                    {
+                        minimized_ = true;
+                    }
+                    break;
+                default:
+                    break;
+                }
+                break;
+
             case SDL_KEYDOWN:
                 if (event.key.keysym.scancode < static_cast<int>(keys_.size()))
                     keys_[event.key.keysym.scancode] = true;
@@ -133,6 +162,13 @@ namespace phoenix::platform
         if (window_)
             SDL_Vulkan_GetDrawableSize(window_, &w, &h);
         return { w, h };
+    }
+
+    bool SdlWindow::consume_restore_event()
+    {
+        const bool value = restoredEvent_;
+        restoredEvent_ = false;
+        return value;
     }
 
     unsigned SdlWindow::vulkan_extension_count() const

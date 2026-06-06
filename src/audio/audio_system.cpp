@@ -2,14 +2,7 @@
 
 #include "assets/data_index.h"
 
-#define STB_VORBIS_HEADER_ONLY
-#include "stb_vorbis.c"
-
-#define MINIAUDIO_IMPLEMENTATION
 #include "miniaudio.h"
-
-#undef STB_VORBIS_HEADER_ONLY
-#include "stb_vorbis.c"
 
 #include <algorithm>
 #include <cmath>
@@ -38,10 +31,17 @@ namespace phoenix::audio
             bool music{};
         };
 
+        struct OneShotSound
+        {
+            ma_sound sound{};
+            bool valid{};
+        };
+
         ma_engine engine{};
         bool initialized{};
-        float masterVolume{ 1.0f };
+        float masterVolume{ 0.10f };
         std::unordered_map<std::string, ActiveVoice> voices;
+        std::vector<OneShotSound> oneShots;
 
         ~Impl()
         {
@@ -82,6 +82,16 @@ namespace phoenix::audio
             }
             voices.clear();
 
+            for (auto& os : oneShots)
+            {
+                if (os.valid)
+                {
+                    ma_sound_stop(&os.sound);
+                    ma_sound_uninit(&os.sound);
+                }
+            }
+            oneShots.clear();
+
             if (initialized)
             {
                 ma_engine_uninit(&engine);
@@ -107,7 +117,7 @@ namespace phoenix::audio
 
             const auto pathStr = path.string();
             if (ma_sound_init_from_file(&engine, pathStr.c_str(),
-                    MA_SOUND_FLAG_DECODE | MA_SOUND_FLAG_NO_SPATIALIZATION,
+                    MA_SOUND_FLAG_STREAM | MA_SOUND_FLAG_NO_SPATIALIZATION,
                     nullptr, nullptr, &active.sound) != MA_SUCCESS)
             {
                 voices.erase(it);
@@ -166,6 +176,39 @@ namespace phoenix::audio
                     ++it;
                 }
             }
+
+            // Clean up finished one-shot sounds.
+            for (auto it = oneShots.begin(); it != oneShots.end();)
+            {
+                if (it->valid && !ma_sound_is_playing(&it->sound))
+                {
+                    ma_sound_uninit(&it->sound);
+                    it = oneShots.erase(it);
+                }
+                else
+                    ++it;
+            }
+        }
+
+        void play_once(const std::filesystem::path& path, float volume)
+        {
+            if (!initialized || path.empty())
+                return;
+
+            auto& os = oneShots.emplace_back();
+            const auto pathStr = path.string();
+            if (ma_sound_init_from_file(&engine, pathStr.c_str(),
+                    MA_SOUND_FLAG_DECODE | MA_SOUND_FLAG_NO_SPATIALIZATION,
+                    nullptr, nullptr, &os.sound) != MA_SUCCESS)
+            {
+                oneShots.pop_back();
+                return;
+            }
+
+            os.valid = true;
+            ma_sound_set_looping(&os.sound, MA_FALSE);
+            ma_sound_set_volume(&os.sound, volume);
+            ma_sound_start(&os.sound);
         }
     };
 
@@ -189,6 +232,11 @@ namespace phoenix::audio
     void AudioSystem::update(float deltaSeconds, const std::vector<AudibleTrack>& tracks)
     {
         impl_->update(deltaSeconds, tracks);
+    }
+
+    void AudioSystem::play_once(const std::filesystem::path& path, float volume)
+    {
+        impl_->play_once(path, volume);
     }
 
     bool AudioSystem::available() const

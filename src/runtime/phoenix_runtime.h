@@ -2,9 +2,6 @@
 
 #include "assets/data_index.h"
 #include "renderer/vulkan_renderer.h"
-#include "world/actor_scene.h"
-#include "world/eft_loader.h"
-#include "world/mani_loader.h"
 #include "world/wld_loader.h"
 
 #include <filesystem>
@@ -61,8 +58,6 @@ namespace phoenix::runtime
         std::int32_t sectionIndex{ -1 };
         std::int32_t instanceIndex{ -1 };
         bool deleted{};
-        bool animated{};
-        std::int32_t maniAssetIndex{ -1 };
     };
 
     struct WaterAnimation
@@ -81,7 +76,6 @@ namespace phoenix::runtime
         phoenix::world::WldAnalysis world;
         std::vector<EntityAsset> entityAssets;
         std::vector<LoadedWorldAsset> worldAssets;
-        std::vector<phoenix::world::ManiAnimation> maniAnimations;
         std::vector<std::filesystem::path> assetTexturePaths;
         std::unordered_map<std::string, std::uint32_t> textureSlotByPath;
         std::vector<SceneObject> sceneObjects;
@@ -91,9 +85,6 @@ namespace phoenix::runtime
         std::vector<std::string> terrainTextureNames;
         std::vector<AudioAsset> audioAssets;
         WaterAnimation waterAnimation;
-        phoenix::world::EftFile eftFile;
-        std::vector<std::filesystem::path> effectTexturePaths;
-        std::vector<std::int32_t> effectInstanceTextureSlot; // per effect instance: texture layer or -1
         std::size_t selectedWorldMap{};
         std::string status;
     };
@@ -127,29 +118,6 @@ namespace phoenix::runtime
         float speed{ 320.0f };
     };
 
-    // Live-tunable mob/NPC animation parameters (exposed in the debug UI so the
-    // playback can be matched to the native client). Defaults are the calibrated
-    // values; changing them takes effect immediately.
-    struct ActorAnimTuning
-    {
-        float breathFps{ 12.0f };          // standing "breathing" loop rate
-        float idleFps{ 12.0f };            // occasional idle-gesture playback rate
-        float walkFps{ 14.0f };            // mob walk loop rate
-        float runFps{ 18.0f };             // mob run loop rate
-        float npcBreathFps{ 12.0f };       // NPC idle loop rate
-        float decorFps{ 12.0f };           // non-actor decorative vertex anims
-        float mobWalkSpeed{ 1.8f };        // world units/s while walking
-        float mobRunSpeed{ 4.5f };         // world units/s while running
-        float mobRoamRadius{ 12.0f };      // wander radius around home
-        float mobIdleMin{ 4.0f };          // min idle seconds between roams
-        float mobIdleMax{ 12.0f };         // max idle seconds between roams
-        float gestureIntervalMin{ 20.0f }; // seconds between idle gestures
-        float gestureIntervalMax{ 30.0f };
-        float idleGestureDuration{ 5.0f }; // how long an idle gesture plays
-        float animationRange{ 180.0f };    // distance beyond which actors freeze
-        float moveAnimThreshold{ 0.4f };   // fraction of a type moving -> walk/run anim
-    };
-
     struct PreviewImage
     {
         std::uint32_t width{};
@@ -180,26 +148,7 @@ namespace phoenix::runtime
         {
             std::uint32_t firstVertex{};
             std::uint32_t vertexCount{};
-            std::vector<std::vector<phoenix::renderer::TerrainVertex>> frames; // world VANI only
-            phoenix::world::ActorSkinData skinData;
-            phoenix::world::ActorAnimationSet animations;
-            float worldX{};
-            float worldY{};
-            float worldZ{};
-            float boundingRadius{ 48.0f };
-            float gestureTimer{};
-            bool playingGesture{};
-            bool isMob{};
-            bool hasActorSkin{};
-            std::int32_t cachedFrame{ -1 };
-            const phoenix::world::CharacterAnimation* cachedAnim{};
-            // Mob type-level movement state.
-            std::uint32_t totalInstances{};
-            std::uint32_t movingCount{};
-            std::uint32_t runningCount{};
-            float mobMoveTimer{};
-            bool mobMoving{};
-            bool mobRunning{};
+            std::vector<std::vector<phoenix::renderer::TerrainVertex>> frames;
         };
 
         struct InstanceAnimation
@@ -207,21 +156,6 @@ namespace phoenix::runtime
             std::uint32_t instanceIndex{};
             float axis[3]{};
             float speed{};
-        };
-
-        // Per-instance movement state for mobs.
-        struct MobInstanceState
-        {
-            std::uint32_t instanceIndex{};
-            std::uint32_t animIndex{};   // vertex animation index this instance belongs to
-            float spawnX{};
-            float spawnZ{};
-            float targetX{};
-            float targetZ{};
-            float moveTimer{};
-            float yaw{};
-            bool moving{};
-            bool running{};
         };
 
         std::vector<phoenix::renderer::TerrainVertex> vertices;
@@ -232,7 +166,6 @@ namespace phoenix::runtime
         std::vector<StaticObjectScene::BatchBounds> batchBounds;
         std::vector<VertexAnimation> vertexAnimations;
         std::vector<InstanceAnimation> instanceAnimations;
-        std::vector<MobInstanceState> mobInstances;
 
         // Dirty vertex range tracking — only upload modified regions to GPU.
         std::uint32_t dirtyVertexMin{ 0xFFFFFFFFu };
@@ -312,34 +245,23 @@ namespace phoenix::runtime
             std::vector<std::array<TerrainChunkLod, kTerrainLodLevels>> chunks;
         };
         void build_terrain_mesh(std::vector<phoenix::renderer::TerrainVertex>& vertices, std::vector<std::uint32_t>& indices, TerrainLodInfo& lodInfo) const;
-        void build_debug_gizmo_mesh(
-            bool includeSounds,
-            bool includeMusic,
-            bool includePortals,
-            bool includeEffects,
-            std::vector<phoenix::renderer::TerrainVertex>& vertices,
-            std::vector<std::uint32_t>& indices) const;
         StaticObjectScene build_static_object_scene() const;
         AnimatedObjectScene build_animated_object_scene() const;
-        void update_animated_object_scene(AnimatedObjectScene& scene, float totalTime, float deltaSeconds,
-            float cameraX, float cameraY, float cameraZ,
-            std::size_t actorVertexAnimationStart = std::numeric_limits<std::size_t>::max(),
-            bool skipActorSkinning = false) const;
+        void update_animated_object_scene(AnimatedObjectScene& scene, float totalTime) const;
         std::vector<std::filesystem::path> terrain_texture_paths() const;
         std::vector<std::filesystem::path> asset_texture_paths() const;
+
+        // Field lightmap/alpha layer paths (Data/World/field/<mapId>/).
+        // Returns up to 4 lightmap paths (one per section, 2x2 for big maps, 1x1 for small).
+        // sectionCount is set to 1 (small) or 2 (big = 2x2 grid).
+        std::vector<std::filesystem::path> field_lightmap_paths(std::uint32_t& sectionCount) const;
         std::filesystem::path texture_path_for(std::string_view fileName) const;
         std::filesystem::path audio_path_for(std::string_view fileName) const;
         std::filesystem::path water_texture_path() const;
         bool load_water_animation();
         const WaterAnimation& water_animation() const { return state_.waterAnimation; }
-        bool load_effect_data();
-        std::vector<std::filesystem::path> effect_texture_paths() const;
-        void set_effect_texture_base(std::uint32_t base) { effectTextureBase_ = base; }
-        void build_effect_billboards(
-            std::vector<phoenix::renderer::TerrainVertex>& vertices,
-            std::vector<std::uint32_t>& indices,
-            float totalTime = 0.0f) const;
         std::filesystem::path sky_texture_path() const;
+        std::filesystem::path walk_sound_at(float worldX, float worldZ) const;
         void camera_state(float& x, float& y, float& z, float& yaw, float& pitch) const;
         void set_camera_position(float x, float y, float z, float yaw, float pitch);
         void update_camera(float deltaSeconds, const CameraInput& input);
@@ -350,8 +272,6 @@ namespace phoenix::runtime
         const std::vector<AudioAsset>& audio_assets() const { return state_.audioAssets; }
         std::size_t selected_world_map() const { return state_.selectedWorldMap; }
         const PhoenixRuntimeState& state() const { return state_; }
-        ActorAnimTuning& actor_anim_tuning() { return actorAnimTuning_; }
-
         float terrain_height_at(float worldX, float worldZ) const { return terrain_height(worldX, worldZ); }
         WorldCollisionMesh build_collision_mesh() const;
 
@@ -368,9 +288,7 @@ namespace phoenix::runtime
         float terrain_height(float worldX, float worldZ) const;
 
         PhoenixRuntimeState state_;
-        RuntimeCamera camera_;
-        ActorAnimTuning actorAnimTuning_;
-        std::uint32_t effectTextureBase_{};
+        RuntimeCamera camera_{};
         // Memoises resolve_asset_texture_layer by (textureName, forceCutout) so the
         // per-mesh world build doesn't re-resolve+stat the same texture thousands of
         // times. Cleared at the start of each load_world_assets().

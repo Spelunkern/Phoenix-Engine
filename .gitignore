@@ -12,6 +12,7 @@
 # Local runtime data and extracted assets
 /Data/
 /**/Data/
+/backup/
 
 # Logs and local state
 /Logs/

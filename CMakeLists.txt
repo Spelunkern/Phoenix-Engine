@@ -10,27 +10,42 @@ option(PHOENIX_COPY_RUNTIME_DLLS "Copy runtime DLLs next to the executable on Wi
 
 set(ENGINE_SOURCES
     src/main.cpp
+    src/app/bootstrap.cpp
+    src/app/loading_scheduler.cpp
+    src/app/map_session.cpp
+    src/app/renderer_uploads.cpp
+    src/app/water_resources.cpp
     src/assets/data_index.cpp
+    src/audio/map_audio_scene.cpp
     src/audio/audio_system.cpp
+    src/audio/vendor_audio_codecs.cpp
+    src/character/bot_manager.cpp
+    src/character/character_options.cpp
     src/character/character_system.cpp
     src/character/weapon_bone_map.cpp
     src/character/weapon_effect.cpp
     src/core/logging.cpp
+    src/effects/effect_placement.cpp
     src/effects/effect_system.cpp
     src/platform/sdl_window.cpp
     src/renderer/dds_loader.cpp
+    src/renderer/visibility_culling.cpp
     src/renderer/vulkan_renderer.cpp
     src/renderer/vulkan_renderer_particles.cpp
+    src/runtime/playable_spawn.cpp
     src/runtime/phoenix_runtime.cpp
     src/ui/editor_panel.cpp
+    src/ui/loading_screen.cpp
     src/ui/cpu_profiler.cpp
     src/ui/perf_hud.cpp
-    src/world/actor_scene.cpp
+    src/ui/weather_overlay.cpp
     src/world/character_loader.cpp
     src/world/dg_loader.cpp
+    src/world/phoenix_world_loader.cpp
     src/world/eft_loader.cpp
     src/world/mani_loader.cpp
     src/world/mon_loader.cpp
+    src/world/portal_runtime.cpp
     src/world/sdata_loader.cpp
     src/world/smod_loader.cpp
     src/world/svmap_loader.cpp
@@ -78,6 +93,7 @@ if(WIN32)
     target_link_libraries(PhoenixEngine PRIVATE
         SDL2::SDL2
         SDL2::SDL2main
+        dbghelp
         user32
         gdi32
     )
@@ -91,6 +107,9 @@ if(WIN32)
     # Match the vcxproj warning level and suppression.
     if(MSVC)
         target_compile_options(PhoenixEngine PRIVATE /W4 /wd4505)
+        set_source_files_properties(src/audio/vendor_audio_codecs.cpp PROPERTIES
+            COMPILE_OPTIONS /W0
+        )
     endif()
 
     # Subsystem: Windows (no console window).
@@ -127,4 +146,15 @@ else()
     )
 
     target_compile_options(PhoenixEngine PRIVATE -Wno-missing-field-initializers)
+
+    # Use mimalloc on Linux for aggressive memory return to the OS.
+    # glibc malloc_trim is ineffective with fragmented arenas.
+    find_library(MIMALLOC_LIB mimalloc)
+    if(MIMALLOC_LIB)
+        target_link_libraries(PhoenixEngine PRIVATE ${MIMALLOC_LIB})
+        target_compile_definitions(PhoenixEngine PRIVATE PHOENIX_USE_MIMALLOC)
+        message(STATUS "Using mimalloc: ${MIMALLOC_LIB}")
+    else()
+        message(STATUS "mimalloc not found - using system allocator (apt install libmimalloc-dev)")
+    endif()
 endif()

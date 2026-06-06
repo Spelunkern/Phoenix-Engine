@@ -2,6 +2,7 @@
 
 #include "character/character_system.h"
 #include "character/weapon_effect.h"
+#include "effects/effect_system.h"
 #include "renderer/vulkan_renderer.h"
 #include "runtime/phoenix_runtime.h"
 
@@ -13,14 +14,25 @@ namespace phoenix::ui
     enum class WeatherMode
     {
         Default,
-        Storm,
-        Snowstorm,
+        Dawn,
+        MidAfternoon,
+        Dusk,
         Sunset,
         Night,
-        Dawn,
-        Dusk,
-        MidAfternoon,
         Overcast,
+        Storm,
+        Snowstorm,
+    };
+
+    enum class WaterMode
+    {
+        Natural,
+        Ocean,
+        Tropical,
+        River,
+        Lake,
+        Cold,
+        Swamp,
     };
 
 
@@ -49,7 +61,10 @@ namespace phoenix::ui
         bool debugGizmosChanged{};
         bool characterChanged{};
         bool weatherChanged{};
+        bool waterChanged{};
         int emoteTriggered{};   // 0=none, 1-10=emote number (one-shot)
+        int botSpawnCount{};
+        bool clearBots{};
     };
 
     // Nearest existing index in a sorted/unsorted list (keeps part selections valid
@@ -66,32 +81,36 @@ namespace phoenix::ui
         float viewDistance,
         WeatherMode weatherMode);
 
+    void apply_renderer_water_style(
+        phoenix::renderer::VulkanRenderer& renderer,
+        WaterMode waterMode);
+
     // The main ImGui control panel (world map, weather, character, weapon aura).
     UnifiedPanelResult draw_editor_panel(
         const phoenix::runtime::PhoenixRuntime& runtime,
         phoenix::renderer::VulkanRenderer& renderer,
         bool& fogEnabled,
-        bool& showSoundGizmos,
-        bool& showMusicGizmos,
-        bool& showPortalGizmos,
-        bool& showEffectGizmos,
-        bool& showNamePlates,
         bool& showCollisionDebug,
         bool& playMapSounds,
         bool& playMapMusic,
         float& masterVolume,
         int& selectedMapIndex,
         float& viewDistance,
-        float& actorViewDistance,
-        bool& actorsEnabled,
         WeatherMode& weatherMode,
+        WaterMode& waterMode,
         const std::vector<CharacterOption>& characterOptions,
         int& selectedCharacterOption,
         phoenix::character::CharacterAppearance& appearance,
         phoenix::character::CharacterSystem& characterSystem,
         phoenix::character::WeaponEffect& weaponEffect,
-        bool& showEffectsWindow,
-        bool& showActorAnimWindow,
+        phoenix::effects::EffectManager& effectManager,
+        bool botControlsAvailable,
+        std::size_t botCount,
+        bool& botEffectsEnabled,
+        bool& botWeaponAurasEnabled,
         bool assetsReady,
-        float camX, float camY, float camZ, float camYaw, float camPitch);
+        float cameraX,
+        float cameraY,
+        float cameraZ,
+        float cameraYaw);
 }

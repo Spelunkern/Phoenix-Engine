@@ -2,62 +2,67 @@
 
 #include "renderer/vulkan_renderer.h"
 
-#include <cstddef>
+#include <array>
 #include <cstdint>
+#include <filesystem>
 #include <string>
 
 namespace phoenix::ui
 {
-    // Floating performance HUD: FPS/frametime graph, per-core CPU, RAM and VRAM.
-    // System metrics are gathered per-platform (Win32 APIs / Linux /proc) and
-    // refreshed twice a second from push_frametime().
     struct PerfHudState
     {
-        static constexpr std::size_t kHistorySize = 128;
         static constexpr std::uint32_t kMaxCores = 64;
-        float frametimeHistory[kHistorySize]{};
-        std::size_t historyIndex{};
-        float fpsSmoothed{};
-        float frametimeMs{};
-        float frametimeMin{ 999.0f };
-        float frametimeMax{};
-        float frametimeAvg{};
-        std::uint32_t visibleBatches{};
-        std::uint32_t visibleInstances{};
-        std::uint32_t totalTriangles{};
-        std::uint32_t actorCount{};
-        std::uint32_t mobsMoving{};
-        bool visible{ true };
 
-        // System metrics (updated periodically).
+        // One-time system info (set at init, never changes).
+        std::string osName;
+        std::string cpuName;
+        std::string gpuName;
+        std::uint32_t cpuCores{};
+        phoenix::renderer::VulkanRenderer* renderer{};
+
+        // Icons (uploaded once, cached forever).
+        bool iconsUploaded{};
+        std::uint64_t windowsIcon{};
+        std::uint64_t linuxIcon{};
+        std::uint64_t macIcon{};
+        std::uint64_t nvidiaIcon{};
+        std::uint64_t amdIcon{};
+        std::uint64_t intelIcon{};
+        std::uint64_t cachedOsIcon{};
+        std::uint64_t cachedCpuIcon{};
+        std::uint64_t cachedGpuIcon{};
+
+        // Live metrics (refreshed every ~1s via push_frametime).
+        float fpsSmoothed{};
+        float cpuPercent{};
         float ramUsedMB{};
         float ramTotalMB{};
         float ramPercent{};
-        float processRamMB{};
-        float cpuPercent{};
-        std::uint32_t cpuCores{};
-        float coreUsage[kMaxCores]{};
-        std::string gpuName;
         float vramUsedMB{};
         float vramTotalMB{};
-        phoenix::renderer::VulkanRenderer* renderer{};
+        float processRamMB{};
+        float worldX{}, worldY{}, worldZ{};
+        std::string mapId;
 
-        // Internal: accumulate frames between display refreshes (~0.5s).
-        float displayAccum_{};
-        std::uint32_t displayFrames_{};
+        // FPS cap: 0=off, 1=30, 2=60, 3=120, 4=144. Persisted.
+        int fpsCapIndex{};
+        float fps_cap_seconds() const;
 
-        // Per-core CPU state (raw counters from the previous sample).
+        void initialize_system_info();
+        void push_frametime(float dt);
+        void load_settings(const std::filesystem::path& executableDir);
+        void save_settings(const std::filesystem::path& executableDir) const;
+
+    private:
+        float accumTime_{};
+        int accumFrames_{};
 #ifdef _WIN32
         struct CoreTimes { unsigned long long idle{}; unsigned long long kernel{}; unsigned long long user{}; };
 #else
         struct CoreTimes { unsigned long long idle{}; unsigned long long total{}; };
 #endif
-        CoreTimes lastCoreTimes[kMaxCores]{};
-        bool cpuInitialized{};
-
-        void initialize_system_info();
-        void update_system_metrics();
-        void push_frametime(float dt);
+        CoreTimes lastCoreTimes_[kMaxCores]{};
+        bool cpuInitialized_{};
     };
 
     void draw_perf_hud(PerfHudState& hud, float surfaceWidth);

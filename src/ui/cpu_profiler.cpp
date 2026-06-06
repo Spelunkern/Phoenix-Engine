@@ -1,7 +1,5 @@
 #include "ui/cpu_profiler.h"
 
-#include "imgui.h"
-
 #include <algorithm>
 #include <cctype>
 #include <cstdio>
@@ -17,6 +15,7 @@
 #define WIN32_LEAN_AND_MEAN
 #endif
 #include <windows.h>
+#include <psapi.h>
 #include <tlhelp32.h>
 #include <winternl.h>
 #pragma comment(lib, "ntdll.lib")
@@ -109,31 +108,88 @@ namespace phoenix::ui
     void CpuProfiler::end_frame(float dt)
     {
         for (std::size_t i = 0; i < zoneCount; ++i)
-        {
-            auto& z = zones[i];
-            z.history[historyIndex] = z.currentMs;
-            z.peakMs = 0.0f;
-            z.avgMs = 0.0f;
-            for (std::size_t h = 0; h < kHistorySize; ++h)
-            {
-                z.avgMs += z.history[h];
-                if (z.history[h] > z.peakMs) z.peakMs = z.history[h];
-            }
-            z.avgMs /= static_cast<float>(kHistorySize);
-        }
+            zones[i].history[historyIndex] = zones[i].currentMs;
         historyIndex = (historyIndex + 1) % kHistorySize;
 
         sampleAccum_ += dt;
         if (sampleAccum_ >= 0.5f)
         {
             sampleAccum_ = 0.0f;
+            for (std::size_t i = 0; i < zoneCount; ++i)
+            {
+                auto& z = zones[i];
+                z.peakMs = 0.0f;
+                z.avgMs = 0.0f;
+                for (std::size_t h = 0; h < kHistorySize; ++h)
+                {
+                    z.avgMs += z.history[h];
+                    if (z.history[h] > z.peakMs) z.peakMs = z.history[h];
+                }
+                z.avgMs /= static_cast<float>(kHistorySize);
+            }
             update_cpu_metrics();
 
             for (std::uint32_t i = 0; i < cpuCores; ++i)
                 coreHistory[i][coreHistoryIndex] = coreUsage[i];
             cpuHistory[coreHistoryIndex] = cpuOverall;
             coreHistoryIndex = (coreHistoryIndex + 1) % kCoreHistorySize;
+
+            update_ram_metrics();
         }
+    }
+
+    void CpuProfiler::update_ram_metrics()
+    {
+        float processMB = 0.0f;
+#ifdef _WIN32
+        PROCESS_MEMORY_COUNTERS pmc{};
+        pmc.cb = sizeof(pmc);
+        if (GetProcessMemoryInfo(GetCurrentProcess(),
+            &pmc, sizeof(pmc)))
+            processMB = static_cast<float>(pmc.WorkingSetSize) / (1024.0f * 1024.0f);
+#else
+        {
+            std::ifstream status("/proc/self/status");
+            std::string line;
+            while (std::getline(status, line))
+            {
+                if (line.rfind("VmRSS:", 0) == 0)
+                {
+                    long long kb = 0;
+                    std::sscanf(line.c_str(), "VmRSS: %lld", &kb);
+                    processMB = static_cast<float>(kb) / 1024.0f;
+                    break;
+                }
+            }
+        }
+#endif
+        ramCurrentMB = processMB;
+        if (processMB > ramPeakMB) ramPeakMB = processMB;
+        if (processMB < ramMinMB) ramMinMB = processMB;
+        if (!ramBaselineSet) { ramBaselineMB = processMB; ramBaselineSet = true; }
+
+        ramHistory[ramHistoryIndex] = processMB;
+        ramHistoryIndex = (ramHistoryIndex + 1) % kRamHistorySize;
+
+        // Growth rate: MB/s averaged over 5 seconds.
+        ramGrowthTimer_ += 0.5f;
+        if (ramGrowthTimer_ >= 5.0f)
+        {
+            if (ramPrevSampleMB_ > 0.0f)
+                ramDeltaPerSec = (processMB - ramPrevSampleMB_) / ramGrowthTimer_;
+            ramPrevSampleMB_ = processMB;
+            ramGrowthTimer_ = 0.0f;
+        }
+    }
+
+    void CpuProfiler::reset_ram_baseline()
+    {
+        ramBaselineMB = ramCurrentMB;
+        ramPeakMB = ramCurrentMB;
+        ramMinMB = ramCurrentMB;
+        ramDeltaPerSec = 0.0f;
+        ramPrevSampleMB_ = ramCurrentMB;
+        ramGrowthTimer_ = 0.0f;
     }
 
     void CpuProfiler::update_cpu_metrics()
@@ -229,134 +285,4 @@ namespace phoenix::ui
 #endif
     }
 
-    void draw_cpu_profiler(CpuProfiler& p)
-    {
-        if (!p.visible)
-            return;
-
-        ImGui::SetNextWindowSize(ImVec2(420.0f, 520.0f), ImGuiCond_FirstUseEver);
-        if (!ImGui::Begin("CPU Profiler", &p.visible))
-        {
-            ImGui::End();
-            return;
-        }
-
-        const auto colorForPercent = [](float pct) -> ImVec4 {
-            if (pct < 60.0f) return { 0.2f, 1.0f, 0.4f, 1.0f };
-            if (pct < 85.0f) return { 1.0f, 0.85f, 0.2f, 1.0f };
-            return { 1.0f, 0.3f, 0.3f, 1.0f };
-        };
-        const auto colorU32 = [](float pct) -> ImU32 {
-            if (pct < 60.0f) return IM_COL32(50, 255, 100, 220);
-            if (pct < 85.0f) return IM_COL32(255, 216, 50, 220);
-            return IM_COL32(255, 76, 76, 220);
-        };
-
-        // ---- System info ----
-        if (!p.cpuName.empty())
-            ImGui::TextDisabled("%s", p.cpuName.c_str());
-        ImGui::TextColored(colorForPercent(p.cpuOverall), "CPU: %.0f%%", p.cpuOverall);
-        ImGui::SameLine();
-        ImGui::Text("  %u cores  %u threads", p.cpuCores, p.threadCount);
-
-        // Overall CPU history.
-        ImGui::PlotLines("##cpuHist", p.cpuHistory, static_cast<int>(CpuProfiler::kCoreHistorySize),
-            static_cast<int>(p.coreHistoryIndex), "CPU %", 0.0f, 100.0f,
-            ImVec2(ImGui::GetContentRegionAvail().x, 40.0f));
-
-        // ---- Per-core bars ----
-        if (ImGui::CollapsingHeader("Per-Core Usage", ImGuiTreeNodeFlags_DefaultOpen))
-        {
-            auto* drawList = ImGui::GetWindowDrawList();
-            const auto cursor = ImGui::GetCursorScreenPos();
-            const float totalWidth = ImGui::GetContentRegionAvail().x;
-            const float barWidth = totalWidth / static_cast<float>(p.cpuCores);
-            const float barHeight = 18.0f;
-            for (std::uint32_t i = 0; i < p.cpuCores; ++i)
-            {
-                const float x = cursor.x + static_cast<float>(i) * barWidth;
-                const float usage = std::clamp(p.coreUsage[i] / 100.0f, 0.0f, 1.0f);
-                drawList->AddRectFilled(
-                    ImVec2(x, cursor.y),
-                    ImVec2(x + barWidth - 1.0f, cursor.y + barHeight),
-                    IM_COL32(40, 40, 40, 200));
-                drawList->AddRectFilled(
-                    ImVec2(x, cursor.y + barHeight * (1.0f - usage)),
-                    ImVec2(x + barWidth - 1.0f, cursor.y + barHeight),
-                    colorU32(p.coreUsage[i]));
-            }
-            ImGui::Dummy(ImVec2(totalWidth, barHeight + 4.0f));
-
-            // Per-core sparklines.
-            const float graphWidth = totalWidth - 70.0f;
-            for (std::uint32_t i = 0; i < p.cpuCores; ++i)
-            {
-                ImGui::TextColored(colorForPercent(p.coreUsage[i]), "C%02u", i);
-                ImGui::SameLine();
-                char label[16];
-                std::snprintf(label, sizeof(label), "##c%u", i);
-                ImGui::PlotLines(label, p.coreHistory[i],
-                    static_cast<int>(CpuProfiler::kCoreHistorySize),
-                    static_cast<int>(p.coreHistoryIndex),
-                    nullptr, 0.0f, 100.0f, ImVec2(graphWidth, 14.0f));
-                ImGui::SameLine();
-                ImGui::Text("%3.0f%%", p.coreUsage[i]);
-            }
-        }
-
-        // ---- Frame zones ----
-        if (p.zoneCount > 0 && ImGui::CollapsingHeader("Frame Zones", ImGuiTreeNodeFlags_DefaultOpen))
-        {
-            // Sort zones by avg time (heaviest first) for display.
-            std::size_t order[CpuProfiler::kMaxZones];
-            for (std::size_t i = 0; i < p.zoneCount; ++i) order[i] = i;
-            std::sort(order, order + p.zoneCount, [&](std::size_t a, std::size_t b) {
-                return p.zones[a].avgMs > p.zones[b].avgMs;
-            });
-
-            ImGui::Columns(4, "zones", false);
-            ImGui::SetColumnWidth(0, 140.0f);
-            ImGui::SetColumnWidth(1, 70.0f);
-            ImGui::SetColumnWidth(2, 70.0f);
-            ImGui::SetColumnWidth(3, 70.0f);
-            ImGui::TextDisabled("Zone"); ImGui::NextColumn();
-            ImGui::TextDisabled("Now"); ImGui::NextColumn();
-            ImGui::TextDisabled("Avg"); ImGui::NextColumn();
-            ImGui::TextDisabled("Peak"); ImGui::NextColumn();
-
-            for (std::size_t oi = 0; oi < p.zoneCount; ++oi)
-            {
-                const auto& z = p.zones[order[oi]];
-                const auto zoneColor = z.currentMs > 4.0f ? ImVec4(1.0f, 0.3f, 0.3f, 1.0f)
-                    : z.currentMs > 1.0f ? ImVec4(1.0f, 0.85f, 0.2f, 1.0f)
-                    : ImVec4(0.7f, 0.7f, 0.7f, 1.0f);
-                ImGui::TextColored(zoneColor, "%s", z.name); ImGui::NextColumn();
-                ImGui::Text("%.2f", z.currentMs); ImGui::NextColumn();
-                ImGui::Text("%.2f", z.avgMs); ImGui::NextColumn();
-                ImGui::Text("%.2f", z.peakMs); ImGui::NextColumn();
-            }
-            ImGui::Columns(1);
-
-            // Total.
-            float totalNow = 0.0f;
-            for (std::size_t i = 0; i < p.zoneCount; ++i) totalNow += p.zones[i].currentMs;
-            ImGui::Separator();
-            ImGui::Text("Total frame CPU: %.2f ms", totalNow);
-
-            // Stacked zone graph (last zone).
-            if (p.zoneCount > 0)
-            {
-                const auto& heaviest = p.zones[order[0]];
-                char heaviestLabel[64];
-                std::snprintf(heaviestLabel, sizeof(heaviestLabel), "%s (ms)", heaviest.name);
-                ImGui::PlotLines("##heaviest", heaviest.history,
-                    static_cast<int>(CpuProfiler::kHistorySize),
-                    static_cast<int>(p.historyIndex),
-                    heaviestLabel, 0.0f, std::max(8.0f, heaviest.peakMs * 1.2f),
-                    ImVec2(ImGui::GetContentRegionAvail().x, 50.0f));
-            }
-        }
-
-        ImGui::End();
-    }
 }

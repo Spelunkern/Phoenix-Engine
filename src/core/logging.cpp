@@ -54,6 +54,36 @@ namespace phoenix::core
             return std::filesystem::path(value);
 #endif
         }
+
+        const char* category_filename(LogCategory cat)
+        {
+            switch (cat)
+            {
+            case LogCategory::Engine:   return "Engine";
+            case LogCategory::Renderer: return "Renderer";
+            case LogCategory::Assets:   return "Assets";
+            case LogCategory::World:    return "World";
+            case LogCategory::Audio:    return "Audio";
+            case LogCategory::Session:  return "Session";
+            case LogCategory::Errors:   return "Errors";
+            }
+            return "Engine";
+        }
+
+        const char* category_label(LogCategory cat)
+        {
+            switch (cat)
+            {
+            case LogCategory::Engine:   return "Engine";
+            case LogCategory::Renderer: return "Renderer";
+            case LogCategory::Assets:   return "Assets";
+            case LogCategory::World:    return "World";
+            case LogCategory::Audio:    return "Audio";
+            case LogCategory::Session:  return "Session";
+            case LogCategory::Errors:   return "ERROR";
+            }
+            return "Engine";
+        }
     }
 
     void initialize_logging(const std::filesystem::path& executableDir)
@@ -80,12 +110,25 @@ namespace phoenix::core
         std::filesystem::create_directories(gLogsDirectory, ec);
         gEngineLogPath = gLogsDirectory / "PhoenixEngine.log";
 
-        std::ofstream log(gEngineLogPath, std::ios::trunc);
-        if (!log)
-            return;
+        // Truncate all category logs at startup.
+        for (auto cat : { LogCategory::Engine, LogCategory::Renderer, LogCategory::Assets,
+                          LogCategory::World, LogCategory::Audio, LogCategory::Session,
+                          LogCategory::Errors })
+        {
+            const auto path = gLogsDirectory / (std::string(category_filename(cat)) + ".log");
+            std::ofstream trunc(path, std::ios::trunc);
+            if (trunc)
+                trunc << "# Phoenix Engine — " << category_label(cat) << " Log\n"
+                      << "# Started: " << timestamp() << "\n\n";
+        }
 
-        log << "[" << timestamp() << "] [Core] Phoenix Engine logging initialized\n";
-        log << "[" << timestamp() << "] [Core] Logs directory: " << gLogsDirectory.string() << "\n";
+        // Legacy engine log (kept for backward compat).
+        std::ofstream legacyLog(gEngineLogPath, std::ios::trunc);
+        if (legacyLog)
+        {
+            legacyLog << "[" << timestamp() << "] [Core] Phoenix Engine logging initialized\n";
+            legacyLog << "[" << timestamp() << "] [Core] Logs directory: " << gLogsDirectory.string() << "\n";
+        }
     }
 
     const std::filesystem::path& logs_directory()
@@ -98,19 +141,51 @@ namespace phoenix::core
         return gEngineLogPath;
     }
 
+    std::filesystem::path specialized_log_path(std::string_view name)
+    {
+        return gLogsDirectory / (std::string(name) + ".log");
+    }
+
+    std::filesystem::path category_log_path(LogCategory category)
+    {
+        return gLogsDirectory / (std::string(category_filename(category)) + ".log");
+    }
+
     std::ofstream open_engine_log(LogOpenMode mode)
     {
         const auto flags = mode == LogOpenMode::Truncate ? std::ios::trunc : std::ios::app;
         return std::ofstream(gEngineLogPath, flags);
     }
 
+    std::ofstream open_log(LogCategory category, LogOpenMode mode)
+    {
+        const auto flags = mode == LogOpenMode::Truncate ? std::ios::trunc : std::ios::app;
+        return std::ofstream(category_log_path(category), flags);
+    }
+
     void write_log_line(std::string_view category, std::string_view message)
     {
         std::lock_guard lock(gLogMutex);
-        std::ofstream log(gEngineLogPath, std::ios::app);
-        if (!log)
-            return;
-
-        log << "[" << timestamp() << "] [" << category << "] " << message << "\n";
+        std::ofstream legacyLog(gEngineLogPath, std::ios::app);
+        if (legacyLog)
+            legacyLog << "[" << timestamp() << "] [" << category << "] " << message << "\n";
     }
+
+    void log(LogCategory category, std::string_view message)
+    {
+        std::lock_guard lock(gLogMutex);
+        const auto ts = timestamp();
+        const auto label = category_label(category);
+
+        // Write to specialized log.
+        std::ofstream catLog(category_log_path(category), std::ios::app);
+        if (catLog)
+            catLog << "[" << ts << "] " << message << "\n";
+
+        // Mirror to legacy engine log.
+        std::ofstream legacyLog(gEngineLogPath, std::ios::app);
+        if (legacyLog)
+            legacyLog << "[" << ts << "] [" << label << "] " << message << "\n";
+    }
+
 }

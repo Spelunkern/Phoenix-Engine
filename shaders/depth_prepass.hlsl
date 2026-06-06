@@ -6,6 +6,7 @@ struct CameraConstants
 {
     float4 positionYaw;
     float4 pitchAspectFov;
+    float4 precomputedTrig; // cosYaw, sinYaw, cosPitch, sinPitch
     float4 fogColorHasSky;
     float4 fogDistances;
 };
@@ -32,15 +33,13 @@ struct DepthVSOutput
 DepthVSOutput VSMain_Terrain(TerrainVSInput input)
 {
     const float3 delta = input.position - camera.positionYaw.xyz;
-    const float yaw = camera.positionYaw.w;
-    const float pitch = camera.pitchAspectFov.x;
     const float aspect = camera.pitchAspectFov.y;
     const float tanHalfFov = camera.pitchAspectFov.z;
     const float farPlane = camera.pitchAspectFov.w;
     const float nearPlane = 2.0f;
 
-    const float cy = cos(yaw); const float sy = sin(yaw);
-    const float cp = cos(pitch); const float sp = sin(pitch);
+    const float cy = camera.precomputedTrig.x; const float sy = camera.precomputedTrig.y;
+    const float cp = camera.precomputedTrig.z; const float sp = camera.precomputedTrig.w;
 
     const float cameraX = cy * delta.x - sy * delta.z;
     const float yawZ = sy * delta.x + cy * delta.z;
@@ -80,15 +79,13 @@ DepthVSOutput VSMain_StaticObject(StaticObjectVSInput input)
         + input.instanceForward.xyz * input.position.z;
 
     const float3 delta = worldPosition - camera.positionYaw.xyz;
-    const float yaw = camera.positionYaw.w;
-    const float pitch = camera.pitchAspectFov.x;
     const float aspect = camera.pitchAspectFov.y;
     const float tanHalfFov = camera.pitchAspectFov.z;
     const float farPlane = camera.pitchAspectFov.w;
     const float nearPlane = 2.0f;
 
-    const float cy = cos(yaw); const float sy = sin(yaw);
-    const float cp = cos(pitch); const float sp = sin(pitch);
+    const float cy = camera.precomputedTrig.x; const float sy = camera.precomputedTrig.y;
+    const float cp = camera.precomputedTrig.z; const float sp = camera.precomputedTrig.w;
 
     const float cameraX = cy * delta.x - sy * delta.z;
     const float yawZ = sy * delta.x + cy * delta.z;

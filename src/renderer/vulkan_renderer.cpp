@@ -1,6 +1,5 @@
 #include "renderer/vulkan_renderer.h"
 #include "renderer/vulkan_renderer_internal.h"
-#include "core/logging.h"
 #include "renderer/dds_loader.h"
 #include "platform/sdl_window.h"
 #include "ui/cpu_profiler.h"
@@ -19,11 +18,45 @@
 #include <filesystem>
 #include <future>
 #include <limits>
+#include <string>
 #include <thread>
 #include <vector>
 
 namespace phoenix::renderer
 {
+    namespace
+    {
+        const char* vk_result_name(VkResult result)
+        {
+            switch (result)
+            {
+            case VK_SUCCESS: return "VK_SUCCESS";
+            case VK_NOT_READY: return "VK_NOT_READY";
+            case VK_TIMEOUT: return "VK_TIMEOUT";
+            case VK_EVENT_SET: return "VK_EVENT_SET";
+            case VK_EVENT_RESET: return "VK_EVENT_RESET";
+            case VK_INCOMPLETE: return "VK_INCOMPLETE";
+            case VK_SUBOPTIMAL_KHR: return "VK_SUBOPTIMAL_KHR";
+            case VK_ERROR_OUT_OF_DATE_KHR: return "VK_ERROR_OUT_OF_DATE_KHR";
+            case VK_ERROR_SURFACE_LOST_KHR: return "VK_ERROR_SURFACE_LOST_KHR";
+            case VK_ERROR_DEVICE_LOST: return "VK_ERROR_DEVICE_LOST";
+            case VK_ERROR_OUT_OF_HOST_MEMORY: return "VK_ERROR_OUT_OF_HOST_MEMORY";
+            case VK_ERROR_OUT_OF_DEVICE_MEMORY: return "VK_ERROR_OUT_OF_DEVICE_MEMORY";
+            case VK_ERROR_INITIALIZATION_FAILED: return "VK_ERROR_INITIALIZATION_FAILED";
+            case VK_ERROR_MEMORY_MAP_FAILED: return "VK_ERROR_MEMORY_MAP_FAILED";
+            case VK_ERROR_LAYER_NOT_PRESENT: return "VK_ERROR_LAYER_NOT_PRESENT";
+            case VK_ERROR_EXTENSION_NOT_PRESENT: return "VK_ERROR_EXTENSION_NOT_PRESENT";
+            case VK_ERROR_FEATURE_NOT_PRESENT: return "VK_ERROR_FEATURE_NOT_PRESENT";
+            case VK_ERROR_INCOMPATIBLE_DRIVER: return "VK_ERROR_INCOMPATIBLE_DRIVER";
+            case VK_ERROR_TOO_MANY_OBJECTS: return "VK_ERROR_TOO_MANY_OBJECTS";
+            case VK_ERROR_FORMAT_NOT_SUPPORTED: return "VK_ERROR_FORMAT_NOT_SUPPORTED";
+            case VK_ERROR_FRAGMENTED_POOL: return "VK_ERROR_FRAGMENTED_POOL";
+            default: return "VK_UNKNOWN_RESULT";
+            }
+        }
+
+        void log_vulkan_result(const char* /*operation*/, VkResult /*result*/) {}
+    }
 
     VulkanRenderer::~VulkanRenderer()
     {
@@ -52,10 +85,6 @@ namespace phoenix::renderer
             || (log_line("Vulkan: creating descriptors"), !create_descriptor_resources())
             || (log_line("Vulkan: creating terrain pipeline"), !create_terrain_pipeline())
             || (log_line("Vulkan: creating static object pipeline"), !create_static_object_pipeline())
-            || (log_line("Vulkan: creating cull compute pipeline"), !create_cull_compute_pipeline())
-            || (log_line("Vulkan: creating skin compute pipeline"), !create_skin_compute_pipeline())
-            || (log_line("Vulkan: creating sky pipeline"), !create_sky_pipeline())
-            || (log_line("Vulkan: creating particle pipeline"), !create_particle_pipeline())
             || (log_line("Vulkan: creating sync"), !create_sync()))
         {
             shutdown();
@@ -65,6 +94,46 @@ namespace phoenix::renderer
         {
             VkPipelineCacheCreateInfo cacheInfo{ VK_STRUCTURE_TYPE_PIPELINE_CACHE_CREATE_INFO };
             vkCreatePipelineCache(impl_->device, &cacheInfo, nullptr, &impl_->pipelineCache);
+        }
+
+        if (!create_cull_compute_pipeline())
+            log_line("Vulkan: GPU frustum culling unavailable (non-fatal)");
+        if (!create_sky_pipeline())
+            log_line("Vulkan: sky rendering unavailable (non-fatal)");
+        if (!create_particle_pipeline())
+            log_line("Vulkan: particle rendering unavailable (non-fatal)");
+
+        create_depth_prepass_pipelines();
+
+        {
+            VkPhysicalDeviceProperties props{};
+            vkGetPhysicalDeviceProperties(impl_->physicalDevice, &props);
+            impl_->timestampPeriodNs = props.limits.timestampPeriod;
+
+            if (impl_->timestampPeriodNs > 0.0f)
+            {
+                VkQueryPoolCreateInfo tsInfo{ VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO };
+                tsInfo.queryType = VK_QUERY_TYPE_TIMESTAMP;
+                tsInfo.queryCount = kMaxFramesInFlight * 2;
+                vkCreateQueryPool(impl_->device, &tsInfo, nullptr, &impl_->timestampQueryPool);
+            }
+
+            VkPhysicalDeviceFeatures enabledFeatures{};
+            vkGetPhysicalDeviceFeatures(impl_->physicalDevice, &enabledFeatures);
+            if (enabledFeatures.pipelineStatisticsQuery)
+            {
+                VkQueryPoolCreateInfo statsInfo{ VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO };
+                statsInfo.queryType = VK_QUERY_TYPE_PIPELINE_STATISTICS;
+                statsInfo.queryCount = kMaxFramesInFlight;
+                statsInfo.pipelineStatistics =
+                    VK_QUERY_PIPELINE_STATISTIC_INPUT_ASSEMBLY_VERTICES_BIT
+                    | VK_QUERY_PIPELINE_STATISTIC_FRAGMENT_SHADER_INVOCATIONS_BIT;
+                vkCreateQueryPool(impl_->device, &statsInfo, nullptr, &impl_->statsQueryPool);
+            }
+
+            impl_->gpuQueriesReady = impl_->timestampQueryPool || impl_->statsQueryPool;
+            if (impl_->gpuQueriesReady)
+                log_line("Vulkan: GPU query pools created");
         }
 
         ready_ = true;
@@ -136,6 +205,126 @@ namespace phoenix::renderer
         ImGui_ImplSDL2_NewFrame();
         ImGui::NewFrame();
         imguiFrameStarted_ = true;
+    }
+
+    std::uint64_t VulkanRenderer::upload_imgui_icon_rgba(
+        const std::uint8_t* rgba,
+        std::uint32_t width,
+        std::uint32_t height)
+    {
+        if (!ready_ || !imguiReady_ || !rgba || width == 0 || height == 0)
+            return 0;
+
+        const VkDeviceSize byteSize = static_cast<VkDeviceSize>(width) * height * 4u;
+        VkBuffer stagingBuffer{};
+        VkDeviceMemory stagingMemory{};
+        if (!create_host_buffer(rgba, static_cast<std::size_t>(byteSize),
+            VK_BUFFER_USAGE_TRANSFER_SRC_BIT, stagingBuffer, stagingMemory))
+            return 0;
+
+        Impl::ImguiIconTexture icon{};
+        VkImageCreateInfo imageInfo{ VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO };
+        imageInfo.imageType = VK_IMAGE_TYPE_2D;
+        imageInfo.format = VK_FORMAT_R8G8B8A8_UNORM;
+        imageInfo.extent = { width, height, 1 };
+        imageInfo.mipLevels = 1;
+        imageInfo.arrayLayers = 1;
+        imageInfo.samples = VK_SAMPLE_COUNT_1_BIT;
+        imageInfo.tiling = VK_IMAGE_TILING_OPTIMAL;
+        imageInfo.usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
+        imageInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+        imageInfo.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+        if (vkCreateImage(impl_->device, &imageInfo, nullptr, &icon.image) != VK_SUCCESS)
+        {
+            vkDestroyBuffer(impl_->device, stagingBuffer, nullptr);
+            vkFreeMemory(impl_->device, stagingMemory, nullptr);
+            return 0;
+        }
+
+        VkMemoryRequirements requirements{};
+        vkGetImageMemoryRequirements(impl_->device, icon.image, &requirements);
+        const auto memoryType = find_memory_type(requirements.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+        if (memoryType == UINT32_MAX)
+        {
+            vkDestroyImage(impl_->device, icon.image, nullptr);
+            vkDestroyBuffer(impl_->device, stagingBuffer, nullptr);
+            vkFreeMemory(impl_->device, stagingMemory, nullptr);
+            return 0;
+        }
+        VkMemoryAllocateInfo allocInfo{ VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO };
+        allocInfo.allocationSize = requirements.size;
+        allocInfo.memoryTypeIndex = memoryType;
+        if (vkAllocateMemory(impl_->device, &allocInfo, nullptr, &icon.memory) != VK_SUCCESS)
+        {
+            vkDestroyImage(impl_->device, icon.image, nullptr);
+            vkDestroyBuffer(impl_->device, stagingBuffer, nullptr);
+            vkFreeMemory(impl_->device, stagingMemory, nullptr);
+            return 0;
+        }
+        vkBindImageMemory(impl_->device, icon.image, icon.memory, 0);
+
+        auto cmd = begin_single_command();
+        VkImageMemoryBarrier toTransfer{ VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER };
+        toTransfer.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+        toTransfer.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+        toTransfer.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        toTransfer.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        toTransfer.image = icon.image;
+        toTransfer.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+        toTransfer.subresourceRange.levelCount = 1;
+        toTransfer.subresourceRange.layerCount = 1;
+        toTransfer.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+        vkCmdPipelineBarrier(cmd,
+            VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+            VK_PIPELINE_STAGE_TRANSFER_BIT,
+            0, 0, nullptr, 0, nullptr, 1, &toTransfer);
+
+        VkBufferImageCopy copy{};
+        copy.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+        copy.imageSubresource.layerCount = 1;
+        copy.imageExtent = { width, height, 1 };
+        vkCmdCopyBufferToImage(cmd, stagingBuffer, icon.image,
+            VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &copy);
+
+        VkImageMemoryBarrier toShader{ VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER };
+        toShader.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+        toShader.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        toShader.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        toShader.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        toShader.image = icon.image;
+        toShader.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+        toShader.subresourceRange.levelCount = 1;
+        toShader.subresourceRange.layerCount = 1;
+        toShader.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+        toShader.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+        vkCmdPipelineBarrier(cmd,
+            VK_PIPELINE_STAGE_TRANSFER_BIT,
+            VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+            0, 0, nullptr, 0, nullptr, 1, &toShader);
+        end_single_command(cmd);
+
+        vkDestroyBuffer(impl_->device, stagingBuffer, nullptr);
+        vkFreeMemory(impl_->device, stagingMemory, nullptr);
+
+        VkImageViewCreateInfo viewInfo{ VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO };
+        viewInfo.image = icon.image;
+        viewInfo.viewType = VK_IMAGE_VIEW_TYPE_2D;
+        viewInfo.format = VK_FORMAT_R8G8B8A8_UNORM;
+        viewInfo.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+        viewInfo.subresourceRange.levelCount = 1;
+        viewInfo.subresourceRange.layerCount = 1;
+        if (vkCreateImageView(impl_->device, &viewInfo, nullptr, &icon.view) != VK_SUCCESS)
+        {
+            vkDestroyImage(impl_->device, icon.image, nullptr);
+            vkFreeMemory(impl_->device, icon.memory, nullptr);
+            return 0;
+        }
+
+        icon.descriptor = ImGui_ImplVulkan_AddTexture(icon.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+        std::uint64_t textureId = 0;
+        std::memcpy(&textureId, &icon.descriptor, std::min(sizeof(textureId), sizeof(icon.descriptor)));
+        impl_->imguiIconTextures.push_back(icon);
+        return textureId;
     }
 
     bool VulkanRenderer::create_instance(SDL_Window* window)
@@ -243,6 +432,7 @@ namespace phoenix::renderer
         features.shaderSampledImageArrayDynamicIndexing = supportedFeatures.shaderSampledImageArrayDynamicIndexing;
         features.samplerAnisotropy = supportedFeatures.samplerAnisotropy;
         features.multiDrawIndirect = supportedFeatures.multiDrawIndirect;
+        features.pipelineStatisticsQuery = supportedFeatures.pipelineStatisticsQuery;
         impl_->samplerAnisotropySupported = supportedFeatures.samplerAnisotropy == VK_TRUE;
         impl_->multiDrawIndirectSupported = supportedFeatures.multiDrawIndirect == VK_TRUE;
 
@@ -307,19 +497,25 @@ namespace phoenix::renderer
         createInfo.preTransform = capabilities.currentTransform;
         createInfo.compositeAlpha = VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR;
 
-        auto chosenPresentMode = VK_PRESENT_MODE_FIFO_KHR;
+        auto chosenPresentMode = VK_PRESENT_MODE_MAILBOX_KHR;
         {
             std::uint32_t modeCount{};
             vkGetPhysicalDeviceSurfacePresentModesKHR(impl_->physicalDevice, impl_->surface, &modeCount, nullptr);
             std::vector<VkPresentModeKHR> modes(modeCount);
             vkGetPhysicalDeviceSurfacePresentModesKHR(impl_->physicalDevice, impl_->surface, &modeCount, modes.data());
+            bool mailboxAvailable = false;
             for (const auto mode : modes)
             {
                 if (mode == VK_PRESENT_MODE_MAILBOX_KHR)
                 {
-                    chosenPresentMode = VK_PRESENT_MODE_MAILBOX_KHR;
+                    mailboxAvailable = true;
                     break;
                 }
+            }
+            if (!mailboxAvailable)
+            {
+                log_line("Vulkan: MAILBOX present mode unavailable");
+                return false;
             }
         }
         createInfo.presentMode = chosenPresentMode;
@@ -556,6 +752,19 @@ namespace phoenix::renderer
         return used;
     }
 
+    VulkanRenderer::GpuMetrics VulkanRenderer::gpu_metrics() const
+    {
+        GpuMetrics m{};
+        if (impl_ && impl_->gpuQueriesReady)
+        {
+            m.frameTimeMs = impl_->gpuFrameTimeMs;
+            m.fragmentInvocations = impl_->fragmentInvocations;
+            m.vertexInvocations = impl_->vertexInvocations;
+            m.available = true;
+        }
+        return m;
+    }
+
     bool VulkanRenderer::resize(std::uint32_t width, std::uint32_t height)
     {
         if (!ready_ || !impl_ || !impl_->device)
@@ -693,7 +902,7 @@ namespace phoenix::renderer
     {
         VkDescriptorPoolSize poolSizes[2]{};
         poolSizes[0].type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-        poolSizes[0].descriptorCount = 1;
+        poolSizes[0].descriptorCount = 2; // terrain texture array + lightmap
         poolSizes[1].type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
         poolSizes[1].descriptorCount = 1;
 
@@ -707,7 +916,7 @@ namespace phoenix::renderer
             return false;
         }
 
-        VkDescriptorSetLayoutBinding bindings[2]{};
+        VkDescriptorSetLayoutBinding bindings[3]{};
         bindings[0].binding = 0;
         bindings[0].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
         bindings[0].descriptorCount = 1;
@@ -716,9 +925,13 @@ namespace phoenix::renderer
         bindings[1].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
         bindings[1].descriptorCount = 1;
         bindings[1].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+        bindings[2].binding = 2;
+        bindings[2].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        bindings[2].descriptorCount = 1;
+        bindings[2].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
 
         VkDescriptorSetLayoutCreateInfo layoutInfo{ VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO };
-        layoutInfo.bindingCount = 2;
+        layoutInfo.bindingCount = 3;
         layoutInfo.pBindings = bindings;
         if (vkCreateDescriptorSetLayout(impl_->device, &layoutInfo, nullptr, &impl_->descriptorSetLayout) != VK_SUCCESS)
         {
@@ -779,6 +992,60 @@ namespace phoenix::renderer
             vkUpdateDescriptorSets(impl_->device, 1, &write, 0, nullptr);
         }
 
+        // Dummy 1x1 white lightmap so binding 2 is always valid.
+        {
+            VkImageCreateInfo imgInfo{ VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO };
+            imgInfo.imageType = VK_IMAGE_TYPE_2D;
+            imgInfo.format = VK_FORMAT_R8G8B8A8_UNORM;
+            imgInfo.extent = { 1, 1, 1 };
+            imgInfo.mipLevels = 1;
+            imgInfo.arrayLayers = 1;
+            imgInfo.samples = VK_SAMPLE_COUNT_1_BIT;
+            imgInfo.tiling = VK_IMAGE_TILING_OPTIMAL;
+            imgInfo.usage = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+            imgInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+            vkCreateImage(impl_->device, &imgInfo, nullptr, &impl_->lightmapImage);
+
+            VkMemoryRequirements memReq{};
+            vkGetImageMemoryRequirements(impl_->device, impl_->lightmapImage, &memReq);
+            const auto memType = find_memory_type(memReq.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+            VkMemoryAllocateInfo allocMem{ VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO };
+            allocMem.allocationSize = memReq.size;
+            allocMem.memoryTypeIndex = memType;
+            vkAllocateMemory(impl_->device, &allocMem, nullptr, &impl_->lightmapMemory);
+            vkBindImageMemory(impl_->device, impl_->lightmapImage, impl_->lightmapMemory, 0);
+
+            VkImageViewCreateInfo viewInfo{ VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO };
+            viewInfo.image = impl_->lightmapImage;
+            viewInfo.viewType = VK_IMAGE_VIEW_TYPE_2D_ARRAY;
+            viewInfo.format = VK_FORMAT_R8G8B8A8_UNORM;
+            viewInfo.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+            viewInfo.subresourceRange.levelCount = 1;
+            viewInfo.subresourceRange.layerCount = 1;
+            vkCreateImageView(impl_->device, &viewInfo, nullptr, &impl_->lightmapView);
+
+            VkSamplerCreateInfo sampInfo{ VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO };
+            sampInfo.magFilter = VK_FILTER_LINEAR;
+            sampInfo.minFilter = VK_FILTER_LINEAR;
+            sampInfo.addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+            sampInfo.addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+            sampInfo.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+            vkCreateSampler(impl_->device, &sampInfo, nullptr, &impl_->lightmapSampler);
+
+            VkDescriptorImageInfo lmInfo{};
+            lmInfo.sampler = impl_->lightmapSampler;
+            lmInfo.imageView = impl_->lightmapView;
+            lmInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+
+            VkWriteDescriptorSet lmWrite{ VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET };
+            lmWrite.dstSet = impl_->descriptorSet;
+            lmWrite.dstBinding = 2;
+            lmWrite.descriptorCount = 1;
+            lmWrite.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+            lmWrite.pImageInfo = &lmInfo;
+            vkUpdateDescriptorSets(impl_->device, 1, &lmWrite, 0, nullptr);
+        }
+
         return true;
     }
 
@@ -796,7 +1063,7 @@ namespace phoenix::renderer
         VkPushConstantRange pushRange{};
         pushRange.stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
         pushRange.offset = 0;
-        pushRange.size = sizeof(float) * 36;
+        pushRange.size = sizeof(float) * 44;
 
         VkPipelineLayoutCreateInfo layoutInfo{ VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO };
         layoutInfo.setLayoutCount = 1;
@@ -912,6 +1179,12 @@ namespace phoenix::renderer
         createInfo.renderPass = impl_->renderPass;
         createInfo.subpass = 0;
         const auto ok = vkCreateGraphicsPipelines(impl_->device, impl_->pipelineCache, 1, &createInfo, nullptr, &impl_->terrainPipeline) == VK_SUCCESS;
+        if (ok)
+        {
+            depth.depthWriteEnable = VK_FALSE;
+            depth.depthCompareOp = VK_COMPARE_OP_LESS_OR_EQUAL;
+            vkCreateGraphicsPipelines(impl_->device, impl_->pipelineCache, 1, &createInfo, nullptr, &impl_->terrainPipelineZEqual);
+        }
         vkDestroyShaderModule(impl_->device, vertexShader, nullptr);
         vkDestroyShaderModule(impl_->device, fragmentShader, nullptr);
         return ok;
@@ -1020,9 +1293,160 @@ namespace phoenix::renderer
         createInfo.renderPass = impl_->renderPass;
         createInfo.subpass = 0;
         const auto ok = vkCreateGraphicsPipelines(impl_->device, impl_->pipelineCache, 1, &createInfo, nullptr, &impl_->staticObjectPipeline) == VK_SUCCESS;
+        if (ok)
+        {
+            depth.depthWriteEnable = VK_FALSE;
+            depth.depthCompareOp = VK_COMPARE_OP_LESS_OR_EQUAL;
+            vkCreateGraphicsPipelines(impl_->device, impl_->pipelineCache, 1, &createInfo, nullptr, &impl_->staticObjectPipelineZEqual);
+        }
         vkDestroyShaderModule(impl_->device, vertexShader, nullptr);
         vkDestroyShaderModule(impl_->device, fragmentShader, nullptr);
         return ok;
+    }
+
+    bool VulkanRenderer::create_depth_prepass_pipelines()
+    {
+        VkShaderModule terrainVS{}, staticVS{}, fragShader{};
+        if (!load_shader_module("shaders/compiled/depth_terrain.vert.spv", terrainVS)
+            || !load_shader_module("shaders/compiled/depth_static.vert.spv", staticVS)
+            || !load_shader_module("shaders/compiled/depth_prepass.frag.spv", fragShader))
+        {
+            log_line("Vulkan: depth prepass shaders not found — prepass disabled");
+            if (terrainVS) vkDestroyShaderModule(impl_->device, terrainVS, nullptr);
+            if (staticVS) vkDestroyShaderModule(impl_->device, staticVS, nullptr);
+            if (fragShader) vkDestroyShaderModule(impl_->device, fragShader, nullptr);
+            return false;
+        }
+
+        VkPipelineDepthStencilStateCreateInfo depth{ VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO };
+        depth.depthTestEnable = VK_TRUE;
+        depth.depthWriteEnable = VK_TRUE;
+        depth.depthCompareOp = VK_COMPARE_OP_LESS;
+
+        VkPipelineColorBlendAttachmentState blendAttachment{};
+        blendAttachment.colorWriteMask = 0;
+        VkPipelineColorBlendStateCreateInfo blend{ VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO };
+        blend.attachmentCount = 1;
+        blend.pAttachments = &blendAttachment;
+
+        VkPipelineRasterizationStateCreateInfo raster{ VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO };
+        raster.polygonMode = VK_POLYGON_MODE_FILL;
+        raster.cullMode = VK_CULL_MODE_NONE;
+        raster.frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE;
+        raster.lineWidth = 1.0f;
+
+        VkPipelineMultisampleStateCreateInfo multisample{ VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO };
+        multisample.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
+
+        VkPipelineInputAssemblyStateCreateInfo inputAssembly{ VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO };
+        inputAssembly.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+
+        VkDynamicState dynamicStates[]{ VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR };
+        VkPipelineDynamicStateCreateInfo dynamicState{ VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO };
+        dynamicState.dynamicStateCount = static_cast<std::uint32_t>(std::size(dynamicStates));
+        dynamicState.pDynamicStates = dynamicStates;
+
+        VkPipelineViewportStateCreateInfo viewportState{ VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO };
+        viewportState.viewportCount = 1;
+        viewportState.scissorCount = 1;
+
+        // Terrain depth prepass.
+        {
+            VkPipelineShaderStageCreateInfo stages[2]{};
+            stages[0].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+            stages[0].stage = VK_SHADER_STAGE_VERTEX_BIT;
+            stages[0].module = terrainVS;
+            stages[0].pName = "VSMain_Terrain";
+            stages[1].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+            stages[1].stage = VK_SHADER_STAGE_FRAGMENT_BIT;
+            stages[1].module = fragShader;
+            stages[1].pName = "PSMain";
+
+            VkVertexInputBindingDescription binding{};
+            binding.stride = sizeof(TerrainVertex);
+            VkVertexInputAttributeDescription attrs[5]{};
+            attrs[0] = { 0, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(TerrainVertex, position) };
+            attrs[1] = { 1, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(TerrainVertex, color) };
+            attrs[2] = { 2, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(TerrainVertex, normal) };
+            attrs[3] = { 3, 0, VK_FORMAT_R32G32_SFLOAT, offsetof(TerrainVertex, uv) };
+            attrs[4] = { 4, 0, VK_FORMAT_R32_UINT, offsetof(TerrainVertex, textureLayer) };
+            VkPipelineVertexInputStateCreateInfo vertexInput{ VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO };
+            vertexInput.vertexBindingDescriptionCount = 1;
+            vertexInput.pVertexBindingDescriptions = &binding;
+            vertexInput.vertexAttributeDescriptionCount = 5;
+            vertexInput.pVertexAttributeDescriptions = attrs;
+
+            VkGraphicsPipelineCreateInfo ci{ VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO };
+            ci.stageCount = 2; ci.pStages = stages;
+            ci.pVertexInputState = &vertexInput; ci.pInputAssemblyState = &inputAssembly;
+            ci.pViewportState = &viewportState; ci.pRasterizationState = &raster;
+            ci.pMultisampleState = &multisample; ci.pDepthStencilState = &depth;
+            ci.pColorBlendState = &blend; ci.pDynamicState = &dynamicState;
+            ci.layout = impl_->terrainPipelineLayout; ci.renderPass = impl_->renderPass;
+            if (vkCreateGraphicsPipelines(impl_->device, impl_->pipelineCache, 1, &ci, nullptr, &impl_->depthPrepassTerrainPipeline) != VK_SUCCESS)
+            {
+                log_line("Vulkan: depth prepass terrain pipeline creation failed");
+                vkDestroyShaderModule(impl_->device, terrainVS, nullptr);
+                vkDestroyShaderModule(impl_->device, staticVS, nullptr);
+                vkDestroyShaderModule(impl_->device, fragShader, nullptr);
+                return false;
+            }
+        }
+
+        // Static object depth prepass (instanced).
+        {
+            VkPipelineShaderStageCreateInfo stages[2]{};
+            stages[0].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+            stages[0].stage = VK_SHADER_STAGE_VERTEX_BIT;
+            stages[0].module = staticVS;
+            stages[0].pName = "VSMain_StaticObject";
+            stages[1].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+            stages[1].stage = VK_SHADER_STAGE_FRAGMENT_BIT;
+            stages[1].module = fragShader;
+            stages[1].pName = "PSMain";
+
+            VkVertexInputBindingDescription bindings[2]{};
+            bindings[0].binding = 0; bindings[0].stride = sizeof(TerrainVertex);
+            bindings[1].binding = 1; bindings[1].stride = sizeof(ObjectInstance); bindings[1].inputRate = VK_VERTEX_INPUT_RATE_INSTANCE;
+            VkVertexInputAttributeDescription attrs[9]{};
+            attrs[0] = { 0, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(TerrainVertex, position) };
+            attrs[1] = { 1, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(TerrainVertex, color) };
+            attrs[2] = { 2, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(TerrainVertex, normal) };
+            attrs[3] = { 3, 0, VK_FORMAT_R32G32_SFLOAT, offsetof(TerrainVertex, uv) };
+            attrs[4] = { 4, 0, VK_FORMAT_R32_UINT, offsetof(TerrainVertex, textureLayer) };
+            attrs[5] = { 5, 1, VK_FORMAT_R32G32B32A32_SFLOAT, offsetof(ObjectInstance, right) };
+            attrs[6] = { 6, 1, VK_FORMAT_R32G32B32A32_SFLOAT, offsetof(ObjectInstance, up) };
+            attrs[7] = { 7, 1, VK_FORMAT_R32G32B32A32_SFLOAT, offsetof(ObjectInstance, forward) };
+            attrs[8] = { 8, 1, VK_FORMAT_R32G32B32A32_SFLOAT, offsetof(ObjectInstance, position) };
+            VkPipelineVertexInputStateCreateInfo vertexInput{ VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO };
+            vertexInput.vertexBindingDescriptionCount = 2;
+            vertexInput.pVertexBindingDescriptions = bindings;
+            vertexInput.vertexAttributeDescriptionCount = 9;
+            vertexInput.pVertexAttributeDescriptions = attrs;
+
+            VkGraphicsPipelineCreateInfo ci{ VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO };
+            ci.stageCount = 2; ci.pStages = stages;
+            ci.pVertexInputState = &vertexInput; ci.pInputAssemblyState = &inputAssembly;
+            ci.pViewportState = &viewportState; ci.pRasterizationState = &raster;
+            ci.pMultisampleState = &multisample; ci.pDepthStencilState = &depth;
+            ci.pColorBlendState = &blend; ci.pDynamicState = &dynamicState;
+            ci.layout = impl_->terrainPipelineLayout; ci.renderPass = impl_->renderPass;
+            if (vkCreateGraphicsPipelines(impl_->device, impl_->pipelineCache, 1, &ci, nullptr, &impl_->depthPrepassStaticPipeline) != VK_SUCCESS)
+            {
+                log_line("Vulkan: depth prepass static pipeline creation failed");
+                vkDestroyShaderModule(impl_->device, terrainVS, nullptr);
+                vkDestroyShaderModule(impl_->device, staticVS, nullptr);
+                vkDestroyShaderModule(impl_->device, fragShader, nullptr);
+                return false;
+            }
+        }
+
+        vkDestroyShaderModule(impl_->device, terrainVS, nullptr);
+        vkDestroyShaderModule(impl_->device, staticVS, nullptr);
+        vkDestroyShaderModule(impl_->device, fragShader, nullptr);
+        impl_->depthPrepassReady = true;
+        log_line("Vulkan: depth prepass pipelines created");
+        return true;
     }
 
     bool VulkanRenderer::create_cull_compute_pipeline()
@@ -1064,11 +1488,10 @@ namespace phoenix::renderer
             return false;
         }
 
-        // Push constant range: 9 floats (camX,camY,camZ,camYaw,camPitch,aspect,tanHalfFov,maxDistance) + 1 uint (batchCount).
         VkPushConstantRange pushRange{};
         pushRange.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
         pushRange.offset = 0;
-        pushRange.size = 9 * sizeof(float); // 8 floats + 1 uint (same size)
+        pushRange.size = 9 * sizeof(float);
 
         VkPipelineLayoutCreateInfo pipelineLayoutInfo{ VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO };
         pipelineLayoutInfo.setLayoutCount = 1;
@@ -1123,101 +1546,6 @@ namespace phoenix::renderer
         return ok;
     }
 
-    bool VulkanRenderer::create_skin_compute_pipeline()
-    {
-        VkShaderModule computeShader{};
-        if (!load_shader_module("shaders/compiled/skin_actors.comp.spv", computeShader))
-        {
-            log_line("Vulkan: skin compute shader not found — GPU skinning disabled");
-            return true; // not fatal
-        }
-
-        // Descriptor set layout: 3 SSBOs (source vertices, bone matrices, output vertices).
-        VkDescriptorSetLayoutBinding bindings[3]{};
-        bindings[0].binding = 0;
-        bindings[0].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-        bindings[0].descriptorCount = 1;
-        bindings[0].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
-        bindings[1].binding = 1;
-        bindings[1].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-        bindings[1].descriptorCount = 1;
-        bindings[1].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
-        bindings[2].binding = 2;
-        bindings[2].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-        bindings[2].descriptorCount = 1;
-        bindings[2].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
-
-        VkDescriptorSetLayoutCreateInfo layoutInfo{ VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO };
-        layoutInfo.bindingCount = 3;
-        layoutInfo.pBindings = bindings;
-        if (vkCreateDescriptorSetLayout(impl_->device, &layoutInfo, nullptr, &impl_->skinDescriptorSetLayout) != VK_SUCCESS)
-        {
-            vkDestroyShaderModule(impl_->device, computeShader, nullptr);
-            return false;
-        }
-
-        // Push constant range: firstVertex(uint) + vertexCount(uint) + boneMatrixOffset(uint) = 12 bytes.
-        VkPushConstantRange pushRange{};
-        pushRange.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
-        pushRange.offset = 0;
-        pushRange.size = 3 * sizeof(std::uint32_t);
-
-        VkPipelineLayoutCreateInfo pipelineLayoutInfo{ VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO };
-        pipelineLayoutInfo.setLayoutCount = 1;
-        pipelineLayoutInfo.pSetLayouts = &impl_->skinDescriptorSetLayout;
-        pipelineLayoutInfo.pushConstantRangeCount = 1;
-        pipelineLayoutInfo.pPushConstantRanges = &pushRange;
-        if (vkCreatePipelineLayout(impl_->device, &pipelineLayoutInfo, nullptr, &impl_->skinPipelineLayout) != VK_SUCCESS)
-        {
-            vkDestroyShaderModule(impl_->device, computeShader, nullptr);
-            return false;
-        }
-
-        // Descriptor pool.
-        VkDescriptorPoolSize poolSize{};
-        poolSize.type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-        poolSize.descriptorCount = 3;
-        VkDescriptorPoolCreateInfo poolInfo{ VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO };
-        poolInfo.maxSets = 1;
-        poolInfo.poolSizeCount = 1;
-        poolInfo.pPoolSizes = &poolSize;
-        if (vkCreateDescriptorPool(impl_->device, &poolInfo, nullptr, &impl_->skinDescriptorPool) != VK_SUCCESS)
-        {
-            vkDestroyShaderModule(impl_->device, computeShader, nullptr);
-            return false;
-        }
-
-        // Allocate descriptor set.
-        VkDescriptorSetAllocateInfo allocInfo{ VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO };
-        allocInfo.descriptorPool = impl_->skinDescriptorPool;
-        allocInfo.descriptorSetCount = 1;
-        allocInfo.pSetLayouts = &impl_->skinDescriptorSetLayout;
-        if (vkAllocateDescriptorSets(impl_->device, &allocInfo, &impl_->skinDescriptorSet) != VK_SUCCESS)
-        {
-            vkDestroyShaderModule(impl_->device, computeShader, nullptr);
-            return false;
-        }
-
-        // Compute pipeline.
-        VkPipelineShaderStageCreateInfo stage{ VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO };
-        stage.stage = VK_SHADER_STAGE_COMPUTE_BIT;
-        stage.module = computeShader;
-        stage.pName = "main";
-
-        VkComputePipelineCreateInfo computeInfo{ VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO };
-        computeInfo.stage = stage;
-        computeInfo.layout = impl_->skinPipelineLayout;
-        const auto ok = vkCreateComputePipelines(impl_->device, impl_->pipelineCache, 1, &computeInfo, nullptr, &impl_->skinPipeline) == VK_SUCCESS;
-        vkDestroyShaderModule(impl_->device, computeShader, nullptr);
-
-        if (ok)
-        {
-            impl_->skinPipelineReady = true;
-            log_line("Vulkan: GPU compute skinning pipeline created");
-        }
-        return ok;
-    }
-
     bool VulkanRenderer::create_sky_pipeline()
     {
         VkShaderModule vertexShader{};
@@ -1232,7 +1560,7 @@ namespace phoenix::renderer
         VkPushConstantRange pushRange{};
         pushRange.stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
         pushRange.offset = 0;
-        pushRange.size = sizeof(float) * 36;
+        pushRange.size = sizeof(float) * 44;
 
         VkPipelineLayoutCreateInfo layoutInfo{ VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO };
         layoutInfo.setLayoutCount = 1;
@@ -1433,11 +1761,37 @@ namespace phoenix::renderer
 
             VkBuffer stagingBuffer{};
             VkDeviceMemory stagingMemory{};
+            auto fallbackFromBcUpload = [&](const char* reason) {
+                log_line(reason);
+                if (stagingBuffer)
+                    vkDestroyBuffer(impl_->device, stagingBuffer, nullptr);
+                if (stagingMemory)
+                    vkFreeMemory(impl_->device, stagingMemory, nullptr);
+                if (impl_->terrainTextureArrayView)
+                    vkDestroyImageView(impl_->device, impl_->terrainTextureArrayView, nullptr);
+                if (impl_->terrainTextureArray)
+                    vkDestroyImage(impl_->device, impl_->terrainTextureArray, nullptr);
+                if (impl_->terrainTextureArrayMemory)
+                    vkFreeMemory(impl_->device, impl_->terrainTextureArrayMemory, nullptr);
+                impl_->terrainTextureArrayView = {};
+                impl_->terrainTextureArray = {};
+                impl_->terrainTextureArrayMemory = {};
+                impl_->terrainTextureLayerCount = 0;
+                impl_->terrainTextureWidth = 0;
+                impl_->terrainTextureHeight = 0;
+                impl_->terrainTextureMipLevels = 0;
+                impl_->terrainTextureFormat = VK_FORMAT_UNDEFINED;
+                impl_->terrainTextureCompressed = false;
+                impl_->terrainTexturesReady = false;
+            };
             VkBufferCreateInfo bufferInfo{ VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO };
             bufferInfo.size = static_cast<VkDeviceSize>(stagingPixels.size());
             bufferInfo.usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
             if (vkCreateBuffer(impl_->device, &bufferInfo, nullptr, &stagingBuffer) != VK_SUCCESS)
-                return false;
+            {
+                fallbackFromBcUpload("Vulkan: BC texture staging buffer failed; trying RGBA fallback");
+                goto rgba_texture_fallback;
+            }
 
             VkMemoryRequirements bufReqs{};
             vkGetBufferMemoryRequirements(impl_->device, stagingBuffer, &bufReqs);
@@ -1445,8 +1799,8 @@ namespace phoenix::renderer
                 VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
             if (memType == UINT32_MAX)
             {
-                vkDestroyBuffer(impl_->device, stagingBuffer, nullptr);
-                return false;
+                fallbackFromBcUpload("Vulkan: BC texture staging memory type unavailable; trying RGBA fallback");
+                goto rgba_texture_fallback;
             }
 
             VkMemoryAllocateInfo bufAlloc{ VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO };
@@ -1454,8 +1808,8 @@ namespace phoenix::renderer
             bufAlloc.memoryTypeIndex = memType;
             if (vkAllocateMemory(impl_->device, &bufAlloc, nullptr, &stagingMemory) != VK_SUCCESS)
             {
-                vkDestroyBuffer(impl_->device, stagingBuffer, nullptr);
-                return false;
+                fallbackFromBcUpload("Vulkan: BC texture staging memory allocation failed; trying RGBA fallback");
+                goto rgba_texture_fallback;
             }
             vkBindBufferMemory(impl_->device, stagingBuffer, stagingMemory, 0);
 
@@ -1476,9 +1830,8 @@ namespace phoenix::renderer
             imageInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
             if (vkCreateImage(impl_->device, &imageInfo, nullptr, &impl_->terrainTextureArray) != VK_SUCCESS)
             {
-                vkDestroyBuffer(impl_->device, stagingBuffer, nullptr);
-                vkFreeMemory(impl_->device, stagingMemory, nullptr);
-                return false;
+                fallbackFromBcUpload("Vulkan: BC texture array image creation failed; trying RGBA fallback");
+                goto rgba_texture_fallback;
             }
 
             VkMemoryRequirements imgReqs{};
@@ -1486,11 +1839,8 @@ namespace phoenix::renderer
             memType = find_memory_type(imgReqs.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
             if (memType == UINT32_MAX)
             {
-                vkDestroyImage(impl_->device, impl_->terrainTextureArray, nullptr);
-                impl_->terrainTextureArray = {};
-                vkDestroyBuffer(impl_->device, stagingBuffer, nullptr);
-                vkFreeMemory(impl_->device, stagingMemory, nullptr);
-                return false;
+                fallbackFromBcUpload("Vulkan: BC texture array memory type unavailable; trying RGBA fallback");
+                goto rgba_texture_fallback;
             }
 
             VkMemoryAllocateInfo imgAlloc{ VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO };
@@ -1498,11 +1848,8 @@ namespace phoenix::renderer
             imgAlloc.memoryTypeIndex = memType;
             if (vkAllocateMemory(impl_->device, &imgAlloc, nullptr, &impl_->terrainTextureArrayMemory) != VK_SUCCESS)
             {
-                vkDestroyImage(impl_->device, impl_->terrainTextureArray, nullptr);
-                impl_->terrainTextureArray = {};
-                vkDestroyBuffer(impl_->device, stagingBuffer, nullptr);
-                vkFreeMemory(impl_->device, stagingMemory, nullptr);
-                return false;
+                fallbackFromBcUpload("Vulkan: BC texture array memory allocation failed; trying RGBA fallback");
+                goto rgba_texture_fallback;
             }
             vkBindImageMemory(impl_->device, impl_->terrainTextureArray, impl_->terrainTextureArrayMemory, 0);
 
@@ -1552,7 +1899,10 @@ namespace phoenix::renderer
             viewInfo.subresourceRange.levelCount = nativeMips;
             viewInfo.subresourceRange.layerCount = layerCount;
             if (vkCreateImageView(impl_->device, &viewInfo, nullptr, &impl_->terrainTextureArrayView) != VK_SUCCESS)
-                return false;
+            {
+                fallbackFromBcUpload("Vulkan: BC texture array view creation failed; trying RGBA fallback");
+                goto rgba_texture_fallback;
+            }
 
             VkDescriptorImageInfo imageDescInfo{};
             imageDescInfo.sampler = impl_->terrainSampler;
@@ -1579,6 +1929,7 @@ namespace phoenix::renderer
         }
 
         // ── RGBA fallback path (when BC-native is not possible) ──
+rgba_texture_fallback:
         const auto layerSize = static_cast<std::size_t>(texWidth) * texHeight * 4;
         std::vector<std::uint32_t> mipWidths(mipLevels);
         std::vector<std::uint32_t> mipHeights(mipLevels);
@@ -2761,7 +3112,6 @@ namespace phoenix::renderer
         impl_->terrainIndexMemory = {};
         impl_->terrainReady = false;
         impl_->terrainIndexCount = 0;
-        impl_->waterDrawRange = {};
         impl_->terrainDrawRanges.clear();
 
         if (vertices.empty() || indices.empty())
@@ -2777,15 +3127,51 @@ namespace phoenix::renderer
         }
 
         impl_->terrainIndexCount = static_cast<std::uint32_t>(indices.size());
-        if (impl_->terrainIndexCount >= 6)
-        {
-            impl_->waterDrawRange.firstIndex = impl_->terrainIndexCount - 6u;
-            impl_->waterDrawRange.indexCount = 6u;
-            impl_->terrainIndexCount -= 6u;
-        }
         impl_->terrainVertexBytes = vertexBytes;
         impl_->terrainReady = true;
         log_line("Vulkan: terrain mesh uploaded");
+        return true;
+    }
+
+    bool VulkanRenderer::set_water_mesh(
+        const std::vector<TerrainVertex>& vertices,
+        const std::vector<std::uint32_t>& indices)
+    {
+        if (!ready_)
+            return false;
+
+        vkDeviceWaitIdle(impl_->device);
+
+        if (impl_->waterVertexBuffer)
+            vkDestroyBuffer(impl_->device, impl_->waterVertexBuffer, nullptr);
+        if (impl_->waterVertexMemory)
+            vkFreeMemory(impl_->device, impl_->waterVertexMemory, nullptr);
+        if (impl_->waterIndexBuffer)
+            vkDestroyBuffer(impl_->device, impl_->waterIndexBuffer, nullptr);
+        if (impl_->waterIndexMemory)
+            vkFreeMemory(impl_->device, impl_->waterIndexMemory, nullptr);
+        impl_->waterVertexBuffer = {};
+        impl_->waterVertexMemory = {};
+        impl_->waterIndexBuffer = {};
+        impl_->waterIndexMemory = {};
+        impl_->waterIndexCount = 0;
+        impl_->waterReady = false;
+
+        if (vertices.empty() || indices.empty())
+            return false;
+
+        const auto vertexBytes = vertices.size() * sizeof(TerrainVertex);
+        const auto indexBytes = indices.size() * sizeof(std::uint32_t);
+        if (!create_device_local_buffer(vertices.data(), vertexBytes, VK_BUFFER_USAGE_VERTEX_BUFFER_BIT, impl_->waterVertexBuffer, impl_->waterVertexMemory)
+            || !create_device_local_buffer(indices.data(), indexBytes, VK_BUFFER_USAGE_INDEX_BUFFER_BIT, impl_->waterIndexBuffer, impl_->waterIndexMemory))
+        {
+            log_line("Vulkan: water mesh upload failed");
+            return false;
+        }
+
+        impl_->waterIndexCount = static_cast<std::uint32_t>(indices.size());
+        impl_->waterReady = true;
+        log_line("Vulkan: water mesh uploaded");
         return true;
     }
 
@@ -2914,6 +3300,20 @@ namespace phoenix::renderer
         const std::vector<ObjectBatch>& batches,
         const std::vector<BatchBoundsGpu>& bounds)
     {
+        // Disabled until the indirect output buffer is double-buffered per frame.
+        // A single writable indirect buffer can be overwritten by the current
+        // frame's culling compute pass while the previous frame is still reading
+        // it, which shows up as a camera-movement flicker/tick.
+        static bool loggedDisabled = false;
+        if (!loggedDisabled)
+        {
+            log_line("Vulkan: GPU frustum culling disabled (single indirect buffer is not frame-safe)");
+            loggedDisabled = true;
+        }
+        (void)batches;
+        (void)bounds;
+        return false;
+
         if (!impl_ || !impl_->cullPipeline || batches.empty() || bounds.size() != batches.size())
             return false;
 
@@ -3149,10 +3549,7 @@ namespace phoenix::renderer
         const auto vertexBytes = vertices.size() * sizeof(TerrainVertex);
         const auto indexBytes = indices.size() * sizeof(std::uint32_t);
         const auto instanceBytes = instances.size() * sizeof(ObjectInstance);
-        // Add STORAGE_BUFFER_BIT to vertex buffer so the GPU skinning compute shader can write to it.
-        const auto vertexUsage = VK_BUFFER_USAGE_VERTEX_BUFFER_BIT
-            | (impl_->skinPipelineReady ? VK_BUFFER_USAGE_STORAGE_BUFFER_BIT : 0u);
-        if (!create_host_buffer(vertices.data(), vertexBytes, vertexUsage,
+        if (!create_host_buffer(vertices.data(), vertexBytes, VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
                 impl_->animatedObjectVertexBuffer, impl_->animatedObjectVertexMemory,
                 &impl_->animatedObjectVertexMapped)
             || !create_device_local_buffer(indices.data(), indexBytes, VK_BUFFER_USAGE_INDEX_BUFFER_BIT,
@@ -3256,139 +3653,6 @@ namespace phoenix::renderer
             vkUnmapMemory(impl_->device, impl_->animatedObjectInstanceMemory);
         }
         return true;
-    }
-
-    bool VulkanRenderer::upload_skin_source_vertices(const void* data, std::size_t count)
-    {
-        if (!impl_ || !impl_->skinPipelineReady || count == 0 || !data)
-            return false;
-
-        // Destroy previous source buffer.
-        if (impl_->skinSourceBuffer)
-        {
-            vkDeviceWaitIdle(impl_->device);
-            vkDestroyBuffer(impl_->device, impl_->skinSourceBuffer, nullptr);
-            vkFreeMemory(impl_->device, impl_->skinSourceMemory, nullptr);
-            impl_->skinSourceBuffer = {};
-            impl_->skinSourceMemory = {};
-        }
-
-        // GpuSkinSourceVertex is 48 bytes (12 floats).
-        const auto byteSize = count * 48;
-        if (!create_host_buffer(data, byteSize, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
-                impl_->skinSourceBuffer, impl_->skinSourceMemory))
-        {
-            log_line("Vulkan: skin source vertex upload failed");
-            return false;
-        }
-
-        impl_->skinSourceVertexCount = static_cast<std::uint32_t>(count);
-        impl_->skinSourceReady = true;
-
-        // Update descriptor set bindings 0 (source vertices).
-        // Binding 2 (output vertices = animated vertex buffer) is updated when we know the output buffer.
-        VkDescriptorBufferInfo srcInfo{};
-        srcInfo.buffer = impl_->skinSourceBuffer;
-        srcInfo.offset = 0;
-        srcInfo.range = VK_WHOLE_SIZE;
-
-        VkWriteDescriptorSet write{ VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET };
-        write.dstSet = impl_->skinDescriptorSet;
-        write.dstBinding = 0;
-        write.descriptorCount = 1;
-        write.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-        write.pBufferInfo = &srcInfo;
-        vkUpdateDescriptorSets(impl_->device, 1, &write, 0, nullptr);
-
-        {
-            const auto msg = "Vulkan: skin source vertices uploaded (" + std::to_string(count) + " vertices)";
-            log_line(msg.c_str());
-        }
-        return true;
-    }
-
-    bool VulkanRenderer::upload_skin_matrices(const float* data, std::uint32_t matrixCount)
-    {
-        if (!impl_ || !impl_->skinPipelineReady || !impl_->skinSourceReady || matrixCount == 0)
-            return false;
-
-        const auto byteSize = static_cast<std::size_t>(matrixCount) * 16 * sizeof(float);
-
-        // Reuse existing buffer if large enough; otherwise recreate.
-        if (byteSize > impl_->skinMatrixBufferBytes)
-        {
-            if (impl_->skinMatrixBuffer)
-            {
-                vkDestroyBuffer(impl_->device, impl_->skinMatrixBuffer, nullptr);
-                vkFreeMemory(impl_->device, impl_->skinMatrixMemory, nullptr);
-            }
-            // Allocate with headroom; use nullptr for initial data so we don't read beyond the source.
-            const auto allocSize = byteSize + byteSize / 2;
-            impl_->skinMatrixMapped = nullptr;
-            if (!create_host_buffer(nullptr, allocSize, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
-                    impl_->skinMatrixBuffer, impl_->skinMatrixMemory,
-                    &impl_->skinMatrixMapped))
-                return false;
-            impl_->skinMatrixBufferBytes = allocSize;
-
-            // Update descriptor binding 1.
-            VkDescriptorBufferInfo matInfo{};
-            matInfo.buffer = impl_->skinMatrixBuffer;
-            matInfo.offset = 0;
-            matInfo.range = VK_WHOLE_SIZE;
-            VkWriteDescriptorSet write{ VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET };
-            write.dstSet = impl_->skinDescriptorSet;
-            write.dstBinding = 1;
-            write.descriptorCount = 1;
-            write.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-            write.pBufferInfo = &matInfo;
-            vkUpdateDescriptorSets(impl_->device, 1, &write, 0, nullptr);
-        }
-        // Persistent-mapped path: direct memcpy.
-        if (impl_->skinMatrixMapped)
-        {
-            std::memcpy(impl_->skinMatrixMapped, data, byteSize);
-        }
-        else
-        {
-            void* mapped = nullptr;
-            if (vkMapMemory(impl_->device, impl_->skinMatrixMemory, 0, byteSize, 0, &mapped) != VK_SUCCESS)
-                return false;
-            std::memcpy(mapped, data, byteSize);
-            vkUnmapMemory(impl_->device, impl_->skinMatrixMemory);
-        }
-
-        // Ensure output buffer descriptor (binding 2) points to the animated vertex buffer.
-        if (impl_->animatedObjectVertexBuffer)
-        {
-            VkDescriptorBufferInfo outInfo{};
-            outInfo.buffer = impl_->animatedObjectVertexBuffer;
-            outInfo.offset = 0;
-            outInfo.range = VK_WHOLE_SIZE;
-            VkWriteDescriptorSet write{ VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET };
-            write.dstSet = impl_->skinDescriptorSet;
-            write.dstBinding = 2;
-            write.descriptorCount = 1;
-            write.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-            write.pBufferInfo = &outInfo;
-            vkUpdateDescriptorSets(impl_->device, 1, &write, 0, nullptr);
-        }
-
-        return true;
-    }
-
-    void VulkanRenderer::dispatch_skin_compute(std::uint32_t firstVertex, std::uint32_t vertexCount, std::uint32_t boneMatrixOffset)
-    {
-        if (!impl_ || !impl_->skinPipelineReady || !impl_->skinSourceReady || !impl_->skinMatrixBuffer
-            || !impl_->animatedObjectVertexBuffer || vertexCount == 0)
-            return;
-
-        impl_->skinDispatches.push_back({ firstVertex, vertexCount, boneMatrixOffset });
-    }
-
-    bool VulkanRenderer::gpu_skinning_ready() const
-    {
-        return impl_ && impl_->skinPipelineReady && impl_->skinSourceReady && impl_->skinMatrixBuffer;
     }
 
     bool VulkanRenderer::set_debug_mesh(
@@ -3752,6 +4016,12 @@ namespace phoenix::renderer
         impl_->cameraConstants[5] = std::max(0.1f, aspect);
         impl_->cameraConstants[6] = 0.7002f;
         impl_->cameraConstants[7] = std::max(100.0f, farPlane);
+        // CPU-precomputed trig (double precision → float) to eliminate
+        // per-vertex GPU sin/cos jitter during camera movement.
+        impl_->cameraConstants[8] = static_cast<float>(std::cos(static_cast<double>(yaw)));
+        impl_->cameraConstants[9] = static_cast<float>(std::sin(static_cast<double>(yaw)));
+        impl_->cameraConstants[10] = static_cast<float>(std::cos(static_cast<double>(pitch)));
+        impl_->cameraConstants[11] = static_cast<float>(std::sin(static_cast<double>(pitch)));
     }
 
     void VulkanRenderer::set_sky_settings(const float* fogColor, float fogStartDistance, float fogEndDistance, bool hasWorldSky)
@@ -3804,11 +4074,194 @@ namespace phoenix::renderer
         impl_->skyConstants[15] = tileSize;
     }
 
+    void VulkanRenderer::set_water_style(const float* rgba)
+    {
+        if (!impl_ || !rgba)
+            return;
+
+        impl_->waterStyle[0] = std::clamp(rgba[0], 0.0f, 1.0f);
+        impl_->waterStyle[1] = std::clamp(rgba[1], 0.0f, 1.0f);
+        impl_->waterStyle[2] = std::clamp(rgba[2], 0.0f, 1.0f);
+        impl_->waterStyle[3] = std::clamp(rgba[3], 0.0f, 1.0f);
+    }
+
     void VulkanRenderer::update_water_time(float totalTime)
     {
         if (!impl_)
             return;
         impl_->skyConstants[14] = totalTime;
+    }
+
+    bool VulkanRenderer::upload_field_lightmaps(const std::vector<DdsTexture>& lightmaps, std::uint32_t sectionCount)
+    {
+        if (!ready_ || lightmaps.empty())
+            return false;
+
+        // Find first valid lightmap for dimensions.
+        std::uint32_t lmWidth = 0, lmHeight = 0;
+        VkFormat lmFormat = VK_FORMAT_UNDEFINED;
+        for (const auto& lm : lightmaps)
+        {
+            if (lm.valid && !lm.mipData.empty())
+            {
+                lmWidth = lm.width;
+                lmHeight = lm.height;
+                lmFormat = static_cast<VkFormat>(lm.vkFormat);
+                break;
+            }
+        }
+        if (lmWidth == 0 || lmHeight == 0 || lmFormat == VK_FORMAT_UNDEFINED)
+            return false;
+
+        // Verify format support.
+        VkFormatProperties fmtProps{};
+        vkGetPhysicalDeviceFormatProperties(impl_->physicalDevice, lmFormat, &fmtProps);
+        if (!(fmtProps.optimalTilingFeatures & VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT))
+        {
+            log_line("Vulkan: lightmap format not supported for sampling");
+            return false;
+        }
+
+        vkDeviceWaitIdle(impl_->device);
+
+        // Clean up previous lightmap.
+        if (impl_->lightmapView) vkDestroyImageView(impl_->device, impl_->lightmapView, nullptr);
+        if (impl_->lightmapImage) vkDestroyImage(impl_->device, impl_->lightmapImage, nullptr);
+        if (impl_->lightmapMemory) vkFreeMemory(impl_->device, impl_->lightmapMemory, nullptr);
+        impl_->lightmapView = {};
+        impl_->lightmapImage = {};
+        impl_->lightmapMemory = {};
+        impl_->lightmapReady = false;
+
+        const auto layerCount = static_cast<std::uint32_t>(lightmaps.size());
+
+        // Create image.
+        VkImageCreateInfo imgInfo{ VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO };
+        imgInfo.imageType = VK_IMAGE_TYPE_2D;
+        imgInfo.format = lmFormat;
+        imgInfo.extent = { lmWidth, lmHeight, 1 };
+        imgInfo.mipLevels = 1;
+        imgInfo.arrayLayers = layerCount;
+        imgInfo.samples = VK_SAMPLE_COUNT_1_BIT;
+        imgInfo.tiling = VK_IMAGE_TILING_OPTIMAL;
+        imgInfo.usage = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+        imgInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+        if (vkCreateImage(impl_->device, &imgInfo, nullptr, &impl_->lightmapImage) != VK_SUCCESS)
+        {
+            log_line("Vulkan: lightmap image creation failed");
+            return false;
+        }
+
+        VkMemoryRequirements memReq{};
+        vkGetImageMemoryRequirements(impl_->device, impl_->lightmapImage, &memReq);
+        const auto memType = find_memory_type(memReq.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+        VkMemoryAllocateInfo allocMem{ VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO };
+        allocMem.allocationSize = memReq.size;
+        allocMem.memoryTypeIndex = memType;
+        if (vkAllocateMemory(impl_->device, &allocMem, nullptr, &impl_->lightmapMemory) != VK_SUCCESS)
+        {
+            log_line("Vulkan: lightmap memory allocation failed");
+            return false;
+        }
+        vkBindImageMemory(impl_->device, impl_->lightmapImage, impl_->lightmapMemory, 0);
+
+        // Upload each layer via staging buffer.
+        for (std::uint32_t i = 0; i < layerCount; ++i)
+        {
+            const auto& lm = lightmaps[i];
+            if (!lm.valid || lm.mipData.empty())
+                continue;
+
+            const auto& mipBytes = lm.mipData[0];
+            VkBuffer staging{};
+            VkDeviceMemory stagingMem{};
+            if (!create_host_buffer(mipBytes.data(), mipBytes.size(),
+                    VK_BUFFER_USAGE_TRANSFER_SRC_BIT, staging, stagingMem))
+                continue;
+
+            auto cmd = begin_single_command();
+
+            VkImageMemoryBarrier toTransfer{ VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER };
+            toTransfer.srcAccessMask = 0;
+            toTransfer.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+            toTransfer.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+            toTransfer.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+            toTransfer.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+            toTransfer.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+            toTransfer.image = impl_->lightmapImage;
+            toTransfer.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+            toTransfer.subresourceRange.baseMipLevel = 0;
+            toTransfer.subresourceRange.levelCount = 1;
+            toTransfer.subresourceRange.baseArrayLayer = i;
+            toTransfer.subresourceRange.layerCount = 1;
+            vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
+                0, 0, nullptr, 0, nullptr, 1, &toTransfer);
+
+            VkBufferImageCopy region{};
+            region.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+            region.imageSubresource.mipLevel = 0;
+            region.imageSubresource.baseArrayLayer = i;
+            region.imageSubresource.layerCount = 1;
+            region.imageExtent = { lmWidth, lmHeight, 1 };
+            vkCmdCopyBufferToImage(cmd, staging, impl_->lightmapImage,
+                VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
+
+            VkImageMemoryBarrier toShader{ VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER };
+            toShader.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+            toShader.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+            toShader.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+            toShader.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+            toShader.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+            toShader.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+            toShader.image = impl_->lightmapImage;
+            toShader.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+            toShader.subresourceRange.baseMipLevel = 0;
+            toShader.subresourceRange.levelCount = 1;
+            toShader.subresourceRange.baseArrayLayer = i;
+            toShader.subresourceRange.layerCount = 1;
+            vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+                0, 0, nullptr, 0, nullptr, 1, &toShader);
+
+            end_single_command(cmd);
+            vkDestroyBuffer(impl_->device, staging, nullptr);
+            vkFreeMemory(impl_->device, stagingMem, nullptr);
+        }
+
+        // Create image view.
+        VkImageViewCreateInfo viewInfo{ VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO };
+        viewInfo.image = impl_->lightmapImage;
+        viewInfo.viewType = VK_IMAGE_VIEW_TYPE_2D_ARRAY;
+        viewInfo.format = lmFormat;
+        viewInfo.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+        viewInfo.subresourceRange.levelCount = 1;
+        viewInfo.subresourceRange.layerCount = layerCount;
+        if (vkCreateImageView(impl_->device, &viewInfo, nullptr, &impl_->lightmapView) != VK_SUCCESS)
+        {
+            log_line("Vulkan: lightmap image view creation failed");
+            return false;
+        }
+
+        // Update descriptor binding 2.
+        VkDescriptorImageInfo lmDescInfo{};
+        lmDescInfo.sampler = impl_->lightmapSampler;
+        lmDescInfo.imageView = impl_->lightmapView;
+        lmDescInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+
+        VkWriteDescriptorSet write{ VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET };
+        write.dstSet = impl_->descriptorSet;
+        write.dstBinding = 2;
+        write.descriptorCount = 1;
+        write.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        write.pImageInfo = &lmDescInfo;
+        vkUpdateDescriptorSets(impl_->device, 1, &write, 0, nullptr);
+
+        impl_->lightmapSectionCount = sectionCount;
+        impl_->lightmapReady = true;
+        // Pack lightmap info into fogDistances.zw for the terrain shader.
+        impl_->skyConstants[6] = static_cast<float>(sectionCount);
+        impl_->skyConstants[7] = 1.0f; // enabled flag
+        log_line("Vulkan: field lightmaps uploaded");
+        return true;
     }
 
     bool VulkanRenderer::upload_terrain_texture_map(
@@ -3867,6 +4320,14 @@ namespace phoenix::renderer
         return true;
     }
 
+    void VulkanRenderer::wait_for_frame()
+    {
+        if (!ready_ || !impl_)
+            return;
+        const auto frame = frameIndex_ % kMaxFramesInFlight;
+        vkWaitForFences(impl_->device, 1, &impl_->inFlight[frame], VK_TRUE, UINT64_MAX);
+    }
+
     void VulkanRenderer::render_frame()
     {
         if (!ready_)
@@ -3876,8 +4337,27 @@ namespace phoenix::renderer
 
         const auto frame = frameIndex_ % kMaxFramesInFlight;
 
-        { CPU_PROFILE_SCOPE("GPU Fence Wait");
-        vkWaitForFences(impl_->device, 1, &impl_->inFlight[frame], VK_TRUE, UINT64_MAX);
+        if (impl_->timestampQueryPool)
+        {
+            std::uint64_t timestamps[2]{};
+            if (vkGetQueryPoolResults(impl_->device, impl_->timestampQueryPool,
+                    frame * 2, 2, sizeof(timestamps), timestamps, sizeof(std::uint64_t),
+                    VK_QUERY_RESULT_64_BIT) == VK_SUCCESS)
+            {
+                const auto deltaTicks = timestamps[1] - timestamps[0];
+                impl_->gpuFrameTimeMs = static_cast<float>(deltaTicks) * impl_->timestampPeriodNs / 1e6f;
+            }
+        }
+        if (impl_->statsQueryPool)
+        {
+            std::uint64_t stats[2]{};
+            if (vkGetQueryPoolResults(impl_->device, impl_->statsQueryPool,
+                    frame, 1, sizeof(stats), stats, sizeof(std::uint64_t),
+                    VK_QUERY_RESULT_64_BIT) == VK_SUCCESS)
+            {
+                impl_->vertexInvocations = stats[0];
+                impl_->fragmentInvocations = stats[1];
+            }
         }
 
         std::uint32_t imageIndex{};
@@ -3889,13 +4369,20 @@ namespace phoenix::renderer
             impl_->imageAvailable[frame],
             VK_NULL_HANDLE,
             &imageIndex);
-        if (acquire == VK_ERROR_OUT_OF_DATE_KHR)
+        if (acquire == VK_ERROR_OUT_OF_DATE_KHR || acquire == VK_ERROR_SURFACE_LOST_KHR)
         {
+            if (acquire == VK_ERROR_SURFACE_LOST_KHR)
+                log_vulkan_result("vkAcquireNextImageKHR", acquire);
             recreate_swapchain();
             return;
         }
         if (acquire != VK_SUCCESS && acquire != VK_SUBOPTIMAL_KHR)
+        {
+            log_vulkan_result("vkAcquireNextImageKHR", acquire);
+            if (acquire == VK_ERROR_DEVICE_LOST)
+                ready_ = false;
             return;
+        }
         }
         vkResetFences(impl_->device, 1, &impl_->inFlight[frame]);
 
@@ -3906,6 +4393,17 @@ namespace phoenix::renderer
         VkCommandBufferBeginInfo beginInfo{ VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO };
         beginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
         vkBeginCommandBuffer(commandBuffer, &beginInfo);
+
+        if (impl_->timestampQueryPool)
+        {
+            vkCmdResetQueryPool(commandBuffer, impl_->timestampQueryPool, frame * 2, 2);
+            vkCmdWriteTimestamp(commandBuffer, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, impl_->timestampQueryPool, frame * 2);
+        }
+        if (impl_->statsQueryPool)
+        {
+            vkCmdResetQueryPool(commandBuffer, impl_->statsQueryPool, frame, 1);
+            vkCmdBeginQuery(commandBuffer, impl_->statsQueryPool, frame, 0);
+        }
 
         const bool hasScene = impl_->terrainReady || impl_->objectsReady;
         if (hasScene)
@@ -3963,34 +4461,6 @@ namespace phoenix::renderer
                     0, 1, &barrier, 0, nullptr, 0, nullptr);
             }
 
-            // GPU skinning dispatches.
-            if (!impl_->skinDispatches.empty() && impl_->skinPipelineReady && impl_->skinSourceReady
-                && impl_->skinMatrixBuffer && impl_->animatedObjectVertexBuffer)
-            {
-                vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, impl_->skinPipeline);
-                vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, impl_->skinPipelineLayout,
-                    0, 1, &impl_->skinDescriptorSet, 0, nullptr);
-
-                for (const auto& dispatch : impl_->skinDispatches)
-                {
-                    std::uint32_t pushData[3]{ dispatch.firstVertex, dispatch.vertexCount, dispatch.boneMatrixOffset };
-                    vkCmdPushConstants(commandBuffer, impl_->skinPipelineLayout,
-                        VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(pushData), pushData);
-                    vkCmdDispatch(commandBuffer, (dispatch.vertexCount + 63) / 64, 1, 1);
-                }
-
-                // Barrier: compute write → vertex attribute read.
-                VkMemoryBarrier skinBarrier{ VK_STRUCTURE_TYPE_MEMORY_BARRIER };
-                skinBarrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
-                skinBarrier.dstAccessMask = VK_ACCESS_VERTEX_ATTRIBUTE_READ_BIT;
-                vkCmdPipelineBarrier(commandBuffer,
-                    VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
-                    VK_PIPELINE_STAGE_VERTEX_INPUT_BIT,
-                    0, 1, &skinBarrier, 0, nullptr, 0, nullptr);
-
-                impl_->skinDispatches.clear();
-            }
-
             vkCmdBeginRenderPass(commandBuffer, &renderPassInfo, VK_SUBPASS_CONTENTS_INLINE);
             VkViewport viewport{};
             viewport.width = static_cast<float>(impl_->swapchainExtent.width);
@@ -4001,10 +4471,11 @@ namespace phoenix::renderer
             vkCmdSetViewport(commandBuffer, 0, 1, &viewport);
             vkCmdSetScissor(commandBuffer, 0, 1, &scissor);
 
-            float constants[36]{};
+            float constants[44]{};
             std::memcpy(constants, impl_->cameraConstants, sizeof(impl_->cameraConstants));
-            std::memcpy(constants + 8, impl_->skyConstants, sizeof(impl_->skyConstants));
-            std::memcpy(constants + 24, impl_->skyTuning, sizeof(impl_->skyTuning));
+            std::memcpy(constants + 12, impl_->skyConstants, sizeof(impl_->skyConstants));
+            std::memcpy(constants + 28, impl_->skyTuning, sizeof(impl_->skyTuning));
+            std::memcpy(constants + 40, impl_->waterStyle, sizeof(impl_->waterStyle));
             constexpr auto kPushStages = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
             VkPipeline lastBoundPipeline{};
             auto bindPipeline = [&](VkPipeline pipeline) {
@@ -4023,9 +4494,10 @@ namespace phoenix::renderer
                     impl_->terrainPipelineLayout, 0, 1, &impl_->descriptorSet, 0, nullptr);
             }
 
-            // Skip the sky pass when the fog color is black (dungeons) — the clear
-            // color already fills the background with pitch black; drawing the sky
-            // gradient over it would introduce unwanted blue/grey.
+            // ── Main color pass ──
+            const auto terrainPipe = impl_->terrainPipeline;
+            const auto staticPipe = impl_->staticObjectPipeline;
+
             {
                 const bool blackFog = impl_->skyConstants[0] < 0.01f
                     && impl_->skyConstants[1] < 0.01f
@@ -4041,7 +4513,7 @@ namespace phoenix::renderer
 
             if (impl_->terrainReady)
             {
-                bindPipeline(impl_->terrainPipeline);
+                bindPipeline(terrainPipe);
                 VkDeviceSize offset{};
                 vkCmdBindVertexBuffers(commandBuffer, 0, 1, &impl_->terrainVertexBuffer, &offset);
                 vkCmdBindIndexBuffer(commandBuffer, impl_->terrainIndexBuffer, 0, VK_INDEX_TYPE_UINT32);
@@ -4059,18 +4531,16 @@ namespace phoenix::renderer
                 }
             }
 
-            if (impl_->objectsReady && impl_->staticObjectPipeline)
+            if (impl_->objectsReady && staticPipe)
             {
                 VkBuffer buffers[2]{ impl_->objectVertexBuffer, impl_->objectInstanceBuffer };
                 VkDeviceSize offsets[2]{ 0, 0 };
-                bindPipeline(impl_->staticObjectPipeline);
+                bindPipeline(staticPipe);
                 vkCmdBindVertexBuffers(commandBuffer, 0, 2, buffers, offsets);
                 vkCmdBindIndexBuffer(commandBuffer, impl_->objectIndexBuffer, 0, VK_INDEX_TYPE_UINT32);
 
                 if (impl_->indirectReady)
                 {
-                    // Indirect draw: all batches in one call; compute shader already
-                    // zeroed instanceCount for culled batches before the render pass.
                     vkCmdDrawIndexedIndirect(commandBuffer, impl_->indirectDrawBuffer, 0,
                         impl_->indirectBatchCount, sizeof(VkDrawIndexedIndirectCommand));
                 }
@@ -4080,11 +4550,11 @@ namespace phoenix::renderer
                         vkCmdDrawIndexed(commandBuffer, batch.indexCount, batch.instanceCount, batch.firstIndex, 0, batch.firstInstance);
                 }
             }
-            if (impl_->animatedObjectsReady && impl_->staticObjectPipeline)
+            if (impl_->animatedObjectsReady && staticPipe)
             {
                 VkBuffer buffers[2]{ impl_->animatedObjectVertexBuffer, impl_->animatedObjectInstanceBuffer };
                 VkDeviceSize offsets[2]{ 0, 0 };
-                bindPipeline(impl_->staticObjectPipeline);
+                bindPipeline(staticPipe);
                 vkCmdBindVertexBuffers(commandBuffer, 0, 2, buffers, offsets);
                 vkCmdBindIndexBuffer(commandBuffer, impl_->animatedObjectIndexBuffer, 0, VK_INDEX_TYPE_UINT32);
                 for (const auto& batch : impl_->animatedObjectBatches)
@@ -4118,15 +4588,14 @@ namespace phoenix::renderer
                 for (const auto& batch : impl_->botCharacterBatches)
                     vkCmdDrawIndexed(commandBuffer, batch.indexCount, batch.instanceCount, batch.firstIndex, 0, batch.firstInstance);
             }
-            if (impl_->terrainReady && impl_->waterDrawRange.indexCount > 0)
+            if (impl_->waterReady && impl_->waterIndexCount > 0)
             {
                 bindPipeline(impl_->terrainPipeline);
                 VkDeviceSize offset{};
-                vkCmdBindVertexBuffers(commandBuffer, 0, 1, &impl_->terrainVertexBuffer, &offset);
-                vkCmdBindIndexBuffer(commandBuffer, impl_->terrainIndexBuffer, 0, VK_INDEX_TYPE_UINT32);
-                vkCmdDrawIndexed(commandBuffer, impl_->waterDrawRange.indexCount, 1, impl_->waterDrawRange.firstIndex, 0, 0);
+                vkCmdBindVertexBuffers(commandBuffer, 0, 1, &impl_->waterVertexBuffer, &offset);
+                vkCmdBindIndexBuffer(commandBuffer, impl_->waterIndexBuffer, 0, VK_INDEX_TYPE_UINT32);
+                vkCmdDrawIndexed(commandBuffer, impl_->waterIndexCount, 1, 0, 0, 0);
             }
-            // ── Procedural weapon-effect particles (transparent overlay, after opaque) ──
             if (impl_->particlePipelineReady
                 && impl_->particleInstanceCount > 0 && impl_->particleInstanceBuffer)
             {
@@ -4282,6 +4751,11 @@ namespace phoenix::renderer
             VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
             0, 0, nullptr, 0, nullptr, 1, &toPresent);
         }
+        if (impl_->statsQueryPool)
+            vkCmdEndQuery(commandBuffer, impl_->statsQueryPool, frame);
+        if (impl_->timestampQueryPool)
+            vkCmdWriteTimestamp(commandBuffer, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, impl_->timestampQueryPool, frame * 2 + 1);
+
         vkEndCommandBuffer(commandBuffer);
 
         VkPipelineStageFlags waitStage = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT | VK_PIPELINE_STAGE_TRANSFER_BIT;
@@ -4293,7 +4767,13 @@ namespace phoenix::renderer
         submitInfo.pCommandBuffers = &commandBuffer;
         submitInfo.signalSemaphoreCount = 1;
         submitInfo.pSignalSemaphores = &impl_->renderFinished[frame];
-        vkQueueSubmit(impl_->graphicsQueue, 1, &submitInfo, impl_->inFlight[frame]);
+        const auto submit = vkQueueSubmit(impl_->graphicsQueue, 1, &submitInfo, impl_->inFlight[frame]);
+        if (submit != VK_SUCCESS)
+        {
+            log_vulkan_result("vkQueueSubmit", submit);
+            ready_ = false;
+            return;
+        }
 
         VkPresentInfoKHR presentInfo{ VK_STRUCTURE_TYPE_PRESENT_INFO_KHR };
         presentInfo.waitSemaphoreCount = 1;
@@ -4302,8 +4782,17 @@ namespace phoenix::renderer
         presentInfo.pSwapchains = &impl_->swapchain;
         presentInfo.pImageIndices = &imageIndex;
         const auto present = vkQueuePresentKHR(impl_->graphicsQueue, &presentInfo);
-        if (present == VK_ERROR_OUT_OF_DATE_KHR || present == VK_SUBOPTIMAL_KHR)
+        if (present == VK_ERROR_OUT_OF_DATE_KHR || present == VK_ERROR_SURFACE_LOST_KHR)
+        {
+            log_vulkan_result("vkQueuePresentKHR", present);
             recreate_swapchain();
+        }
+        else if (present != VK_SUCCESS)
+        {
+            log_vulkan_result("vkQueuePresentKHR", present);
+            if (present == VK_ERROR_DEVICE_LOST)
+                ready_ = false;
+        }
         ++frameIndex_;
     }
 
@@ -4347,6 +4836,17 @@ namespace phoenix::renderer
             imguiFrameStarted_ = false;
         }
 
+        for (auto& icon : impl_->imguiIconTextures)
+        {
+            if (icon.view)
+                vkDestroyImageView(impl_->device, icon.view, nullptr);
+            if (icon.image)
+                vkDestroyImage(impl_->device, icon.image, nullptr);
+            if (icon.memory)
+                vkFreeMemory(impl_->device, icon.memory, nullptr);
+        }
+        impl_->imguiIconTextures.clear();
+
         for (std::uint32_t i = 0; i < kMaxFramesInFlight; ++i)
         {
             if (impl_->imageAvailable[i])
@@ -4372,6 +4872,14 @@ namespace phoenix::renderer
             vkDestroyBuffer(impl_->device, impl_->terrainIndexBuffer, nullptr);
         if (impl_->terrainIndexMemory)
             vkFreeMemory(impl_->device, impl_->terrainIndexMemory, nullptr);
+        if (impl_->waterVertexBuffer)
+            vkDestroyBuffer(impl_->device, impl_->waterVertexBuffer, nullptr);
+        if (impl_->waterVertexMemory)
+            vkFreeMemory(impl_->device, impl_->waterVertexMemory, nullptr);
+        if (impl_->waterIndexBuffer)
+            vkDestroyBuffer(impl_->device, impl_->waterIndexBuffer, nullptr);
+        if (impl_->waterIndexMemory)
+            vkFreeMemory(impl_->device, impl_->waterIndexMemory, nullptr);
         if (impl_->objectVertexBuffer)
             vkDestroyBuffer(impl_->device, impl_->objectVertexBuffer, nullptr);
         if (impl_->objectVertexMemory)
@@ -4436,14 +4944,30 @@ namespace phoenix::renderer
             vkFreeMemory(impl_->device, impl_->terrainMapMemory, nullptr);
         if (impl_->terrainSampler)
             vkDestroySampler(impl_->device, impl_->terrainSampler, nullptr);
+        if (impl_->lightmapView)
+            vkDestroyImageView(impl_->device, impl_->lightmapView, nullptr);
+        if (impl_->lightmapImage)
+            vkDestroyImage(impl_->device, impl_->lightmapImage, nullptr);
+        if (impl_->lightmapMemory)
+            vkFreeMemory(impl_->device, impl_->lightmapMemory, nullptr);
+        if (impl_->lightmapSampler)
+            vkDestroySampler(impl_->device, impl_->lightmapSampler, nullptr);
         if (impl_->descriptorPool)
             vkDestroyDescriptorPool(impl_->device, impl_->descriptorPool, nullptr);
         if (impl_->descriptorSetLayout)
             vkDestroyDescriptorSetLayout(impl_->device, impl_->descriptorSetLayout, nullptr);
         if (impl_->terrainPipeline)
             vkDestroyPipeline(impl_->device, impl_->terrainPipeline, nullptr);
+        if (impl_->terrainPipelineZEqual)
+            vkDestroyPipeline(impl_->device, impl_->terrainPipelineZEqual, nullptr);
         if (impl_->staticObjectPipeline)
             vkDestroyPipeline(impl_->device, impl_->staticObjectPipeline, nullptr);
+        if (impl_->staticObjectPipelineZEqual)
+            vkDestroyPipeline(impl_->device, impl_->staticObjectPipelineZEqual, nullptr);
+        if (impl_->depthPrepassTerrainPipeline)
+            vkDestroyPipeline(impl_->device, impl_->depthPrepassTerrainPipeline, nullptr);
+        if (impl_->depthPrepassStaticPipeline)
+            vkDestroyPipeline(impl_->device, impl_->depthPrepassStaticPipeline, nullptr);
         // GPU culling resources.
         if (impl_->indirectTemplateBuffer)
             vkDestroyBuffer(impl_->device, impl_->indirectTemplateBuffer, nullptr);
@@ -4465,23 +4989,6 @@ namespace phoenix::renderer
             vkDestroyDescriptorPool(impl_->device, impl_->cullDescriptorPool, nullptr);
         if (impl_->cullDescriptorSetLayout)
             vkDestroyDescriptorSetLayout(impl_->device, impl_->cullDescriptorSetLayout, nullptr);
-        // GPU skinning cleanup.
-        if (impl_->skinSourceBuffer)
-            vkDestroyBuffer(impl_->device, impl_->skinSourceBuffer, nullptr);
-        if (impl_->skinSourceMemory)
-            vkFreeMemory(impl_->device, impl_->skinSourceMemory, nullptr);
-        if (impl_->skinMatrixBuffer)
-            vkDestroyBuffer(impl_->device, impl_->skinMatrixBuffer, nullptr);
-        if (impl_->skinMatrixMemory)
-            vkFreeMemory(impl_->device, impl_->skinMatrixMemory, nullptr);
-        if (impl_->skinPipeline)
-            vkDestroyPipeline(impl_->device, impl_->skinPipeline, nullptr);
-        if (impl_->skinPipelineLayout)
-            vkDestroyPipelineLayout(impl_->device, impl_->skinPipelineLayout, nullptr);
-        if (impl_->skinDescriptorPool)
-            vkDestroyDescriptorPool(impl_->device, impl_->skinDescriptorPool, nullptr);
-        if (impl_->skinDescriptorSetLayout)
-            vkDestroyDescriptorSetLayout(impl_->device, impl_->skinDescriptorSetLayout, nullptr);
         if (impl_->terrainPipelineLayout)
             vkDestroyPipelineLayout(impl_->device, impl_->terrainPipelineLayout, nullptr);
         if (impl_->skyPipeline)
@@ -4505,6 +5012,10 @@ namespace phoenix::renderer
             vkDestroyDescriptorSetLayout(impl_->device, impl_->particleSetLayout, nullptr);
         if (impl_->pipelineCache)
             vkDestroyPipelineCache(impl_->device, impl_->pipelineCache, nullptr);
+        if (impl_->timestampQueryPool)
+            vkDestroyQueryPool(impl_->device, impl_->timestampQueryPool, nullptr);
+        if (impl_->statsQueryPool)
+            vkDestroyQueryPool(impl_->device, impl_->statsQueryPool, nullptr);
         if (impl_->commandPool)
             vkDestroyCommandPool(impl_->device, impl_->commandPool, nullptr);
         destroy_swapchain();

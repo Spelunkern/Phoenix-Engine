@@ -2,12 +2,11 @@
 #include "runtime/phoenix_runtime.h"
 
 #include "assets/data_index.h"
-#include "core/logging.h"
 #include "world/dg_loader.h"
-#include "world/eft_loader.h"
-#include "world/mani_loader.h"
 #include "world/smod_loader.h"
 #include "world/vani_loader.h"
+#include "world/phoenix_world_loader.h"
+#include "world/water_constants.h"
 
 #include <algorithm>
 #include <array>
@@ -34,7 +33,6 @@ namespace phoenix::runtime
         constexpr std::uint32_t kAssetTextureLayerBase = 66;
         constexpr std::uint32_t kAssetCutoutLayerBase = 2048;
         constexpr std::uint32_t kMaxAssetTextureLayers = 960;
-        constexpr std::uint32_t kWaterTextureLayer = 62;
 
         inline std::filesystem::path resolve_ci(const std::filesystem::path& path)
         {
@@ -286,34 +284,12 @@ namespace phoenix::runtime
         {
             std::vector<std::filesystem::path> paths;
             paths.reserve(8);
-            std::filesystem::path firstValid;
             for (const auto& layer : world.terrainLayers)
             {
                 auto path = phoenix::assets::resolve_texture_asset(assets, layer.textureFileName);
-                if (!path.empty() && std::filesystem::exists(path) && firstValid.empty())
-                    firstValid = path;
                 paths.push_back(std::move(path));
             }
 
-            if (firstValid.empty())
-            {
-                if (const auto it = std::find_if(
-                    assets.byRelativePath.begin(),
-                    assets.byRelativePath.end(),
-                    [](const auto& item) {
-                        return item.first.find("terrain\\detail\\") != std::string::npos
-                            && item.first.ends_with(".dds");
-                    }); it != assets.byRelativePath.end())
-                    firstValid = it->second;
-            }
-
-            for (auto& path : paths)
-            {
-                if ((path.empty() || !std::filesystem::exists(path)) && !firstValid.empty())
-                    path = firstValid;
-            }
-            while (paths.size() < 8 && !firstValid.empty())
-                paths.push_back(firstValid);
             if (paths.size() > 8)
                 paths.resize(8);
             return paths;
@@ -323,7 +299,7 @@ namespace phoenix::runtime
     bool PhoenixRuntime::initialize(const std::filesystem::path& executableDir, bool loadDefaultMap)
     {
         state_.dataRoot = find_data_root(executableDir);
-        state_.entityRoot = assets::resolve_existing_path_case_insensitive(state_.dataRoot / "Entity");
+        state_.entityRoot = assets::resolve_existing_path_case_insensitive(state_.dataRoot / "Assets");
         state_.assets = phoenix::assets::index_data_directory(state_.dataRoot);
         scan_entity_assets();
         scan_world_maps();
@@ -332,12 +308,18 @@ namespace phoenix::runtime
         scan_audio_assets();
 
         std::size_t defaultMap{};
-        for (std::size_t i = 0; i < state_.worldMapNames.size(); ++i)
+        for (std::size_t i = 0; i < state_.worldMapPaths.size(); ++i)
         {
-            if (phoenix::assets::lower_ascii(state_.worldMapNames[i]) == "1.wld")
+            const auto stem = state_.worldMapPaths[i].filename().string();
+            if (stem.size() > 5)
             {
-                defaultMap = i;
-                break;
+                char* end = nullptr;
+                const long n = std::strtol(stem.c_str() + 5, &end, 10);
+                if (end != stem.c_str() + 5 && *end == '\0' && n == 1)
+                {
+                    defaultMap = i;
+                    break;
+                }
             }
         }
         if (loadDefaultMap && !state_.worldMapPaths.empty())
@@ -345,26 +327,6 @@ namespace phoenix::runtime
         else
             update_status();
 
-        std::ofstream log(phoenix::core::engine_log_path(), std::ios::app);
-        log << "Phoenix Engine\n";
-        log << "Data root: " << state_.dataRoot.string() << " exists=" << std::filesystem::exists(state_.dataRoot) << "\n";
-        log << "Indexed files: " << state_.assets.indexedFiles << "\n";
-        log << "Entity root: " << state_.entityRoot.string() << " exists=" << std::filesystem::exists(state_.entityRoot) << "\n";
-        log << "Entity assets: " << state_.entityAssets.size() << "\n";
-        log << "Audio assets: " << state_.audioAssets.size() << "\n";
-        log << "World maps: " << state_.worldMapPaths.size() << "\n";
-        log << "World assets: " << state_.worldAssets.size() << " loaded="
-            << std::ranges::count_if(state_.worldAssets, [](const auto& asset) { return asset.loaded; }) << "\n";
-        log << "Asset texture slots: " << state_.assetTexturePaths.size() << "\n";
-        log << "Scene objects: " << state_.sceneObjects.size() << "\n";
-        log << "Current WLD parsed: " << state_.world.parsed << " path=" << state_.world.path.string() << "\n";
-        log << "WLD sky: parsed=" << state_.world.parsedSky
-            << " sky=" << state_.world.skyFileName
-            << " primaryCloud=" << state_.world.primaryCloudFileName
-            << " secondaryCloud=" << state_.world.secondaryCloudFileName
-            << " fogColor=" << state_.world.fogColor[0] << "," << state_.world.fogColor[1] << "," << state_.world.fogColor[2]
-            << " fog=" << state_.world.fogStartDistance << "-" << state_.world.fogEndDistance << "\n";
-        log << "Status: " << state_.status << "\n";
         return true;
     }
 
@@ -372,7 +334,7 @@ namespace phoenix::runtime
     {
         auto validDataRoot = [](const std::filesystem::path& path) {
             return std::filesystem::exists(path / "World")
-                || std::filesystem::exists(path / "Entity")
+                || std::filesystem::exists(path / "Assets")
                 || std::filesystem::exists(path / "Character");
         };
 
@@ -408,14 +370,8 @@ namespace phoenix::runtime
         if (mapIndex >= state_.worldMapPaths.size())
             return false;
 
-        const auto diagnostics = state_.dataRoot.parent_path() / "diagnostics";
-        std::filesystem::create_directories(diagnostics);
-        const auto previewName = std::format(
-            "phoenix_world_{}_height_preview.ppm",
-            state_.worldMapPaths[mapIndex].stem().string());
-
         state_.selectedWorldMap = mapIndex;
-        state_.world = phoenix::world::analyze_wld(state_.worldMapPaths[mapIndex], diagnostics / previewName);
+        state_.world = phoenix::world::load_phoenix_world(state_.worldMapPaths[mapIndex]);
         load_world_assets();
         update_status();
 
@@ -454,7 +410,7 @@ namespace phoenix::runtime
             }
             std::sort(nearbyYValues.begin(), nearbyYValues.end());
 
-            // Use the 15th percentile as the floor level � low enough to be on
+            // Use the 15th percentile as the floor level - low enough to be on
             // a walkable surface, but not the absolute min (could be below geometry).
             const auto floorIdx = std::min<std::size_t>(
                 nearbyYValues.size() - 1,
@@ -468,13 +424,6 @@ namespace phoenix::runtime
             camera_.speed = 40.0f;
         }
 
-        std::ofstream log(phoenix::core::engine_log_path(), std::ios::app);
-        log << "Loaded map: " << state_.worldMapPaths[mapIndex].string()
-            << " parsed=" << state_.world.parsed
-            << " isDungeon=" << state_.world.isDungeon
-            << " worldAssets=" << state_.worldAssets.size()
-            << " sceneObjects=" << state_.sceneObjects.size()
-            << "\n";
         return state_.world.parsed;
     }
 
@@ -519,20 +468,22 @@ namespace phoenix::runtime
         if (!std::filesystem::exists(worldRoot))
             return;
 
+        // Scan for worldN/ directories containing map.csv (Phoenix World format).
         for (const auto& entry : std::filesystem::directory_iterator(worldRoot))
         {
-            if (!entry.is_regular_file())
+            if (!entry.is_directory())
                 continue;
-            auto extension = phoenix::assets::lower_ascii(entry.path().extension().string());
-            if (extension != ".wld")
+            const auto dirName = entry.path().filename().string();
+            if (dirName.size() < 6 || dirName.substr(0, 5) != "world")
                 continue;
-
+            if (!std::filesystem::exists(entry.path() / "map.csv"))
+                continue;
             state_.worldMapPaths.push_back(entry.path());
         }
 
         std::ranges::sort(state_.worldMapPaths, [](const auto& lhs, const auto& rhs) {
-            const auto nameL = phoenix::assets::lower_ascii(lhs.stem().string());
-            const auto nameR = phoenix::assets::lower_ascii(rhs.stem().string());
+            const auto nameL = lhs.filename().string().substr(5); // strip "world"
+            const auto nameR = rhs.filename().string().substr(5);
             char* endL = nullptr;
             char* endR = nullptr;
             const auto numL = std::strtol(nameL.c_str(), &endL, 10);
@@ -671,7 +622,7 @@ namespace phoenix::runtime
             return layer;
         };
 
-        const auto path = phoenix::assets::resolve_texture_asset(state_.assets, std::string(textureName));
+        auto path = phoenix::assets::resolve_texture_asset(state_.assets, std::string(textureName));
         if (path.empty() || !std::filesystem::exists(path))
             return cacheResult(0xFFFFFFFFu);
 
@@ -695,7 +646,6 @@ namespace phoenix::runtime
         state_.worldAssets.clear();
         state_.sceneObjects.clear();
         state_.assetTexturePaths.clear();
-        state_.maniAnimations.clear();
         if (!state_.world.parsed)
             return;
 
@@ -744,7 +694,9 @@ namespace phoenix::runtime
                 p.name = assetName;
                 p.key = key;
                 p.sectionName = section.name;
+
                 p.path = state_.assets.resolve(assetName);
+
                 if (key.ends_with(".smod") || key.ends_with(".vani")) p.kind = 1;
                 else if (key.ends_with(".dg")) p.kind = 2;
                 pending.push_back(std::move(p));
@@ -788,6 +740,7 @@ namespace phoenix::runtime
                 LoadedWorldAsset asset{};
                 asset.name = p.name;
                 asset.path = p.path;
+                const bool isVani = p.key.ends_with(".vani");
                 if (!asset.path.empty())
                 {
                     const auto assetCutout = static_asset_uses_cutout(p.name, asset.path);
@@ -863,8 +816,8 @@ namespace phoenix::runtime
                 }
                 // Fallback: generate collision from visual mesh for assets without
                 // explicit collision data. Uses the preview mesh positions directly.
-                // Skip Grass section � these should never block movement.
-                if (!asset.hasCollision && asset.loaded
+                // Skip Grass section - these should never block movement.
+                if (!asset.hasCollision && asset.loaded && !isVani
                     && !asset.previewVertices.empty() && !asset.previewIndices.empty()
                     && !asset.vertexAnimated && p.sectionName != "Grass")
                 {
@@ -881,14 +834,6 @@ namespace phoenix::runtime
                 state_.worldAssets.push_back(std::move(asset));
             }
         }
-
-        state_.maniAnimations.reserve(state_.world.maniAssets.size());
-        for (const auto& maniName : state_.world.maniAssets)
-        {
-            const auto maniPath = state_.assets.resolve(maniName);
-            state_.maniAnimations.push_back(!maniPath.empty() ? phoenix::world::load_mani(maniPath) : phoenix::world::ManiAnimation{});
-        }
-
         std::unordered_map<std::string, const LoadedWorldAsset*> assetByName;
         std::unordered_map<std::string, std::int32_t> assetSlotByName;
         for (std::size_t index = 0; index < state_.worldAssets.size(); ++index)
@@ -934,37 +879,6 @@ namespace phoenix::runtime
             }
         }
 
-        const auto buildingSection = std::find_if(
-            state_.world.objectSections.begin(),
-            state_.world.objectSections.end(),
-            [](const auto& section) { return section.name == "Building"; });
-        if (buildingSection != state_.world.objectSections.end())
-        {
-            for (const auto& maniInstance : state_.world.maniInstances)
-            {
-                if (maniInstance.buildingAssetId < 0
-                    || static_cast<std::size_t>(maniInstance.buildingAssetId) >= buildingSection->assets.size())
-                    continue;
-
-                const auto key = phoenix::assets::lower_ascii(buildingSection->assets[static_cast<std::size_t>(maniInstance.buildingAssetId)]);
-                const auto slot = assetSlotByName.find(key);
-                if (slot == assetSlotByName.end())
-                    continue;
-
-                SceneObject object{};
-                object.x = maniInstance.position[0] - halfMap;
-                object.y = maniInstance.position[1];
-                object.z = maniInstance.position[2] - halfMap;
-                std::copy(std::begin(maniInstance.rotationForward), std::end(maniInstance.rotationForward), std::begin(object.forward));
-                std::copy(std::begin(maniInstance.rotationUp), std::end(maniInstance.rotationUp), std::begin(object.up));
-                object.assetSlot = slot->second;
-                object.loaded = state_.worldAssets[static_cast<std::size_t>(object.assetSlot)].loaded;
-                object.radius = state_.worldAssets[static_cast<std::size_t>(object.assetSlot)].radius;
-                object.animated = true;
-                object.maniAssetIndex = maniInstance.maniAssetIndex;
-                state_.sceneObjects.push_back(object);
-            }
-        }
     }
 
     float PhoenixRuntime::terrain_height(float worldX, float worldZ) const
@@ -991,6 +905,34 @@ namespace phoenix::runtime
         const auto a = std::lerp(sample(x0, z0), sample(x1, z0), tx);
         const auto b = std::lerp(sample(x0, z1), sample(x1, z1), tx);
         return std::lerp(a, b, tz);
+    }
+
+    std::filesystem::path PhoenixRuntime::walk_sound_at(float worldX, float worldZ) const
+    {
+        const auto& w = state_.world;
+        if (w.terrainTextureMap.empty() || w.heightMapSide < 2 || w.terrainLayers.empty())
+            return {};
+
+        const auto mapSize = static_cast<float>(std::max(1u, w.mapSize));
+        const auto halfMap = mapSize * 0.5f;
+        const auto u = std::clamp((worldX + halfMap) / mapSize, 0.0f, 1.0f);
+        const auto v = std::clamp((worldZ + halfMap) / mapSize, 0.0f, 1.0f);
+        const auto side = w.heightMapSide;
+        const auto ix = std::min(static_cast<std::uint32_t>(u * static_cast<float>(side - 1)), side - 1);
+        const auto iz = std::min(static_cast<std::uint32_t>(v * static_cast<float>(side - 1)), side - 1);
+        const auto idx = static_cast<std::size_t>(iz) * side + ix;
+        if (idx >= w.terrainTextureMap.size())
+            return {};
+
+        const auto layerIndex = static_cast<std::size_t>(w.terrainTextureMap[idx]);
+        if (layerIndex >= w.terrainLayers.size())
+            return {};
+
+        const auto& soundName = w.terrainLayers[layerIndex].walkSoundFileName;
+        if (soundName.empty())
+            return {};
+
+        return audio_path_for(soundName);
     }
 
     PreviewImage PhoenixRuntime::create_preview_image(std::uint32_t width, std::uint32_t height) const
@@ -1235,6 +1177,42 @@ namespace phoenix::runtime
         return terrain_detail_paths_for_map(state_.assets, state_.world);
     }
 
+    std::vector<std::filesystem::path> PhoenixRuntime::field_lightmap_paths(std::uint32_t& sectionCount) const
+    {
+        sectionCount = 0;
+        if (!state_.world.parsed || state_.world.isDungeon)
+            return {};
+
+        // Derive map stem from the WLD path filename (e.g., "1" from "1.wld").
+        const auto stem = state_.world.path.stem().string();
+        if (stem.empty())
+            return {};
+
+        // Phoenix World: use the world's own field/ folder if available.
+        // Fallback: legacy Data/World/field/<mapId>/ layout.
+        auto fieldDir = state_.world.phoenixWorldFieldDir;
+        if (fieldDir.empty())
+            fieldDir = resolve_ci(state_.dataRoot / "World" / "field" / stem);
+        if (fieldDir.empty() || !std::filesystem::is_directory(fieldDir))
+            return {};
+
+        // Big maps (mapSize >= 1536): 2x2 sections (00,01,10,11).
+        // Small maps: 1x1 section (00 only).
+        const bool bigMap = state_.world.mapSize >= 1536;
+        sectionCount = bigMap ? 2 : 1;
+
+        std::vector<std::filesystem::path> paths;
+        const std::string sections[] = { "00", "01", "10", "11" };
+        const auto total = bigMap ? 4u : 1u;
+        for (std::uint32_t i = 0; i < total; ++i)
+        {
+            const auto name = stem + "_" + sections[i] + "_l.dds";
+            auto p = resolve_ci(fieldDir / name);
+            paths.push_back(std::move(p));
+        }
+        return paths;
+    }
+
     std::vector<std::filesystem::path> PhoenixRuntime::asset_texture_paths() const
     {
         return state_.assetTexturePaths;
@@ -1336,7 +1314,7 @@ namespace phoenix::runtime
             return false;
 
         // Find a WTR file in Entity/Water.
-        const auto waterDir = state_.entityRoot / "Water";
+        const auto waterDir = resolve_ci(state_.entityRoot / "Water");
         if (!std::filesystem::exists(waterDir))
             return false;
 
@@ -1437,10 +1415,6 @@ namespace phoenix::runtime
         state_.waterAnimation.frameFileNames = std::move(uniqueNames);
         state_.waterAnimation.frameCount = static_cast<std::uint32_t>(state_.waterAnimation.framePaths.size());
 
-        std::ofstream log(phoenix::core::engine_log_path(), std::ios::app);
-        log << "Water animation: " << wtrPath.filename().string()
-            << " tileSize=" << state_.waterAnimation.tileSize
-            << " frames=" << state_.waterAnimation.frameCount << "\n";
 
         return state_.waterAnimation.frameCount > 0;
     }
@@ -1559,44 +1533,6 @@ namespace phoenix::runtime
             }
         }
 
-        {
-            const auto base = static_cast<std::uint32_t>(vertices.size());
-            const float waterColor[3]{ 0.04f, 0.12f, 0.28f };
-            const float points[4][3]{
-                { -halfMap, 0.0f, -halfMap },
-                { halfMap, 0.0f, -halfMap },
-                { -halfMap, 0.0f, halfMap },
-                { halfMap, 0.0f, halfMap },
-            };
-            const float uvs[4][2]{
-                { 0.0f, 0.0f },
-                { mapSize / 64.0f, 0.0f },
-                { 0.0f, mapSize / 64.0f },
-                { mapSize / 64.0f, mapSize / 64.0f },
-            };
-            for (std::size_t i = 0; i < std::size(points); ++i)
-            {
-                phoenix::renderer::TerrainVertex vertex{};
-                vertex.position[0] = points[i][0];
-                vertex.position[1] = points[i][1];
-                vertex.position[2] = points[i][2];
-                vertex.color[0] = waterColor[0];
-                vertex.color[1] = waterColor[1];
-                vertex.color[2] = waterColor[2];
-                vertex.normal[1] = 1.0f;
-                vertex.uv[0] = uvs[i][0];
-                vertex.uv[1] = uvs[i][1];
-                vertex.textureLayer = kWaterTextureLayer;
-                vertices.push_back(vertex);
-            }
-            indices.push_back(base + 0);
-            indices.push_back(base + 2);
-            indices.push_back(base + 1);
-            indices.push_back(base + 1);
-            indices.push_back(base + 2);
-            indices.push_back(base + 3);
-        }
-
         // ---- Generate per-chunk LOD index sets ----
         // The full-res indices are already in the buffer (stride 1). We now append
         // reduced-detail index sets for each chunk at strides 2, 4, 8. Each LOD
@@ -1656,12 +1592,6 @@ namespace phoenix::runtime
         }
 
         {
-            std::ofstream log(phoenix::core::engine_log_path(), std::ios::app);
-            log << "Terrain mesh: vertices=" << vertices.size()
-                << " indices=" << indices.size()
-                << " lodChunks=" << lodInfo.chunks.size()
-                << " (full=" << totalQuads * 6 << " + lod="
-                << (indices.size() - totalQuads * 6 - 6) << ")\n";
         }
         return;
 
@@ -1801,187 +1731,6 @@ namespace phoenix::runtime
             indices.push_back(base + 3);
         }
 
-        std::ofstream log(phoenix::core::engine_log_path(), std::ios::app);
-        log << "Terrain mesh build: high_objects=" << highObjectCount
-            << " placeholders=" << (state_.sceneObjects.size() - highObjectCount)
-            << " loaded_placeholders=" << loadedPlaceholders
-            << " missing_placeholders=" << missingPlaceholders
-            << " vertices=" << vertices.size()
-            << " indices=" << indices.size()
-            << "\n";
-    }
-
-    void PhoenixRuntime::build_debug_gizmo_mesh(
-        bool includeSounds,
-        bool includeMusic,
-        bool includePortals,
-        bool includeEffects,
-        std::vector<phoenix::renderer::TerrainVertex>& vertices,
-        std::vector<std::uint32_t>& indices) const
-    {
-        vertices.clear();
-        indices.clear();
-
-        constexpr std::uint32_t kDebugLayer = 0xFFFFFFFEu;
-        const auto mapSize = static_cast<float>(std::max(1u, state_.world.mapSize));
-        const auto halfMap = mapSize * 0.5f;
-        const auto worldX = [&](float rawX) { return rawX - halfMap; };
-        const auto worldZ = [&](float rawZ) { return rawZ - halfMap; };
-        const auto appendVertex = [&](float x, float y, float z, float r, float g, float b) {
-            phoenix::renderer::TerrainVertex vertex{};
-            vertex.position[0] = x;
-            vertex.position[1] = y;
-            vertex.position[2] = z;
-            vertex.color[0] = r;
-            vertex.color[1] = g;
-            vertex.color[2] = b;
-            vertex.normal[1] = 1.0f;
-            vertex.textureLayer = kDebugLayer;
-            vertices.push_back(vertex);
-        };
-
-        const auto appendBox = [&](const phoenix::world::WldBoundingBox& box, float r, float g, float b) {
-            float minX = std::min(worldX(box.min[0]), worldX(box.max[0]));
-            float minY = std::min(box.min[1], box.max[1]);
-            float minZ = std::min(worldZ(box.min[2]), worldZ(box.max[2]));
-            float maxX = std::max(worldX(box.min[0]), worldX(box.max[0]));
-            float maxY = std::max(box.min[1], box.max[1]);
-            float maxZ = std::max(worldZ(box.min[2]), worldZ(box.max[2]));
-            if (!std::isfinite(minX) || !std::isfinite(minY) || !std::isfinite(minZ)
-                || !std::isfinite(maxX) || !std::isfinite(maxY) || !std::isfinite(maxZ))
-                return;
-            if (std::abs(maxX - minX) < 1.0f) { minX -= 8.0f; maxX += 8.0f; }
-            if (std::abs(maxY - minY) < 1.0f) { minY -= 8.0f; maxY += 8.0f; }
-            if (std::abs(maxZ - minZ) < 1.0f) { minZ -= 8.0f; maxZ += 8.0f; }
-
-            const auto base = static_cast<std::uint32_t>(vertices.size());
-            appendVertex(minX, minY, minZ, r, g, b);
-            appendVertex(maxX, minY, minZ, r, g, b);
-            appendVertex(maxX, maxY, minZ, r, g, b);
-            appendVertex(minX, maxY, minZ, r, g, b);
-            appendVertex(minX, minY, maxZ, r, g, b);
-            appendVertex(maxX, minY, maxZ, r, g, b);
-            appendVertex(maxX, maxY, maxZ, r, g, b);
-            appendVertex(minX, maxY, maxZ, r, g, b);
-            const std::uint32_t boxIndices[]{
-                0, 1, 2, 0, 2, 3,
-                5, 4, 7, 5, 7, 6,
-                4, 0, 3, 4, 3, 7,
-                1, 5, 6, 1, 6, 2,
-                3, 2, 6, 3, 6, 7,
-                4, 5, 1, 4, 1, 0,
-            };
-            for (const auto index : boxIndices)
-                indices.push_back(base + index);
-        };
-
-        const auto appendSphere = [&](const float* center, float radius, float r, float g, float b) {
-            if (!std::isfinite(center[0]) || !std::isfinite(center[1]) || !std::isfinite(center[2]))
-                return;
-            radius = std::clamp(radius, 8.0f, 600.0f);
-            constexpr std::uint32_t rings = 6;
-            constexpr std::uint32_t segments = 16;
-            const auto base = static_cast<std::uint32_t>(vertices.size());
-            for (std::uint32_t ring = 0; ring <= rings; ++ring)
-            {
-                const auto v = static_cast<float>(ring) / static_cast<float>(rings);
-                const auto phi = v * 3.1415926535f;
-                const auto y = std::cos(phi) * radius;
-                const auto ringRadius = std::sin(phi) * radius;
-                for (std::uint32_t segment = 0; segment < segments; ++segment)
-                {
-                    const auto u = static_cast<float>(segment) / static_cast<float>(segments);
-                    const auto theta = u * 6.283185307f;
-                    appendVertex(
-                        worldX(center[0]) + std::cos(theta) * ringRadius,
-                        center[1] + y,
-                        worldZ(center[2]) + std::sin(theta) * ringRadius,
-                        r, g, b);
-                }
-            }
-            for (std::uint32_t ring = 0; ring < rings; ++ring)
-            {
-                for (std::uint32_t segment = 0; segment < segments; ++segment)
-                {
-                    const auto next = (segment + 1) % segments;
-                    const auto a = base + ring * segments + segment;
-                    const auto b0 = base + ring * segments + next;
-                    const auto c = base + (ring + 1) * segments + segment;
-                    const auto d = base + (ring + 1) * segments + next;
-                    indices.push_back(a);
-                    indices.push_back(c);
-                    indices.push_back(b0);
-                    indices.push_back(b0);
-                    indices.push_back(c);
-                    indices.push_back(d);
-                }
-            }
-        };
-
-        if (includeMusic)
-        {
-            for (const auto& zone : state_.world.musicZones)
-            {
-                if (zone.musicAssetId < 0 || zone.radius <= 0.0f)
-                    continue;
-                appendBox(zone.box, 0.30f, 0.55f, 1.0f);
-            }
-        }
-        if (includePortals)
-        {
-            for (const auto& portal : state_.world.portals)
-                appendBox(portal.box, 0.75f, 0.35f, 1.0f);
-        }
-        if (includeSounds)
-        {
-            for (const auto& sound : state_.world.soundEffects)
-            {
-                if (sound.soundEffectAssetId < 0 || sound.radius <= 0.0f)
-                    continue;
-                appendSphere(sound.center, sound.radius, 1.0f, 0.62f, 0.15f);
-            }
-        }
-        if (includeEffects)
-        {
-            // Small diamond/capsule shape for effects (top cone + bottom cone).
-            constexpr float kWidth = 1.8f;
-            constexpr float kHalfHeight = 3.5f;
-            constexpr std::uint32_t kSides = 8;
-            for (const auto& effect : state_.world.effectInstances)
-            {
-                if (effect.effectId < 0) continue;
-                const auto cx = worldX(effect.position[0]);
-                const auto cy = effect.position[1];
-                const auto cz = worldZ(effect.position[2]);
-                const auto base = static_cast<std::uint32_t>(vertices.size());
-
-                // Top point.
-                appendVertex(cx, cy + kHalfHeight, cz, 0.15f, 0.95f, 0.85f);
-                // Ring.
-                for (std::uint32_t s = 0; s < kSides; ++s)
-                {
-                    const auto angle = static_cast<float>(s) / static_cast<float>(kSides) * 6.283185307f;
-                    appendVertex(cx + std::cos(angle) * kWidth, cy, cz + std::sin(angle) * kWidth, 0.15f, 0.95f, 0.85f);
-                }
-                // Bottom point.
-                appendVertex(cx, cy - kHalfHeight, cz, 0.15f, 0.95f, 0.85f);
-
-                const auto topIdx = base;
-                const auto bottomIdx = base + 1 + kSides;
-                for (std::uint32_t s = 0; s < kSides; ++s)
-                {
-                    const auto next = (s + 1) % kSides;
-                    // Top cone triangle.
-                    indices.push_back(topIdx);
-                    indices.push_back(base + 1 + s);
-                    indices.push_back(base + 1 + next);
-                    // Bottom cone triangle.
-                    indices.push_back(bottomIdx);
-                    indices.push_back(base + 1 + next);
-                    indices.push_back(base + 1 + s);
-                }
-            }
-        }
     }
 
     StaticObjectScene PhoenixRuntime::build_static_object_scene() const
@@ -2002,7 +1751,7 @@ namespace phoenix::runtime
         for (std::size_t objectIndex = 0; objectIndex < state_.sceneObjects.size(); ++objectIndex)
         {
             const auto& object = state_.sceneObjects[objectIndex];
-            if (object.deleted || object.animated || object.assetSlot < 0)
+            if (object.deleted || object.assetSlot < 0)
                 continue;
             const auto assetSlot = static_cast<std::size_t>(object.assetSlot);
             if (assetSlot >= state_.worldAssets.size())
@@ -2173,12 +1922,6 @@ namespace phoenix::runtime
             scene.batchBounds.push_back(bounds);
         }
 
-        std::ofstream log(phoenix::core::engine_log_path(), std::ios::app);
-        log << "Static object scene build: merged_batches=" << scene.batches.size()
-            << " instances=" << scene.instances.size()
-            << " vertices=" << scene.vertices.size()
-            << " indices=" << scene.indices.size()
-            << "\n";
 
         return scene;
     }
@@ -2201,7 +1944,7 @@ namespace phoenix::runtime
             const auto& asset = state_.worldAssets[assetSlot];
             if (!object.loaded || asset.previewVertices.empty() || asset.previewIndices.empty())
                 continue;
-            if (object.animated || asset.vertexAnimated)
+            if (asset.vertexAnimated)
                 groupsByAsset[assetSlot].push_back(objectIndex);
         }
 
@@ -2289,22 +2032,7 @@ namespace phoenix::runtime
             for (const auto objectIndex : objectIndices)
             {
                 const auto& object = state_.sceneObjects[objectIndex];
-                const auto instanceIndex = static_cast<std::uint32_t>(scene.instances.size());
                 appendInstance(object);
-
-                if (object.maniAssetIndex >= 0
-                    && static_cast<std::size_t>(object.maniAssetIndex) < state_.maniAnimations.size())
-                {
-                    const auto& mani = state_.maniAnimations[static_cast<std::size_t>(object.maniAssetIndex)];
-                    if (mani.parsed && mani.enableRotation)
-                    {
-                        AnimatedObjectScene::InstanceAnimation animation{};
-                        animation.instanceIndex = instanceIndex;
-                        std::copy(std::begin(mani.rotationAxis), std::end(mani.rotationAxis), std::begin(animation.axis));
-                        animation.speed = mani.animationSpeed;
-                        scene.instanceAnimations.push_back(animation);
-                    }
-                }
 
                 const auto radius = std::max(8.0f, object.radius);
                 minX = std::min(minX, object.x - radius);
@@ -2327,383 +2055,27 @@ namespace phoenix::runtime
             scene.batchBounds.push_back(bounds);
         }
 
-        std::ofstream log(phoenix::core::engine_log_path(), std::ios::app);
-        log << "Animated object scene build: batches=" << scene.batches.size()
-            << " instances=" << scene.instances.size()
-            << " vertexAnimations=" << scene.vertexAnimations.size()
-            << " instanceAnimations=" << scene.instanceAnimations.size()
-            << "\n";
         return scene;
     }
 
-    void PhoenixRuntime::update_animated_object_scene(AnimatedObjectScene& scene, float totalTime, float deltaSeconds,
-        float cameraX, float cameraY, float cameraZ,
-        std::size_t actorVertexAnimationStart,
-        bool skipActorSkinning) const
+    void PhoenixRuntime::update_animated_object_scene(AnimatedObjectScene& scene, float totalTime) const
     {
-        // Live-tunable animation parameters (debug UI). See ActorAnimTuning.
-        const auto& tune = actorAnimTuning_;
-        const float kAnimationRange = tune.animationRange;
-        // NPC gesture timing.
-        const float kGestureIntervalMin = tune.gestureIntervalMin;
-        const float kGestureIntervalMax = tune.gestureIntervalMax;
-        const float kIdleDuration = tune.idleGestureDuration;
-        // Mob movement constants.
-        const float kMobWalkSpeed = tune.mobWalkSpeed;
-        const float kMobRunSpeed = tune.mobRunSpeed;
-        const float kMobRoamRadius = tune.mobRoamRadius;
-        const float kMobIdleMin = tune.mobIdleMin;
-        const float kMobIdleMax = tune.mobIdleMax;
-        constexpr float kMobRunChance = 0.0f;
-        constexpr float kMobArriveThreshold = 0.8f;
+        constexpr float kDecorFps = 12.0f;
 
-        const float clampedDelta = std::min(deltaSeconds, 0.05f);
-
-        // ==================================================================
-        // PHASE 1: Mob per-instance movement (position updates).
-        // This runs BEFORE vertex animation so the type-level movement state
-        // is known when choosing walk/run/breath frames.
-        // ==================================================================
-        // Strict distance culling: mobs outside the animation range DO NOT EXIST
-        // for the engine — no movement, no animation, no counting, nothing.
-        // This mirrors the native Shaiya client behaviour.
-        // ==================================================================
-        const float mobCullRangeSq = kAnimationRange * kAnimationRange;
-
-        // Helper: is this mob instance within simulation range of the camera?
-        auto mobInRange = [&](const auto& mob) {
-            if (mob.instanceIndex >= scene.baseInstances.size()) return false;
-            const auto& inst = scene.baseInstances[mob.instanceIndex];
-            const float dx = inst.position[0] - cameraX;
-            const float dz = inst.position[2] - cameraZ;
-            return dx * dx + dz * dz <= mobCullRangeSq;
-        };
-
-        // Build per-type index so inner loops don't scan all mob instances.
-        // One-time allocation amortised across frames (reuses capacity).
-        static thread_local std::vector<std::vector<std::size_t>> mobsByType;
-        mobsByType.resize(scene.vertexAnimations.size());
-        for (auto& bucket : mobsByType) bucket.clear();
-        for (std::size_t mi = 0; mi < scene.mobInstances.size(); ++mi)
+        for (auto& animation : scene.vertexAnimations)
         {
-            const auto ai = scene.mobInstances[mi].animIndex;
-            if (ai < mobsByType.size())
-                mobsByType[ai].push_back(mi);
-        }
-
-        // Reset per-type movement counters.
-        for (std::size_t i = actorVertexAnimationStart; i < scene.vertexAnimations.size(); ++i)
-        {
-            auto& a = scene.vertexAnimations[i];
-            if (!a.isMob) continue;
-
-            a.movingCount = 0;
-            a.runningCount = 0;
-            const auto& typeMobs = i < mobsByType.size() ? mobsByType[i] : mobsByType[0];
-
-            if (a.mobMoving)
+            if (animation.frames.empty())
+                continue;
+            const auto frame = static_cast<std::size_t>(std::floor(totalTime * kDecorFps)) % animation.frames.size();
+            const auto& frameVertices = animation.frames[frame];
+            const auto count = std::min<std::size_t>(animation.vertexCount, frameVertices.size());
+            if (static_cast<std::size_t>(animation.firstVertex) + count <= scene.vertices.size())
             {
-                bool anyNearbyMoving = false;
-                for (const auto mi : typeMobs)
-                {
-                    const auto& mob = scene.mobInstances[mi];
-                    if (mob.moving && mobInRange(mob)) { anyNearbyMoving = true; break; }
-                }
-                if (!anyNearbyMoving)
-                {
-                    a.mobMoving = false;
-                    a.mobRunning = false;
-                    const auto seed = static_cast<std::uint32_t>(
-                        std::abs(a.worldX * 11.3f) + std::abs(a.worldZ * 7.7f) + totalTime * 3.1f);
-                    a.mobMoveTimer = kMobIdleMin + static_cast<float>(seed % 256) / 255.0f * (kMobIdleMax - kMobIdleMin);
-                    for (const auto mi : typeMobs)
-                    { scene.mobInstances[mi].moving = false; scene.mobInstances[mi].running = false; }
-                }
-            }
-            else
-            {
-                a.mobMoveTimer -= clampedDelta;
-                if (a.mobMoveTimer <= 0.0f)
-                {
-                    bool anyInRange = false;
-                    for (const auto mi : typeMobs)
-                    {
-                        if (mobInRange(scene.mobInstances[mi])) { anyInRange = true; break; }
-                    }
-                    if (!anyInRange)
-                    {
-                        a.mobMoveTimer = kMobIdleMin;
-                        continue;
-                    }
-
-                    a.mobMoving = true;
-                    const auto seed = static_cast<std::uint32_t>(
-                        std::abs(a.worldX * 3.7f) + std::abs(a.worldZ * 9.1f) + totalTime * 17.3f);
-                    const float runRoll = static_cast<float>((seed / 62800) % 100) / 100.0f;
-                    a.mobRunning = kMobRunChance > 0.0f && runRoll < kMobRunChance;
-                    for (const auto mi : typeMobs)
-                    {
-                        auto& mob = scene.mobInstances[mi];
-                        if (!mobInRange(mob)) continue;
-                        const auto& inst = scene.baseInstances[mob.instanceIndex];
-                        const auto instanceSeed = seed + static_cast<std::uint32_t>(mob.instanceIndex) * 977u;
-                        const float angle = static_cast<float>(instanceSeed % 628) / 100.0f;
-                        const float radius = kMobRoamRadius * (0.3f + 0.7f * static_cast<float>((instanceSeed / 628) % 100) / 100.0f);
-                        mob.targetX = mob.spawnX + std::sin(angle) * radius;
-                        mob.targetZ = mob.spawnZ + std::cos(angle) * radius;
-                        mob.moving = true;
-                        mob.running = a.mobRunning;
-                        mob.yaw = std::atan2(mob.targetX - inst.position[0], mob.targetZ - inst.position[2]);
-                    }
-                }
+                std::copy_n(frameVertices.begin(), count, scene.vertices.begin() + animation.firstVertex);
+                scene.mark_vertices_dirty(animation.firstVertex, static_cast<std::uint32_t>(count));
             }
         }
 
-        // Per-instance movement: only process in-range mobs.
-        for (auto& mob : scene.mobInstances)
-        {
-            if (mob.animIndex >= scene.vertexAnimations.size()) continue;
-            if (mob.instanceIndex >= scene.baseInstances.size()) continue;
-            if (!mobInRange(mob))
-            {
-                // Out of range: freeze completely. Reset to spawn if was mid-move
-                // so it doesn't get stuck in a weird position when it comes back.
-                if (mob.moving)
-                {
-                    mob.moving = false;
-                    mob.running = false;
-                    auto& inst = scene.baseInstances[mob.instanceIndex];
-                    inst.position[0] = mob.spawnX;
-                    inst.position[2] = mob.spawnZ;
-                    if (!state_.world.isDungeon)
-                        inst.position[1] = terrain_height(mob.spawnX, mob.spawnZ);
-                }
-                continue;
-            }
-
-            auto& inst = scene.baseInstances[mob.instanceIndex];
-
-            if (mob.moving)
-            {
-                const float curX = inst.position[0];
-                const float curZ = inst.position[2];
-                const float dxT = mob.targetX - curX;
-                const float dzT = mob.targetZ - curZ;
-                const float distToTarget = std::sqrt(dxT * dxT + dzT * dzT);
-                if (distToTarget < kMobArriveThreshold)
-                {
-                    auto& anim = scene.vertexAnimations[mob.animIndex];
-                    anim.mobMoving = false;
-                    anim.mobRunning = false;
-                    const auto seed = static_cast<std::uint32_t>(
-                        std::abs(curX * 11.3f) + std::abs(curZ * 7.7f) + totalTime * 3.1f);
-                    anim.mobMoveTimer = kMobIdleMin + static_cast<float>(seed % 256) / 255.0f * (kMobIdleMax - kMobIdleMin);
-                    if (mob.animIndex < mobsByType.size())
-                    {
-                        for (const auto oi : mobsByType[mob.animIndex])
-                        { scene.mobInstances[oi].moving = false; scene.mobInstances[oi].running = false; }
-                    }
-                }
-                else
-                {
-                    const float speed = mob.running ? kMobRunSpeed : kMobWalkSpeed;
-                    const float step = speed * clampedDelta;
-                    const float nx = dxT / distToTarget;
-                    const float nz = dzT / distToTarget;
-                    inst.position[0] += nx * step;
-                    inst.position[2] += nz * step;
-                    if (!state_.world.isDungeon)
-                        inst.position[1] = terrain_height(inst.position[0], inst.position[2]);
-                    mob.yaw = std::atan2(nx, nz);
-                    const float actorYaw = mob.yaw + 3.14159265f;
-                    const float s = std::sin(actorYaw);
-                    const float c = std::cos(actorYaw);
-                    inst.right[0] = c;  inst.right[1] = 0.0f; inst.right[2] = -s;
-                    inst.forward[0] = s; inst.forward[1] = 0.0f; inst.forward[2] = c;
-                }
-            }
-
-            // Only count in-range, moving mobs for the animation state.
-            if (mob.moving)
-            {
-                auto& anim = scene.vertexAnimations[mob.animIndex];
-                ++anim.movingCount;
-                if (mob.running)
-                    ++anim.runningCount;
-            }
-        }
-
-        // ==================================================================
-        // PHASE 2: Vertex animation updates.
-        // ==================================================================
-        for (std::size_t i = 0; i < scene.vertexAnimations.size(); ++i)
-        {
-            auto& animation = scene.vertexAnimations[i];
-            const bool isActor = i >= actorVertexAnimationStart;
-
-            if (!isActor)
-            {
-                if (animation.frames.empty())
-                    continue;
-                const auto frame = static_cast<std::size_t>(std::floor(totalTime * tune.decorFps)) % animation.frames.size();
-                const auto& frameVertices = animation.frames[frame];
-                const auto count = std::min<std::size_t>(animation.vertexCount, frameVertices.size());
-                if (static_cast<std::size_t>(animation.firstVertex) + count <= scene.vertices.size())
-                {
-                    std::copy_n(frameVertices.begin(), count, scene.vertices.begin() + animation.firstVertex);
-                    scene.mark_vertices_dirty(animation.firstVertex, static_cast<std::uint32_t>(count));
-                }
-                continue;
-            }
-
-            if (!animation.hasActorSkin || animation.skinData.sourceVertices.empty())
-                continue;
-
-            const float dx = animation.worldX - cameraX;
-            const float dy = animation.worldY - cameraY;
-            const float dz = animation.worldZ - cameraZ;
-            const float distSq = dx * dx + dy * dy + dz * dz;
-            const float effectiveRangeSq = (kAnimationRange + animation.boundingRadius)
-                * (kAnimationRange + animation.boundingRadius);
-            if (distSq > effectiveRangeSq)
-                continue;
-
-            // LOD: reduce skinning frequency for distant actors.
-            // Close actors update every frame, mid-range every 3rd, far every 6th.
-            {
-                const float nearSq = 60.0f * 60.0f;
-                const float midSq = 140.0f * 140.0f;
-                const auto frameHash = static_cast<std::uint32_t>(i);
-                if (distSq > midSq && (frameHash + static_cast<std::uint32_t>(totalTime * 30.0f)) % 6 != 0)
-                    continue;
-                if (distSq > nearSq && (frameHash + static_cast<std::uint32_t>(totalTime * 30.0f)) % 3 != 0)
-                    continue;
-            }
-
-            const auto& breathAnim = animation.animations.breath;
-            const auto& idleAnim = animation.animations.idle;
-            const auto& walkAnim = animation.animations.walk;
-            const auto& runAnim = animation.animations.run;
-
-            auto skinCached = [&](const phoenix::world::CharacterAnimation& anim, float frameF) {
-                if (skipActorSkinning)
-                    return; // GPU compute shader handles skinning.
-                const auto discreteFrame = static_cast<std::int32_t>(frameF);
-                if (discreteFrame == animation.cachedFrame && &anim == animation.cachedAnim)
-                    return;
-                const auto first = static_cast<std::size_t>(animation.firstVertex);
-                if (first + animation.vertexCount > scene.vertices.size())
-                    return;
-                auto span = std::span<phoenix::renderer::TerrainVertex>(
-                    scene.vertices.data() + first, animation.vertexCount);
-                phoenix::world::skin_actor_vertices(animation.skinData, span, anim, frameF);
-                animation.cachedFrame = discreteFrame;
-                animation.cachedAnim = &anim;
-                scene.mark_vertices_dirty(animation.firstVertex, animation.vertexCount);
-            };
-
-            auto animFrameCount = [](const phoenix::world::CharacterAnimation& anim) -> float {
-                if (!anim.parsed || anim.endKeyframe <= anim.startKeyframe)
-                    return 1.0f;
-                return static_cast<float>(anim.endKeyframe - anim.startKeyframe + 1);
-            };
-
-            if (animation.isMob)
-            {
-                const auto total = std::max(1u, animation.totalInstances);
-                const float movingRatio = static_cast<float>(animation.movingCount) / static_cast<float>(total);
-                const float runningRatio = static_cast<float>(animation.runningCount) / static_cast<float>(total);
-
-                const phoenix::world::CharacterAnimation* activeAnim = &breathAnim;
-                float playbackRate = tune.breathFps;
-
-                if (runningRatio > tune.moveAnimThreshold && runAnim.parsed)
-                {
-                    activeAnim = &runAnim;
-                    playbackRate = tune.runFps;
-                }
-                else if (movingRatio > tune.moveAnimThreshold && walkAnim.parsed)
-                {
-                    activeAnim = &walkAnim;
-                    playbackRate = tune.walkFps;
-                }
-                else
-                {
-                    if (idleAnim.parsed)
-                    {
-                        if (animation.playingGesture)
-                        {
-                            animation.gestureTimer += clampedDelta;
-                            if (animation.gestureTimer >= kIdleDuration)
-                            {
-                                animation.playingGesture = false;
-                                const auto seed = static_cast<std::uint32_t>(
-                                    std::abs(animation.worldX * 7.3f) + std::abs(animation.worldZ * 13.7f) + totalTime * 0.1f);
-                                const float t = static_cast<float>(seed % 256) / 255.0f;
-                                animation.gestureTimer = kGestureIntervalMin + t * (kGestureIntervalMax - kGestureIntervalMin);
-                            }
-                            else
-                            {
-                                skinCached(idleAnim, std::fmod(animation.gestureTimer * tune.idleFps, animFrameCount(idleAnim)));
-                                continue;
-                            }
-                        }
-                        else
-                        {
-                            animation.gestureTimer -= clampedDelta;
-                            if (animation.gestureTimer <= 0.0f)
-                            {
-                                animation.playingGesture = true;
-                                animation.gestureTimer = 0.0f;
-                            }
-                        }
-                    }
-                }
-
-                skinCached(*activeAnim, std::fmod(totalTime * playbackRate, animFrameCount(*activeAnim)));
-                continue;
-            }
-
-            // ---- NPC animation (stationary, breath + idle gesture) ----
-            const phoenix::world::CharacterAnimation* activeAnim = &breathAnim;
-            float playbackRate = tune.npcBreathFps;
-
-            if (idleAnim.parsed)
-            {
-                if (animation.playingGesture)
-                {
-                    animation.gestureTimer += clampedDelta;
-                    if (animation.gestureTimer >= kIdleDuration)
-                    {
-                        animation.playingGesture = false;
-                        const auto seed = static_cast<std::uint32_t>(
-                            std::abs(animation.worldX * 7.3f) + std::abs(animation.worldZ * 13.7f) + totalTime * 0.1f);
-                        const float t = static_cast<float>(seed % 256) / 255.0f;
-                        animation.gestureTimer = kGestureIntervalMin + t * (kGestureIntervalMax - kGestureIntervalMin);
-                    }
-                    else
-                    {
-                        skinCached(idleAnim, std::fmod(animation.gestureTimer * tune.idleFps, animFrameCount(idleAnim)));
-                        continue;
-                    }
-                }
-                else
-                {
-                    animation.gestureTimer -= clampedDelta;
-                    if (animation.gestureTimer <= 0.0f)
-                    {
-                        animation.playingGesture = true;
-                        animation.gestureTimer = 0.0f;
-                    }
-                }
-            }
-
-            skinCached(*activeAnim, std::fmod(totalTime * playbackRate, animFrameCount(*activeAnim)));
-        }
-
-        // ==================================================================
-        // PHASE 3: Copy baseInstances ? instances (mob positions updated above).
-        // ==================================================================
 
         scene.instances = scene.baseInstances;
         const auto rotateVector = [](float* v, const float* axis, float angle) {
@@ -2849,487 +2221,6 @@ namespace phoenix::runtime
         return "Phoenix Engine";
     }
 
-    bool PhoenixRuntime::load_effect_data()
-    {
-        state_.eftFile = {};
-        state_.effectTexturePaths.clear();
-        state_.effectInstanceTextureSlot.clear();
-
-        {
-            std::ofstream log(phoenix::core::engine_log_path(), std::ios::app);
-            log << "EFT: effectFileName='" << state_.world.effectFileName
-                << "' instances=" << state_.world.effectInstances.size()
-                << " dataRoot='" << state_.dataRoot.string() << "'\n";
-        }
-        if (state_.world.effectFileName.empty() || state_.dataRoot.empty())
-            return false;
-
-        // Find the EFT file in Data/Effect.
-        const auto effectDir = resolve_ci(state_.dataRoot / "Effect");
-        auto eftPath = effectDir / state_.world.effectFileName;
-
-        if (!std::filesystem::exists(eftPath) && std::filesystem::exists(effectDir))
-        {
-            // Try case-insensitive search.
-            const auto wantedLower = phoenix::assets::lower_ascii(state_.world.effectFileName);
-            for (const auto& entry : std::filesystem::directory_iterator(effectDir))
-            {
-                if (entry.is_regular_file()
-                    && phoenix::assets::lower_ascii(entry.path().filename().string()) == wantedLower)
-                {
-                    eftPath = entry.path();
-                    break;
-                }
-            }
-        }
-
-        if (!std::filesystem::exists(eftPath))
-            return false;
-
-        state_.eftFile = phoenix::world::load_eft(eftPath);
-        if (!state_.eftFile.parsed)
-            return false;
-
-        // Load ALL EFT textures by their EFT index, so effectTextureBase + eftTexIndex
-        // maps directly to the correct texture array layer.
-        const auto& eft = state_.eftFile;
-
-        auto resolveTexturePath = [&](const std::string& ddsName) -> std::filesystem::path
-        {
-            if (ddsName.empty()) return {};
-            auto path = effectDir / "DDS" / ddsName;
-            if (std::filesystem::exists(path)) return path;
-            path = effectDir / ddsName;
-            if (std::filesystem::exists(path)) return path;
-            return texture_path_for(ddsName);
-        };
-
-        // Resolve all EFT texture names (index-preserving).
-        state_.effectTexturePaths.resize(eft.textureNames.size());
-        for (std::size_t t = 0; t < eft.textureNames.size(); ++t)
-            state_.effectTexturePaths[t] = resolveTexturePath(eft.textureNames[t]);
-
-        // Per-instance: store the EFT texture index directly (not a deduplicated slot).
-        for (const auto& instance : state_.world.effectInstances)
-        {
-            if (instance.effectId < 0)
-            {
-                state_.effectInstanceTextureSlot.push_back(-1);
-                continue;
-            }
-
-            const auto effectId = static_cast<std::size_t>(instance.effectId);
-            std::int32_t texSlot = -1;
-
-            // Try effectId as direct index into effects array.
-            if (effectId < eft.effects.size())
-            {
-                const auto& effect = eft.effects[effectId];
-                if (!effect.textureIndices.empty())
-                {
-                    const auto texIdx = static_cast<std::size_t>(effect.textureIndices[0]);
-                    if (texIdx < eft.textureNames.size()
-                        && !state_.effectTexturePaths[texIdx].empty())
-                    {
-                        texSlot = static_cast<std::int32_t>(texIdx);
-                    }
-                }
-            }
-
-            // Fallback: try effectId as sequence index.
-            if (texSlot < 0 && effectId < eft.sequences.size())
-            {
-                const auto& seq = eft.sequences[effectId];
-                for (const auto& record : seq.records)
-                {
-                    if (record.effectId >= 0
-                        && static_cast<std::size_t>(record.effectId) < eft.effects.size())
-                    {
-                        const auto& effect = eft.effects[static_cast<std::size_t>(record.effectId)];
-                        if (!effect.textureIndices.empty())
-                        {
-                            const auto texIdx = static_cast<std::size_t>(effect.textureIndices[0]);
-                            if (texIdx < eft.textureNames.size()
-                                && !state_.effectTexturePaths[texIdx].empty())
-                            {
-                                texSlot = static_cast<std::int32_t>(texIdx);
-                                break;
-                            }
-                        }
-                    }
-                }
-            }
-
-            state_.effectInstanceTextureSlot.push_back(texSlot);
-        }
-
-        {
-            std::ofstream log(phoenix::core::engine_log_path(), std::ios::app);
-            std::size_t resolvedCount = 0;
-            for (const auto& p : state_.effectTexturePaths)
-                if (!p.empty()) ++resolvedCount;
-            log << "EFT loaded: " << eftPath.string()
-                << " effects=" << eft.effects.size()
-                << " sequences=" << eft.sequences.size()
-                << " textures=" << eft.textureNames.size()
-                << " resolved=" << resolvedCount
-                << " instances=" << state_.world.effectInstances.size()
-                << "\n";
-            for (std::size_t t = 0; t < eft.textureNames.size(); ++t)
-                log << "  EFT tex[" << t << "]=\"" << eft.textureNames[t]
-                    << "\" " << (state_.effectTexturePaths[t].empty() ? "MISS" : "OK") << "\n";
-
-            // Distribution of effectIds across all instances.
-            std::map<int, int> effectIdCount;
-            std::map<int, int> texSlotCount;
-            int meshSkipCount = 0;
-            int billboardCount = 0;
-            for (std::size_t ii = 0; ii < state_.world.effectInstances.size(); ++ii)
-            {
-                const auto& inst = state_.world.effectInstances[ii];
-                effectIdCount[inst.effectId]++;
-                const int slot = (ii < state_.effectInstanceTextureSlot.size())
-                    ? state_.effectInstanceTextureSlot[ii] : -1;
-                texSlotCount[slot]++;
-                if (inst.effectId >= 0 && static_cast<std::size_t>(inst.effectId) < eft.effects.size()
-                    && eft.effects[static_cast<std::size_t>(inst.effectId)].meshIndex >= 0)
-                    ++meshSkipCount;
-                else
-                    ++billboardCount;
-            }
-            log << "  Billboard/mesh split: billboards=" << billboardCount
-                << " meshSkipped=" << meshSkipCount << "\n";
-
-            std::vector<std::pair<int,int>> effectIdVec(effectIdCount.begin(), effectIdCount.end());
-            std::sort(effectIdVec.begin(), effectIdVec.end(),
-                [](const auto& a, const auto& b){ return a.second > b.second; });
-            log << "  Top effectIds:\n";
-            for (std::size_t ii = 0; ii < std::min<std::size_t>(15, effectIdVec.size()); ++ii)
-            {
-                const int eid = effectIdVec[ii].first;
-                int texIdx = -1;
-                int meshIdx = -1;
-                std::string texName;
-                if (eid >= 0 && static_cast<std::size_t>(eid) < eft.effects.size())
-                {
-                    const auto& ef = eft.effects[static_cast<std::size_t>(eid)];
-                    meshIdx = ef.meshIndex;
-                    if (!ef.textureIndices.empty())
-                    {
-                        texIdx = ef.textureIndices[0];
-                        if (texIdx >= 0 && static_cast<std::size_t>(texIdx) < eft.textureNames.size())
-                            texName = eft.textureNames[static_cast<std::size_t>(texIdx)];
-                    }
-                }
-                log << "    eid=" << eid << " x" << effectIdVec[ii].second
-                    << " mesh=" << meshIdx << " texIdx=" << texIdx
-                    << " (" << texName << ")\n";
-            }
-
-            std::vector<std::pair<int,int>> texSlotVec(texSlotCount.begin(), texSlotCount.end());
-            std::sort(texSlotVec.begin(), texSlotVec.end(),
-                [](const auto& a, const auto& b){ return a.second > b.second; });
-            log << "  Top texSlots:\n";
-            for (std::size_t ii = 0; ii < std::min<std::size_t>(10, texSlotVec.size()); ++ii)
-            {
-                const int slot = texSlotVec[ii].first;
-                std::string name = (slot >= 0 && static_cast<std::size_t>(slot) < eft.textureNames.size())
-                    ? eft.textureNames[static_cast<std::size_t>(slot)] : "none";
-                log << "    slot=" << slot << " x" << texSlotVec[ii].second
-                    << " (" << name << ")\n";
-            }
-        }
-        return !state_.effectTexturePaths.empty();
-    }
-
-    std::vector<std::filesystem::path> PhoenixRuntime::effect_texture_paths() const
-    {
-        return state_.effectTexturePaths;
-    }
-
-    // Helper: interpolate color keyframes at given time (looping).
-    static void interpolate_color_frames(
-        const std::vector<phoenix::world::EftColorFrame>& frames, float t,
-        float& r, float& g, float& b, float& a)
-    {
-        if (frames.empty()) { r = 1; g = 1; b = 1; a = 1; return; }
-        if (frames.size() == 1)
-        {
-            const auto& f = frames[0];
-            r = f.r > 1.0f ? f.r / 255.0f : f.r;
-            g = f.g > 1.0f ? f.g / 255.0f : f.g;
-            b = f.b > 1.0f ? f.b / 255.0f : f.b;
-            a = f.a > 1.0f ? f.a / 255.0f : f.a;
-            return;
-        }
-        // Determine total cycle duration from last keyframe time.
-        float duration = frames.back().time;
-        if (duration <= 0.0f) duration = 1.0f;
-        float localT = std::fmod(t, duration);
-        if (localT < 0.0f) localT += duration;
-
-        // Find surrounding keyframes.
-        std::size_t idx = 0;
-        for (std::size_t i = 1; i < frames.size(); ++i)
-        {
-            if (frames[i].time >= localT) { idx = i - 1; break; }
-            idx = i;
-        }
-        std::size_t next = (idx + 1) % frames.size();
-        float t0 = frames[idx].time;
-        float t1 = frames[next].time;
-        float blend = (t1 > t0) ? (localT - t0) / (t1 - t0) : 0.0f;
-        blend = std::max(0.0f, std::min(1.0f, blend));
-
-        auto norm = [](float v) { return v > 1.0f ? v / 255.0f : v; };
-        r = norm(frames[idx].r) * (1 - blend) + norm(frames[next].r) * blend;
-        g = norm(frames[idx].g) * (1 - blend) + norm(frames[next].g) * blend;
-        b = norm(frames[idx].b) * (1 - blend) + norm(frames[next].b) * blend;
-        a = norm(frames[idx].a) * (1 - blend) + norm(frames[next].a) * blend;
-    }
-
-    // Helper: interpolate opacity keyframes at given time (looping).
-    static float interpolate_opacity_frames(
-        const std::vector<phoenix::world::EftOpacityFrame>& frames, float t)
-    {
-        if (frames.empty()) return 1.0f;
-        if (frames.size() == 1) return std::max(0.0f, std::min(1.0f, frames[0].opacity));
-        float duration = frames.back().time;
-        if (duration <= 0.0f) duration = 1.0f;
-        float localT = std::fmod(t, duration);
-        if (localT < 0.0f) localT += duration;
-
-        std::size_t idx = 0;
-        for (std::size_t i = 1; i < frames.size(); ++i)
-        {
-            if (frames[i].time >= localT) { idx = i - 1; break; }
-            idx = i;
-        }
-        std::size_t next = (idx + 1) % frames.size();
-        float t0 = frames[idx].time;
-        float t1 = frames[next].time;
-        float blend = (t1 > t0) ? (localT - t0) / (t1 - t0) : 0.0f;
-        blend = std::max(0.0f, std::min(1.0f, blend));
-        float op = frames[idx].opacity * (1 - blend) + frames[next].opacity * blend;
-        return std::max(0.0f, std::min(1.0f, op));
-    }
-
-    // Helper: interpolate scale keyframes at given time (looping).
-    static void interpolate_scale_frames(
-        const std::vector<phoenix::world::EftScaleFrame>& frames, float t,
-        float& sx, float& sy)
-    {
-        if (frames.empty()) { sx = 1; sy = 1; return; }
-        if (frames.size() == 1) { sx = frames[0].x; sy = frames[0].y; return; }
-        float duration = frames.back().time;
-        if (duration <= 0.0f) duration = 1.0f;
-        float localT = std::fmod(t, duration);
-        if (localT < 0.0f) localT += duration;
-
-        std::size_t idx = 0;
-        for (std::size_t i = 1; i < frames.size(); ++i)
-        {
-            if (frames[i].time >= localT) { idx = i - 1; break; }
-            idx = i;
-        }
-        std::size_t next = (idx + 1) % frames.size();
-        float t0 = frames[idx].time;
-        float t1 = frames[next].time;
-        float blend = (t1 > t0) ? (localT - t0) / (t1 - t0) : 0.0f;
-        blend = std::max(0.0f, std::min(1.0f, blend));
-        sx = frames[idx].x * (1 - blend) + frames[next].x * blend;
-        sy = frames[idx].y * (1 - blend) + frames[next].y * blend;
-    }
-
-    void PhoenixRuntime::build_effect_billboards(
-        std::vector<phoenix::renderer::TerrainVertex>& vertices,
-        std::vector<std::uint32_t>& indices,
-        float totalTime) const
-    {
-        vertices.clear();
-        indices.clear();
-
-        const auto& instances = state_.world.effectInstances;
-        if (instances.empty())
-            return;
-
-        const auto& eft = state_.eftFile;
-        const float halfMap = static_cast<float>(state_.world.mapSize) * 0.5f;
-
-        // Camera forward direction for billboard orientation.
-        const float cy = std::cos(camera_.yaw);
-        const float sy = std::sin(camera_.yaw);
-        // Billboard right vector (perpendicular to view direction in XZ).
-        const float rightX = cy;
-        const float rightZ = -sy;
-
-        for (std::size_t i = 0; i < instances.size(); ++i)
-        {
-            const auto& inst = instances[i];
-            if (inst.effectId < 0) continue;
-
-            // Convert from WLD coordinates to world coordinates (centered),
-            // plus add the effect's local position offset.
-            float localOffX = 0, localOffY = 0, localOffZ = 0;
-            {
-                const auto eidx = static_cast<std::size_t>(inst.effectId);
-                if (eidx < eft.effects.size())
-                {
-                    localOffX = eft.effects[eidx].position[0];
-                    localOffY = eft.effects[eidx].position[1];
-                    localOffZ = eft.effects[eidx].position[2];
-                }
-            }
-            const float px = inst.position[0] - halfMap + localOffX;
-            const float py = inst.position[1] + localOffY;
-            const float pz = inst.position[2] - halfMap + localOffZ;
-
-            // Get animated color, opacity, and scale from EFT keyframes.
-            float cr = 1.0f, cg = 1.0f, cb = 1.0f, ca = 1.0f;
-            float opacity = 1.0f;
-            float scaleX = 1.0f, scaleY = 1.0f;
-
-            const auto effectIdx = static_cast<std::size_t>(inst.effectId);
-            const phoenix::world::EftEffect* effectPtr = nullptr;
-
-            if (effectIdx < eft.effects.size())
-            {
-                effectPtr = &eft.effects[effectIdx];
-            }
-            else if (effectIdx < eft.sequences.size())
-            {
-                // Fallback: try first effect in the sequence.
-                const auto& seq = eft.sequences[effectIdx];
-                for (const auto& record : seq.records)
-                {
-                    if (record.effectId >= 0
-                        && static_cast<std::size_t>(record.effectId) < eft.effects.size())
-                    {
-                        effectPtr = &eft.effects[static_cast<std::size_t>(record.effectId)];
-                        break;
-                    }
-                }
-            }
-
-            // Skip effects that use 3DE meshes — only render billboard (texture-only) effects.
-            if (effectPtr && effectPtr->meshIndex >= 0)
-                continue;
-
-            if (effectPtr)
-            {
-                // Use per-instance time offset for visual variety.
-                const float effectTime = totalTime + static_cast<float>(i) * 0.37f;
-
-                interpolate_color_frames(effectPtr->colorFrames, effectTime, cr, cg, cb, ca);
-                opacity = interpolate_opacity_frames(effectPtr->opacityFrames, effectTime);
-                interpolate_scale_frames(effectPtr->scaleFrames, effectTime, scaleX, scaleY);
-            }
-            else
-            {
-                cr = 1.0f; cg = 0.7f; cb = 0.3f;
-            }
-
-            // Determine texture layer with frame animation.
-            // Each effect can have multiple textureIndices (animation frames).
-            std::uint32_t textureLayer = 0xFFFFFFFEu;
-            if (effectPtr && !effectPtr->textureIndices.empty()
-                && effectTextureBase_ > 0)
-            {
-                const float eftTime = totalTime + static_cast<float>(i) * 0.37f;
-                const auto frameCount = effectPtr->textureIndices.size();
-                std::size_t frameIdx = 0;
-                if (frameCount > 1 && effectPtr->delayPerFrame > 0.001f)
-                {
-                    // Animate through texture frames based on time.
-                    const float cycleDuration = effectPtr->delayPerFrame
-                        * static_cast<float>(frameCount);
-                    float localT = std::fmod(eftTime, cycleDuration);
-                    if (localT < 0.0f) localT += cycleDuration;
-                    frameIdx = static_cast<std::size_t>(localT / effectPtr->delayPerFrame);
-                    if (frameIdx >= frameCount) frameIdx = frameCount - 1;
-                }
-                const auto eftTexIdx = static_cast<std::size_t>(
-                    effectPtr->textureIndices[frameIdx]);
-                if (eftTexIdx < state_.effectTexturePaths.size()
-                    && !state_.effectTexturePaths[eftTexIdx].empty())
-                {
-                    textureLayer = 0xFFFF0000u + effectTextureBase_
-                        + static_cast<std::uint32_t>(eftTexIdx);
-                }
-            }
-            else if (i < state_.effectInstanceTextureSlot.size()
-                && state_.effectInstanceTextureSlot[i] >= 0)
-            {
-                // Fallback: use pre-computed slot (first texture index).
-                textureLayer = 0xFFFF0000u + effectTextureBase_
-                    + static_cast<std::uint32_t>(state_.effectInstanceTextureSlot[i]);
-            }
-
-            // Ensure color is visible for non-textured billboards.
-            if (textureLayer == 0xFFFFFFFEu)
-            {
-                const float brightness = cr * 0.299f + cg * 0.587f + cb * 0.114f;
-                if (brightness < 0.1f)
-                {
-                    cr = 1.0f; cg = 0.7f; cb = 0.3f;
-                }
-            }
-
-            // Apply viewer-style global scale (0.35) to EFT scale values.
-            constexpr float kGlobalScale = 0.35f;
-            const float halfW = std::max(0.1f, scaleX * kGlobalScale * 0.5f);
-            const float halfH = std::max(0.1f, scaleY * kGlobalScale * 0.5f);
-
-            // Skip nearly invisible billboards.
-            if (opacity * ca < 0.02f) continue;
-
-
-
-            const auto baseIdx = static_cast<std::uint32_t>(vertices.size());
-
-            phoenix::renderer::TerrainVertex v{};
-            v.color[0] = cr; v.color[1] = cg; v.color[2] = cb;
-            v.normal[0] = 0.0f; v.normal[1] = 1.0f; v.normal[2] = 0.0f;
-            v.textureLayer = textureLayer;
-
-            // Bottom-left.
-            v.position[0] = px - rightX * halfW;
-            v.position[1] = py - halfH;
-            v.position[2] = pz - rightZ * halfW;
-            v.uv[0] = 0.0f; v.uv[1] = 1.0f;
-            vertices.push_back(v);
-
-            // Bottom-right.
-            v.position[0] = px + rightX * halfW;
-            v.position[1] = py - halfH;
-            v.position[2] = pz + rightZ * halfW;
-            v.uv[0] = 1.0f; v.uv[1] = 1.0f;
-            vertices.push_back(v);
-
-            // Top-right.
-            v.position[0] = px + rightX * halfW;
-            v.position[1] = py + halfH;
-            v.position[2] = pz + rightZ * halfW;
-            v.uv[0] = 1.0f; v.uv[1] = 0.0f;
-            vertices.push_back(v);
-
-            // Top-left.
-            v.position[0] = px - rightX * halfW;
-            v.position[1] = py + halfH;
-            v.position[2] = pz - rightZ * halfW;
-            v.uv[0] = 0.0f; v.uv[1] = 0.0f;
-            vertices.push_back(v);
-
-            // Two triangles.
-            indices.push_back(baseIdx + 0);
-            indices.push_back(baseIdx + 1);
-            indices.push_back(baseIdx + 2);
-            indices.push_back(baseIdx + 0);
-            indices.push_back(baseIdx + 2);
-            indices.push_back(baseIdx + 3);
-        }
-    }
-
     // ---- World collision mesh ----
 
     void WorldCollisionMesh::build_grid()
@@ -3438,7 +2329,7 @@ namespace phoenix::runtime
         const float charMinY = characterY;
         const float charMaxY = characterY + characterHeight;
 
-        // Maximum displacement allowed � prevents teleportation.
+        // Maximum displacement allowed - prevents teleportation.
         const float moveDx = proposedX - prevX;
         const float moveDz = proposedZ - prevZ;
         const float maxDisplacementSq = (moveDx * moveDx + moveDz * moveDz) * 4.0f + 1.0f;
@@ -3469,7 +2360,7 @@ namespace phoenix::runtime
                         if (tri.minY > charMaxY || tri.maxY < charMinY)
                             continue;
 
-                        // Skip walkable (floor-like) triangles � these are handled as
+                        // Skip walkable (floor-like) triangles - these are handled as
                         // elevated terrain via floor_height_at, not as walls.
                         if (tri.normalY >= kWalkableNormalY)
                             continue;
@@ -3485,7 +2376,7 @@ namespace phoenix::runtime
 
                         if (contact.inside)
                         {
-                            // Inside the triangle � must push out.
+                            // Inside the triangle - must push out.
                             // Push direction: from nearest edge point OUTWARD (away from triangle center).
                             float dist = std::sqrt(contact.distSq);
                             float penetration = characterRadius + dist; // full push past the edge
@@ -3507,7 +2398,7 @@ namespace phoenix::runtime
                                     }
                                     else
                                     {
-                                        // No movement direction � push away from edge.
+                                        // No movement direction - push away from edge.
                                         pushNx = (proposedX - contact.nearX) / dist;
                                         pushNz = (proposedZ - contact.nearZ) / dist;
                                     }
@@ -3517,7 +2408,7 @@ namespace phoenix::runtime
                         }
                         else if (contact.distSq < radiusSq)
                         {
-                            // Outside but within radius � gentle push.
+                            // Outside but within radius - gentle push.
                             float dist = std::sqrt(contact.distSq);
                             float penetration = characterRadius - dist;
                             if (penetration > deepestPen && dist > 0.001f)
@@ -3578,7 +2469,7 @@ namespace phoenix::runtime
                     if (tri.normalY < kWalkableNormalY)
                         continue;
 
-                    // Quick Y range check � triangle must be reachable.
+                    // Quick Y range check - triangle must be reachable.
                     if (tri.minY > maxY || tri.maxY < bestY)
                         continue;
 
@@ -3685,9 +2576,6 @@ namespace phoenix::runtime
         mesh.build_grid();
 
         {
-            std::ofstream log(phoenix::core::engine_log_path(), std::ios::app);
-            log << "World collision mesh: " << mesh.triangles.size()
-                << " triangles, " << mesh.grid.size() << " grid cells\n";
         }
 
         return mesh;

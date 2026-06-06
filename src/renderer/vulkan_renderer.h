@@ -90,9 +90,14 @@ namespace phoenix::renderer
         bool initialize(SDL_Window* window, std::uint32_t width, std::uint32_t height);
         bool initialize_imgui(SDL_Window* window);
         void begin_imgui_frame();
+        std::uint64_t upload_imgui_icon_rgba(
+            const std::uint8_t* rgba,
+            std::uint32_t width,
+            std::uint32_t height);
         bool set_preview_image(std::uint32_t width, std::uint32_t height, const std::vector<std::uint8_t>& bgraPixels);
         void enter_loading_mode();
         bool set_terrain_mesh(const std::vector<TerrainVertex>& vertices, const std::vector<std::uint32_t>& indices);
+        bool set_water_mesh(const std::vector<TerrainVertex>& vertices, const std::vector<std::uint32_t>& indices);
         bool update_terrain_vertices(const std::vector<TerrainVertex>& vertices);
         bool set_static_object_mesh(
             const std::vector<TerrainVertex>& vertices,
@@ -125,12 +130,6 @@ namespace phoenix::renderer
         bool indirect_draw_ready() const;
         void set_animated_object_batches(const std::vector<ObjectBatch>& batches);
         void set_terrain_draw_ranges(const std::vector<TerrainDrawRange>& ranges);
-        // GPU compute skinning.
-        bool upload_skin_source_vertices(const void* data, std::size_t count);
-        bool upload_skin_matrices(const float* data, std::uint32_t matrixCount);
-        void dispatch_skin_compute(std::uint32_t firstVertex, std::uint32_t vertexCount, std::uint32_t boneMatrixOffset);
-        bool gpu_skinning_ready() const;
-
         bool set_debug_mesh(const std::vector<TerrainVertex>& vertices, const std::vector<std::uint32_t>& indices);
         void set_debug_visible(bool visible);
         bool set_character_mesh(const std::vector<TerrainVertex>& vertices, const std::vector<std::uint32_t>& indices);
@@ -152,11 +151,13 @@ namespace phoenix::renderer
         // (no textures). Instances [0, additiveStart) draw with alpha blending,
         // [additiveStart, end) with additive blending.
         void set_particle_instances(const std::vector<ParticleInstance>& instances, std::uint32_t additiveStart);
+        bool upload_field_lightmaps(const std::vector<DdsTexture>& lightmaps, std::uint32_t sectionCount);
         void set_sky_settings(const float* fogColor, float fogStartDistance, float fogEndDistance, bool hasWorldSky);
         void set_sky_texture_layers(std::uint32_t skyLayer, std::uint32_t primaryCloudLayer, std::uint32_t secondaryCloudLayer);
         void set_sky_tuning(const float* values, std::uint32_t count);
         void set_water_layer(std::uint32_t waterLayer);
         void set_water_animation(std::uint32_t baseLayer, std::uint32_t frameCount, float tileSize);
+        void set_water_style(const float* rgba);
         void update_water_time(float totalTime);
         bool upload_terrain_texture_map(
             const std::vector<std::uint8_t>& data,
@@ -169,6 +170,7 @@ namespace phoenix::renderer
         // Recreate the swapchain at the surface's current extent regardless of the
         // cached size (used when the swapchain goes out-of-date, e.g. minimize/restore).
         bool recreate_swapchain();
+        void wait_for_frame();
         void render_frame();
         void shutdown();
 
@@ -178,6 +180,15 @@ namespace phoenix::renderer
         std::uint32_t surface_height() const;
         std::uint64_t vram_total_bytes() const;
         std::uint64_t vram_used_bytes() const;
+
+        struct GpuMetrics
+        {
+            float frameTimeMs{};
+            std::uint64_t fragmentInvocations{};
+            std::uint64_t vertexInvocations{};
+            bool available{};
+        };
+        GpuMetrics gpu_metrics() const;
 
     private:
         bool create_instance(SDL_Window* window);
@@ -193,7 +204,7 @@ namespace phoenix::renderer
         bool create_terrain_pipeline();
         bool create_static_object_pipeline();
         bool create_cull_compute_pipeline();
-        bool create_skin_compute_pipeline();
+        bool create_depth_prepass_pipelines();
         bool create_sky_pipeline();
         bool create_particle_pipeline();
         bool create_descriptor_resources();

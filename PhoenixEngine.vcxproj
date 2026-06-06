@@ -49,7 +49,7 @@
     </ClCompile>
     <Link>
       <SubSystem>Windows</SubSystem>
-      <AdditionalDependencies>SDL2.lib;SDL2main.lib;user32.lib;gdi32.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalDependencies>SDL2.lib;SDL2main.lib;Dbghelp.lib;user32.lib;gdi32.lib;%(AdditionalDependencies)</AdditionalDependencies>
       <AdditionalLibraryDirectories>$(ProjectDir)external\SDL2\lib\x64;%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
     </Link>
   </ItemDefinitionGroup>
@@ -68,37 +68,58 @@
       <SubSystem>Windows</SubSystem>
       <EnableCOMDATFolding>true</EnableCOMDATFolding>
       <OptimizeReferences>true</OptimizeReferences>
-      <AdditionalDependencies>SDL2.lib;SDL2main.lib;user32.lib;gdi32.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalDependencies>SDL2.lib;SDL2main.lib;Dbghelp.lib;user32.lib;gdi32.lib;%(AdditionalDependencies)</AdditionalDependencies>
       <AdditionalLibraryDirectories>$(ProjectDir)external\SDL2\lib\x64;%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
     </Link>
   </ItemDefinitionGroup>
   <ItemGroup>
     <ClCompile Include="src\main.cpp" />
+    <ClCompile Include="src\app\bootstrap.cpp" />
+    <ClCompile Include="src\app\loading_scheduler.cpp" />
+    <ClCompile Include="src\app\map_session.cpp" />
+    <ClCompile Include="src\app\renderer_uploads.cpp" />
+    <ClCompile Include="src\app\water_resources.cpp" />
+    <ClCompile Include="src\audio\map_audio_scene.cpp" />
     <ClCompile Include="src\audio\audio_system.cpp" />
+    <ClCompile Include="src\audio\vendor_audio_codecs.cpp">
+      <WarningLevel Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">TurnOffAllWarnings</WarningLevel>
+      <WarningLevel Condition="'$(Configuration)|$(Platform)'=='Release|x64'">TurnOffAllWarnings</WarningLevel>
+    </ClCompile>
+    <ClCompile Include="src\character\bot_manager.cpp" />
+    <ClCompile Include="src\character\character_options.cpp" />
     <ClCompile Include="src\assets\data_index.cpp" />
     <ClCompile Include="src\core\logging.cpp" />
+    <ClCompile Include="src\diagnostics\crash_reporter.cpp" />
+    <ClCompile Include="src\diagnostics\performance_diagnostics.cpp" />
+    <ClCompile Include="src\effects\effect_placement.cpp" />
     <ClCompile Include="src\runtime\phoenix_runtime.cpp" />
     <ClCompile Include="src\platform\sdl_window.cpp" />
     <ClCompile Include="src\renderer\dds_loader.cpp" />
+    <ClCompile Include="src\renderer\visibility_culling.cpp" />
     <ClCompile Include="src\renderer\vulkan_renderer.cpp" />
     <ClCompile Include="src\renderer\vulkan_renderer_particles.cpp" />
+    <ClCompile Include="src\runtime\playable_spawn.cpp" />
     <ClCompile Include="src\world\dg_loader.cpp" />
+    <ClCompile Include="src\world\phoenix_world_loader.cpp" />
     <ClCompile Include="src\world\smod_loader.cpp" />
     <ClCompile Include="src\world\vani_loader.cpp" />
     <ClCompile Include="src\world\mani_loader.cpp" />
     <ClCompile Include="src\world\eft_loader.cpp" />
     <ClCompile Include="src\world\wld_loader.cpp" />
     <ClCompile Include="src\world\mon_loader.cpp" />
+    <ClCompile Include="src\world\portal_runtime.cpp" />
     <ClCompile Include="src\world\sdata_loader.cpp" />
     <ClCompile Include="src\world\svmap_loader.cpp" />
-    <ClCompile Include="src\world\actor_scene.cpp" />
     <ClCompile Include="src\world\character_loader.cpp" />
     <ClCompile Include="src\character\character_system.cpp" />
     <ClCompile Include="src\character\weapon_bone_map.cpp" />
     <ClCompile Include="src\character\weapon_effect.cpp" />
     <ClCompile Include="src\effects\effect_system.cpp" />
     <ClCompile Include="src\ui\editor_panel.cpp" />
+    <ClCompile Include="src\ui\loading_screen.cpp" />
+    <ClCompile Include="src\ui\cpu_profiler.cpp" />
     <ClCompile Include="src\ui\perf_hud.cpp" />
+    <ClCompile Include="src\ui\weather_overlay.cpp" />
     <ClCompile Include="external\volk\volk.c" />
     <ClCompile Include="external\imgui\imgui.cpp" />
     <ClCompile Include="external\imgui\imgui_draw.cpp" />
@@ -109,26 +130,45 @@
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="src\assets\data_index.h" />
+    <ClInclude Include="src\app\bootstrap.h" />
+    <ClInclude Include="src\app\loading_scheduler.h" />
+    <ClInclude Include="src\app\map_session.h" />
+    <ClInclude Include="src\app\renderer_uploads.h" />
+    <ClInclude Include="src\app\water_resources.h" />
+    <ClInclude Include="src\audio\map_audio_scene.h" />
     <ClInclude Include="src\audio\audio_system.h" />
+    <ClInclude Include="src\character\bot_manager.h" />
+    <ClInclude Include="src\character\character_options.h" />
     <ClInclude Include="src\core\logging.h" />
+    <ClInclude Include="src\diagnostics\crash_reporter.h" />
+    <ClInclude Include="src\diagnostics\performance_diagnostics.h" />
+    <ClInclude Include="src\effects\effect_placement.h" />
     <ClInclude Include="src\runtime\phoenix_runtime.h" />
+    <ClInclude Include="src\runtime\playable_spawn.h" />
     <ClInclude Include="src\platform\sdl_window.h" />
     <ClInclude Include="src\renderer\dds_loader.h" />
+    <ClInclude Include="src\renderer\visibility_culling.h" />
     <ClInclude Include="src\renderer\vulkan_renderer.h" />
     <ClInclude Include="src\renderer\vulkan_renderer_internal.h" />
     <ClInclude Include="src\world\dg_loader.h" />
+    <ClInclude Include="src\world\phoenix_world_loader.h" />
     <ClInclude Include="src\world\smod_loader.h" />
     <ClInclude Include="src\world\vani_loader.h" />
+    <ClInclude Include="src\world\water_constants.h" />
     <ClInclude Include="src\world\mani_loader.h" />
     <ClInclude Include="src\world\eft_loader.h" />
     <ClInclude Include="src\world\wld_loader.h" />
     <ClInclude Include="src\world\mon_loader.h" />
+    <ClInclude Include="src\world\portal_runtime.h" />
     <ClInclude Include="src\world\sdata_loader.h" />
     <ClInclude Include="src\world\svmap_loader.h" />
-    <ClInclude Include="src\world\actor_scene.h" />
     <ClInclude Include="src\world\character_loader.h" />
     <ClInclude Include="src\ui\editor_panel.h" />
+    <ClInclude Include="src\ui\loading_screen.h" />
+    <ClInclude Include="src\ui\cpu_profiler.h" />
     <ClInclude Include="src\ui\perf_hud.h" />
+    <ClInclude Include="src\ui\perf_hud_icons.h" />
+    <ClInclude Include="src\ui\weather_overlay.h" />
     <ClInclude Include="src\character\character_system.h" />
     <ClInclude Include="src\character\weapon_bone_map.h" />
     <ClInclude Include="src\character\weapon_effect.h" />

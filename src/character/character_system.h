@@ -133,6 +133,7 @@ namespace phoenix::character
         std::vector<CharacterBatch> batches;
         std::vector<std::filesystem::path> texturePaths;
         std::vector<CharacterAnimationChoice> animations;
+        float localGroundY{};
 
         // Weapon/shield — static meshes attached to hand bones.
         // Stored as raw model-space vertices; transformed by hand bone during skinning.
@@ -177,6 +178,7 @@ namespace phoenix::character
             std::size_t breathAnimation{};
             std::uint32_t vertexOffset{};  // first mount vertex in bindVertices
             std::uint32_t vertexCount{};
+            float localGroundY{};
             float scale{ 1.0f };
             bool loaded{};
         };
@@ -471,8 +473,17 @@ namespace phoenix::character
         float cameraPitch_{ -0.16f };
         float cameraDistance_{ 6.2f };
         float smoothCameraY_{};   // EMA-smoothed camera target Y (eliminates terrain jitter)
+        float smoothX_{};         // EMA-smoothed render position
+        float smoothY_{};
+        float smoothZ_{};
+        mutable float cameraTerrainLift_{};
+        mutable bool cameraTerrainLiftInitialized_{};
         float animationSeconds_{};
         std::size_t activeAnimation_{};
+        std::size_t previousAnimation_{};
+        float previousAnimationSeconds_{};
+        float animationBlendSeconds_{};
+        float animationBlendDuration_{};
         std::size_t mountActiveAnimation_{};
         float mountAnimationSeconds_{};
         float mountIdleTimer_{};   // time stationary, for breathing/idle variation
@@ -521,6 +532,7 @@ namespace phoenix::character
         static constexpr std::uint32_t kClothCols = 5;
         bool clothInitialized_{};
         float lastDeltaSeconds_{ 1.0f / 60.0f };
+        float clothAccum_{};
         void reset_cloth() { clothInitialized_ = false; }
     };
 }

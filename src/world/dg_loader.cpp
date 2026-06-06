@@ -1,7 +1,6 @@
 #include "world/dg_loader.h"
 
 #include "assets/data_index.h"
-#include "core/logging.h"
 
 #include <algorithm>
 #include <bit>
@@ -285,12 +284,6 @@ namespace phoenix::world
             model.parsed = read_node(reader, model, 0);
 
         {
-            std::ofstream log(phoenix::core::engine_log_path(), std::ios::app);
-            log << "DG: " << path.filename().string()
-                << " textures=" << textureCount
-                << " meshes=" << model.meshes.size()
-                << " parsed=" << (model.parsed && !model.meshes.empty())
-                << "\n";
         }
 
         model.parsed = model.parsed && !model.meshes.empty();

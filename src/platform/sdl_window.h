@@ -26,6 +26,8 @@ namespace phoenix::platform
         int consume_mouse_wheel_delta();
         std::pair<int, int> mouse_position() const;
         std::pair<int, int> client_size() const;
+        bool is_minimized() const { return minimized_; }
+        bool consume_restore_event();
 
         SDL_Window* handle() const { return window_; }
 
@@ -43,6 +45,8 @@ namespace phoenix::platform
         int mouseDeltaX_{};
         int mouseDeltaY_{};
         int mouseWheelDelta_{};
+        bool minimized_{};
+        bool restoredEvent_{};
         mutable unsigned cachedExtCount_{};
         mutable const char** cachedExts_{};
     };

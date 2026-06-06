@@ -20,6 +20,6 @@ foreach ($name in $graphics) {
     & $dxc -spirv -T ps_6_0 -E PSMain -Fo (Join-Path $outDir "$name.frag.spv") $src
 }
 
-# NOTE: compute shaders (cull_objects.comp, skin_actors.comp) are GLSL (#version 450)
+# NOTE: compute shaders (cull_objects.comp) are GLSL (#version 450)
 # and are compiled separately by glslang; their .spv are committed. dxc cannot compile
 # GLSL, so they are intentionally not handled here.

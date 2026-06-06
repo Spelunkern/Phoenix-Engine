@@ -63,13 +63,28 @@ namespace phoenix::ui
 
         float sampleAccum_{};
 
+        // RAM monitoring.
+        static constexpr std::size_t kRamHistorySize = 120;
+        float ramHistory[kRamHistorySize]{};
+        std::size_t ramHistoryIndex{};
+        float ramCurrentMB{};
+        float ramBaselineMB{};   // value at last reset
+        float ramDeltaPerSec{};  // growth rate MB/s (smoothed)
+        float ramPeakMB{};
+        float ramMinMB{ 99999.0f };
+        bool ramBaselineSet{};
+        float ramGrowthAccum_{};
+        float ramGrowthTimer_{};
+        float ramPrevSampleMB_{};
+
         void initialize();
         void begin_frame();
         void record(const char* name, float ms);
         void end_frame(float dt);
         void update_cpu_metrics();
+        void update_ram_metrics();
+        void reset_ram_baseline();
     };
 
     CpuProfiler& cpu_profiler();
-    void draw_cpu_profiler(CpuProfiler& profiler);
 }

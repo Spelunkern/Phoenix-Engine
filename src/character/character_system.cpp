@@ -2,7 +2,7 @@
 
 #include "assets/data_index.h"
 #include "character/weapon_bone_map.h"
-#include "core/logging.h"
+#include "world/water_constants.h"
 
 #include <algorithm>
 #include <array>
@@ -32,7 +32,7 @@ namespace phoenix::character
         // Mounted movement is faster than running on foot (base > kFastRunSpeed).
         constexpr float kMountSpeed = 9.5f;
         constexpr float kMountFastSpeed = 14.0f;
-        constexpr float kWaterSurface = 0.0f;
+        constexpr float kWaterSurface = phoenix::world::kWaterSurfaceY;
         constexpr float kWaterEnterDepth = 2.0f;
         constexpr float kFloatFeetDepth = 1.20f;
         constexpr float kBuoyancySpeed = 1.05f;
@@ -46,6 +46,8 @@ namespace phoenix::character
         // characters, vehicles) advances at this single global rate and loops at
         // endKeyframe — there are no per-animation or per-state rate factors.
         constexpr float kAniFramesPerSecond = 30.0f;
+        constexpr float kAnimationBlendDuration = 0.12f;
+        constexpr float kTerrainFollowResponse = 10.0f;
         constexpr float kPi = 3.1415926535f;
 
         // CSV token cleanup (strips trailing '\r' from CRLF files) and Linux-safe
@@ -323,6 +325,29 @@ namespace phoenix::character
                 finals[i] = matrix;
             }
             return finals;
+        }
+
+        float sample_animation_frame(const world::CharacterAnimation& animation, float seconds, bool holdAirborneJump)
+        {
+            const float startFrame = static_cast<float>(animation.startKeyframe);
+            const float endFrame = static_cast<float>(animation.endKeyframe);
+            const float frameCount = std::max(1.0f, endFrame - startFrame);
+            if (holdAirborneJump)
+            {
+                constexpr float kJumpHoldFrameFraction = 0.80f;
+                const float holdFrame = frameCount * kJumpHoldFrameFraction;
+                return startFrame + std::min(seconds * kAniFramesPerSecond, holdFrame);
+            }
+            return startFrame + std::fmod(seconds * kAniFramesPerSecond, frameCount);
+        }
+
+        Mat4 blend_mat4(const Mat4& a, const Mat4& b, float t)
+        {
+            Mat4 r{};
+            for (int i = 0; i < 4; ++i)
+                for (int j = 0; j < 4; ++j)
+                    r.m[i][j] = a.m[i][j] + (b.m[i][j] - a.m[i][j]) * t;
+            return r;
         }
 
         // ---- Character loading helpers ----
@@ -843,6 +868,14 @@ namespace phoenix::character
             batch.indexCount = static_cast<std::uint32_t>(data.indices.size()) - batch.startIndex;
             data.batches.push_back(batch);
         }
+
+        float compute_bind_ground_y(const std::vector<CharacterData::SourceVertex>& vertices, float scale)
+        {
+            float minY = std::numeric_limits<float>::max();
+            for (const auto& vertex : vertices)
+                minY = std::min(minY, vertex.position[1] * scale);
+            return std::isfinite(minY) ? minY : 0.0f;
+        }
     }
 
     const renderer::DdsTexture* CharacterSystem::bc3_texture_for(const std::filesystem::path& path) const
@@ -874,7 +907,7 @@ namespace phoenix::character
             if (!raceEntry.is_directory())
                 continue;
 
-            const auto meshRoot = raceEntry.path() / "3DC";
+            const auto meshRoot = resolve_ci(raceEntry.path() / "3DC");
             if (std::filesystem::exists(meshRoot))
             {
                 for (const auto& entry : std::filesystem::directory_iterator(meshRoot))
@@ -887,7 +920,7 @@ namespace phoenix::character
                 }
             }
 
-            const auto textureRoot = raceEntry.path() / "DDS";
+            const auto textureRoot = resolve_ci(raceEntry.path() / "DDS");
             if (std::filesystem::exists(textureRoot))
             {
                 for (const auto& entry : std::filesystem::directory_iterator(textureRoot))
@@ -968,14 +1001,6 @@ namespace phoenix::character
                             + sizeof(world::CharacterAnimationBone);
                 }
             }
-            std::ofstream log(phoenix::core::engine_log_path(), std::ios::app);
-            log << "Character cache: models=" << cachedModels_.size()
-                << " textures=" << cachedTexturePaths_.size()
-                << " animationSets=" << cachedAnimations_.size()
-                << " totalAnims=" << totalAnims
-                << " modelMB=" << (modelBytes / (1024 * 1024))
-                << " animMB=" << (animBytes / (1024 * 1024))
-                << "\n";
         }
         return true;
     }
@@ -985,8 +1010,8 @@ namespace phoenix::character
         if (itemCacheReady_)
             return true;
 
-        const auto itemRoot = resolve_ci(dataRoot / "Item");
-        const auto meshRoot = itemRoot / "3do";
+        const auto itemRoot = resolve_ci(dataRoot / "Weapons");
+        const auto meshRoot = resolve_ci(itemRoot / "3do");
         if (!std::filesystem::exists(meshRoot))
             return false;
 
@@ -1022,8 +1047,6 @@ namespace phoenix::character
 
         itemCacheReady_ = true;
         {
-            std::ofstream log(phoenix::core::engine_log_path(), std::ios::app);
-            log << "Item cache: models=" << cachedItemModels_.size() << "\n";
         }
         return true;
     }
@@ -1051,9 +1074,15 @@ namespace phoenix::character
         worldVertices_.clear();
         animationSeconds_ = 0.0f;
         activeAnimation_ = 0;
+        previousAnimation_ = 0;
+        previousAnimationSeconds_ = 0.0f;
+        animationBlendSeconds_ = 0.0f;
+        animationBlendDuration_ = 0.0f;
         mountAnimationSeconds_ = 0.0f;
         mountActiveAnimation_ = 0;
         mountIdleTimer_ = 0.0f;
+        cameraTerrainLift_ = 0.0f;
+        cameraTerrainLiftInitialized_ = false;
 
         // Apply per-character default attach bones (ranged weapons on archer/hunter
         // classes use a different bone). Still overridable live from the UI.
@@ -1284,8 +1313,8 @@ namespace phoenix::character
         }
 
         // ---- Load weapon/shield (3DO items) ----
-        const auto itemRoot = resolve_ci(dataRoot / "Item");
-        const auto itemMeshRoot = itemRoot / "3do";
+        const auto itemRoot = resolve_ci(dataRoot / "Weapons");
+        const auto itemMeshRoot = resolve_ci(itemRoot / "3do");
         const auto itemDdsRoot = itemRoot / "dds";
 
         auto loadItemPart = [&](WeaponType type, int index, CharacterData::WeaponPart& outPart) -> bool {
@@ -1408,12 +1437,9 @@ namespace phoenix::character
                 return lower.substr(0, 2);
             }();
 
-            // New flattened layout: Data/Cloak/3DC/ (all races' meshes),
-            // Data/Cloak/DDS/ (all races' textures), Data/Cloak/cloak_{race}.csv.
-            const auto cloakMeshDir = resolve_ci(dataRoot / "Cloak" / "3DC");
+            const auto cloakMeshDir = resolve_ci(dataRoot / "Mantles" / "3DC");
 
-            // Resolve texture name from the per-race CSV (cloak_index,dds).
-            const auto csvPath = resolve_ci(dataRoot / "Cloak" / ("cloak_" + raceAbbrev + ".csv"));
+            const auto csvPath = resolve_ci(dataRoot / "Mantles" / ("mantle_" + raceAbbrev + ".csv"));
             std::string cloakTextureName;
             {
                 auto csvStream = assets::open_ifstream(csvPath);
@@ -1456,7 +1482,7 @@ namespace phoenix::character
                 // Resolve texture slot.
                 std::filesystem::path texPath;
                 if (!cloakTextureName.empty())
-                    texPath = resolve_ci(dataRoot / "Cloak" / "DDS" / cloakTextureName);
+                    texPath = resolve_ci(dataRoot / "Mantles" / "DDS" / cloakTextureName);
                 if (texPath.empty())
                     return false;
 
@@ -1548,7 +1574,7 @@ namespace phoenix::character
             if (bodyLoaded && !cloakTextureName.empty())
             {
                 const std::filesystem::path shoulderTexPath =
-                    resolve_ci(dataRoot / "Cloak" / "DDS" / cloakTextureName);
+                    resolve_ci(dataRoot / "Mantles" / "DDS" / cloakTextureName);
                 if (!shoulderTexPath.empty())
                 {
                     const int design = (appearance.cloakIndex - 1) % 8;
@@ -1760,53 +1786,29 @@ namespace phoenix::character
                     data_.mount.jumpAnimation   = loadMountAni(row[7]);
                     data_.mount.breathAnimation = loadMountAni(row[11]);
                     data_.mount.scale = 1.0f;
+                    data_.mount.localGroundY = compute_bind_ground_y(
+                        data_.mount.sourceVertices, kCharacterScale * data_.mount.scale);
                     data_.mount.loaded = true;
                     data_.hasMount = true;
                 }
             }
 
-            std::ofstream log(phoenix::core::engine_log_path(), std::ios::app);
-            log << "Mount load: class=" << appearance.mountClass
-                << " index=" << appearance.mountIndex
-                << " hasMount=" << data_.hasMount
-                << " verts=" << data_.mount.vertexCount
-                << " bones=" << data_.mount.meshBones.size()
-                << " anims=" << data_.mount.animations.size() << "\n";
         }
 
         const bool hasValidAnimation = std::any_of(data_.animations.begin(), data_.animations.end(),
             [](const auto& c) { return c.animation.parsed; });
+        data_.localGroundY = compute_bind_ground_y(data_.sourceVertices, kCharacterScale);
         data_.loaded = parsedParts > 0 && hasValidAnimation;
         worldVertices_ = data_.bindVertices;
         reset_cloth();
 
         {
-            std::ofstream log(phoenix::core::engine_log_path(), std::ios::app);
-            log << "Character loaded: race=" << appearance.raceFolder
-                << " prefix=" << appearance.prefix
-                << " upper=" << appearance.upperIndex
-                << " lower=" << appearance.lowerIndex
-                << " hand=" << appearance.handIndex
-                << " foot=" << appearance.footIndex
-                << " helmet=" << appearance.helmetIndex
-                << " face=" << appearance.faceIndex
-                << " hair=" << appearance.hairIndex
-                << " parts=" << parsedParts
-                << " vertices=" << data_.bindVertices.size()
-                << " indices=" << data_.indices.size()
-                << " textures=" << data_.texturePaths.size()
-                << " animations=" << data_.animations.size()
-                << " weapon=" << data_.hasWeapon
-                << " shield=" << data_.hasShield
-                << " ready=" << data_.loaded << "\n";
 
             // Summary bone counts (full dump removed — it was hundreds of lines per
             // character swap and caused visible CPU/IO load on slower hardware).
             if (data_.loaded && data_.idleAnimation < data_.animations.size()
                 && data_.animations[data_.idleAnimation].animation.parsed)
             {
-                log << "Bones: skeleton=" << data_.animations[data_.idleAnimation].animation.bones.size()
-                    << " mesh=" << data_.meshBones.size() << "\n";
             }
         }
         return data_.loaded;
@@ -1988,7 +1990,7 @@ namespace phoenix::character
                 // Without this the character visibly "jumps" at heightmap cell edges.
                 if (groundInitialized_)
                 {
-                    const float blend = 1.0f - std::exp(-14.0f * clampedDelta);
+                    const float blend = 1.0f - std::exp(-kTerrainFollowResponse * clampedDelta);
                     characterY_ += (groundY - characterY_) * blend;
                     // Snap if very close to avoid perpetual micro-drift.
                     if (std::abs(characterY_ - groundY) < 0.005f)
@@ -2009,12 +2011,34 @@ namespace phoenix::character
         {
             const float targetCamY = characterY_ + 1.25f;
             if (!groundInitialized_ || std::abs(smoothCameraY_ - targetCamY) > 10.0f)
-                smoothCameraY_ = targetCamY;   // first frame or teleport: snap
+                smoothCameraY_ = targetCamY;
             else
             {
-                // Blend factor: ~0.08 per frame at 60fps, adapts to framerate.
-                const float blend = 1.0f - std::exp(-8.0f * clampedDelta);
+                const float blend = 1.0f - std::exp(-6.0f * clampedDelta);
                 smoothCameraY_ += (targetCamY - smoothCameraY_) * blend;
+            }
+        }
+
+        // Smooth render position: the camera and mesh placement follow this
+        // instead of the raw character position, eliminating visual jitter from
+        // discrete heightmap steps and collision snaps.
+        {
+            constexpr float kPosResponse = 18.0f;
+            const float blend = 1.0f - std::exp(-kPosResponse * clampedDelta);
+            const bool snap = !groundInitialized_
+                || std::abs(smoothX_ - characterX_) > 10.0f
+                || std::abs(smoothZ_ - characterZ_) > 10.0f;
+            if (snap)
+            {
+                smoothX_ = characterX_;
+                smoothY_ = characterY_;
+                smoothZ_ = characterZ_;
+            }
+            else
+            {
+                smoothX_ += (characterX_ - smoothX_) * blend;
+                smoothY_ += (characterY_ - smoothY_) * blend;
+                smoothZ_ += (characterZ_ - smoothZ_) * blend;
             }
         }
 
@@ -2024,8 +2048,8 @@ namespace phoenix::character
             sitWasDown_ = input.sit;
             if (sitPressed && grounded_ && !inWater_ && !data_.hasMount && dodgePlayTimer_ <= 0.0f)
             {
-                if (sitState_ == 0)      { sitState_ = 1; animationSeconds_ = 0.0f; }
-                else if (sitState_ == 2) { sitState_ = 3; animationSeconds_ = 0.0f; }
+                if (sitState_ == 0)      { sitState_ = 1; }
+                else if (sitState_ == 2) { sitState_ = 3; }
             }
             // Advance one-shot sit transitions.
             if (sitState_ == 1 || sitState_ == 3)
@@ -2057,12 +2081,34 @@ namespace phoenix::character
         if (input.emote > 0 && input.emote <= 10 && grounded_ && !moving && !inWater_ && sitState_ == 0 && dodgePlayTimer_ <= 0.0f)
         {
             activeEmote_ = input.emote;
-            animationSeconds_ = 0.0f;
         }
         if (activeEmote_ > 0 && (moving || !grounded_))
         {
             activeEmote_ = 0;
-            animationSeconds_ = 0.0f;
+        }
+        if (activeEmote_ > 0)
+        {
+            const std::size_t emoteAnims[] = {
+                data_.emote1Animation, data_.emote2Animation, data_.emote3Animation,
+                data_.emote4Animation, data_.emote5Animation, data_.emote6Animation,
+                data_.emote7Animation, data_.emote8Animation, data_.emote9Animation,
+                data_.emote10Animation,
+            };
+            const auto idx = static_cast<std::size_t>(activeEmote_ - 1);
+            if (idx < std::size(emoteAnims) && emoteAnims[idx] > 0
+                && emoteAnims[idx] < data_.animations.size())
+            {
+                const auto& anim = data_.animations[emoteAnims[idx]].animation;
+                if (anim.parsed)
+                {
+                    const float duration = static_cast<float>(anim.endKeyframe - anim.startKeyframe) / 30.0f;
+                    if (animationSeconds_ >= duration * 0.95f)
+                    {
+                        activeEmote_ = 0;
+                        animationSeconds_ = 0.0f;
+                    }
+                }
+            }
         }
 
         // ---- Dodge double-tap detection ----
@@ -2213,6 +2259,14 @@ namespace phoenix::character
         }
         if (desiredAnimation != activeAnimation_)
         {
+            const bool canBlend = activeAnimation_ < data_.animations.size()
+                && desiredAnimation < data_.animations.size()
+                && data_.animations[activeAnimation_].animation.parsed
+                && data_.animations[desiredAnimation].animation.parsed;
+            previousAnimation_ = activeAnimation_;
+            previousAnimationSeconds_ = animationSeconds_;
+            animationBlendSeconds_ = 0.0f;
+            animationBlendDuration_ = canBlend ? kAnimationBlendDuration : 0.0f;
             activeAnimation_ = desiredAnimation;
             animationSeconds_ = 0.0f;
         }
@@ -2236,6 +2290,18 @@ namespace phoenix::character
             animationRate = kSwimSpeed / kSwimSpeed;
         }
         animationSeconds_ += clampedDelta * animationRate;
+        if (animationBlendDuration_ > 0.0f)
+        {
+            previousAnimationSeconds_ += clampedDelta * animationRate;
+            animationBlendSeconds_ += clampedDelta;
+            if (animationBlendSeconds_ >= animationBlendDuration_)
+            {
+                animationBlendSeconds_ = 0.0f;
+                animationBlendDuration_ = 0.0f;
+                previousAnimation_ = activeAnimation_;
+                previousAnimationSeconds_ = animationSeconds_;
+            }
+        }
 
         // ---- Mount animation selection ----
         if (data_.hasMount)
@@ -2336,8 +2402,37 @@ namespace phoenix::character
         animationSeconds_ += clampedDelta;
         if (animationIndex > 0 && animationIndex < data_.animations.size()
             && data_.animations[animationIndex].animation.parsed)
+        {
+            if (animationIndex != activeAnimation_)
+            {
+                animationSeconds_ = 0.0f;
+                animationBlendSeconds_ = 0.0f;
+                animationBlendDuration_ = 0.0f;
+                previousAnimation_ = animationIndex;
+                previousAnimationSeconds_ = 0.0f;
+            }
             activeAnimation_ = animationIndex;
+        }
         lastDeltaSeconds_ = clampedDelta;
+
+        if (data_.hasMount)
+        {
+            std::size_t desiredMount = data_.mount.breathAnimation;
+            if (activeAnimation_ == data_.vehicleRun1Animation)
+                desiredMount = data_.mount.runAnimation;
+            else if (activeAnimation_ == data_.vehicleIdleAnimation)
+                desiredMount = data_.mount.breathAnimation < data_.mount.animations.size()
+                    ? data_.mount.breathAnimation
+                    : data_.mount.idleAnimation;
+
+            if (desiredMount != mountActiveAnimation_)
+            {
+                mountActiveAnimation_ = desiredMount;
+                mountAnimationSeconds_ = 0.0f;
+            }
+            mountAnimationSeconds_ += clampedDelta;
+        }
+
         skin_and_transform();
     }
 
@@ -2352,33 +2447,34 @@ namespace phoenix::character
             return;
         }
 
-        const float startFrame = static_cast<float>(anim.startKeyframe);
-        const float endFrame = static_cast<float>(anim.endKeyframe);
-        const float frameCount = std::max(1.0f, endFrame - startFrame);
-
         // Jump/fall: play the take-off once, then HOLD a mid-air pose until landing
         // instead of looping the whole jump clip (which looked like the character
         // re-jumping repeatedly during a long fall). When the character lands,
         // grounded_ flips and the state machine switches back to idle/run.
-        float frame;
         const bool airborneJump = !grounded_ && !inWater_ && !data_.hasMount
             && activeAnimation_ == data_.jumpAnimation;
-        if (airborneJump)
+        const float frame = sample_animation_frame(anim, animationSeconds_, airborneJump);
+        auto clientFinals = compute_client_finals(anim, frame);
+        if (animationBlendDuration_ > 0.0f
+            && previousAnimation_ < data_.animations.size())
         {
-            constexpr float kJumpHoldFrameFraction = 0.80f;  // mid-air "falling" pose
-            const float holdFrame = frameCount * kJumpHoldFrameFraction;
-            const float raw = animationSeconds_ * kAniFramesPerSecond;
-            frame = startFrame + std::min(raw, holdFrame);
+            const auto& previousAnim = data_.animations[previousAnimation_].animation;
+            if (previousAnim.parsed && previousAnim.endKeyframe > previousAnim.startKeyframe
+                && previousAnim.bones.size() == clientFinals.size())
+            {
+                const bool previousAirborneJump = !grounded_ && !inWater_ && !data_.hasMount
+                    && previousAnimation_ == data_.jumpAnimation;
+                const float previousFrame = sample_animation_frame(previousAnim, previousAnimationSeconds_, previousAirborneJump);
+                const auto previousFinals = compute_client_finals(previousAnim, previousFrame);
+                const float rawT = std::clamp(animationBlendSeconds_ / animationBlendDuration_, 0.0f, 1.0f);
+                const float t = rawT * rawT * (3.0f - 2.0f * rawT);
+                for (std::size_t i = 0; i < clientFinals.size(); ++i)
+                    clientFinals[i] = blend_mat4(previousFinals[i], clientFinals[i], t);
+            }
         }
-        else
-        {
-            frame = startFrame + std::fmod(animationSeconds_ * kAniFramesPerSecond, frameCount);
-        }
-        const auto clientFinals = compute_client_finals(anim, frame);
 
         // Skin into local-space animated vertices.
         std::vector<CharacterGpuVertex> animated = data_.bindVertices;
-        float minLocalY = std::numeric_limits<float>::max();
 
         for (std::size_t i = 0; i < data_.sourceVertices.size(); ++i)
         {
@@ -2432,7 +2528,6 @@ namespace phoenix::character
             animated[vi].normal[1] = normal.y;
             animated[vi].normal[2] = normal.z;
 
-            minLocalY = std::min(minLocalY, animated[vi].position[1]);
         }
 
         // ---- Transform weapon/shield vertices by hand bone ----
@@ -2455,7 +2550,6 @@ namespace phoenix::character
                 animated[vi].normal[0] = n.x;
                 animated[vi].normal[1] = n.y;
                 animated[vi].normal[2] = n.z;
-                minLocalY = std::min(minLocalY, animated[vi].position[1]);
             }
         };
         if (data_.hasWeapon && weaponBoneIndex >= 0)
@@ -2567,14 +2661,11 @@ namespace phoenix::character
                 animated[i].position[2] += saddle.z;
             }
 
-            // Re-derive ground contact from the full (mount + seated rider) set.
-            minLocalY = std::numeric_limits<float>::max();
-            for (const auto& v : animated)
-                minLocalY = std::min(minLocalY, v.position[1]);
         }
 
-        if (!std::isfinite(minLocalY))
-            minLocalY = 0.0f;
+        const float localGroundY = (data_.hasMount && data_.mount.loaded)
+            ? data_.mount.localGroundY
+            : data_.localGroundY;
 
         // World transform: rotate by yaw, offset Y to ground, translate to world position.
         const float yaw = characterYaw_ + kPi;
@@ -2586,9 +2677,9 @@ namespace phoenix::character
             const float lx = animated[i].position[0];
             const float ly = animated[i].position[1];
             const float lz = animated[i].position[2];
-            animated[i].position[0] = lx * cosYaw + lz * sinYaw + characterX_;
-            animated[i].position[1] = ly - minLocalY + characterY_ + kGroundClearance;
-            animated[i].position[2] = -lx * sinYaw + lz * cosYaw + characterZ_;
+            animated[i].position[0] = lx * cosYaw + lz * sinYaw + smoothX_;
+            animated[i].position[1] = ly - localGroundY + smoothY_ + kGroundClearance;
+            animated[i].position[2] = -lx * sinYaw + lz * cosYaw + smoothZ_;
 
             const float nx = animated[i].normal[0];
             const float nz = animated[i].normal[2];
@@ -2620,9 +2711,9 @@ namespace phoenix::character
             const float ly = boneT.y * kCharacterScale + riderSaddleOffset.y;
             const float lz = boneT.z * kCharacterScale + riderSaddleOffset.z;
 
-            weaponAttachment_.position[0] = lx * cosYaw + lz * sinYaw + characterX_;
-            weaponAttachment_.position[1] = ly - minLocalY + characterY_ + kGroundClearance;
-            weaponAttachment_.position[2] = -lx * sinYaw + lz * cosYaw + characterZ_;
+            weaponAttachment_.position[0] = lx * cosYaw + lz * sinYaw + smoothX_;
+            weaponAttachment_.position[1] = ly - localGroundY + smoothY_ + kGroundClearance;
+            weaponAttachment_.position[2] = -lx * sinYaw + lz * cosYaw + smoothZ_;
 
             const Vec3 axes[3] = { { 1, 0, 0 }, { 0, 1, 0 }, { 0, 0, 1 } };
             for (int a = 0; a < 3; ++a)
@@ -2759,25 +2850,18 @@ namespace phoenix::character
                 clothWorld_[i * 3 + 2] = pz; clothPrev_[i * 3 + 2] = pz;
             }
 
-            // Verlet integration for free particles (rows 1..R-1).
-            const float dt = std::clamp(lastDeltaSeconds_, 0.001f, 0.05f);
-            constexpr float kDamping = 0.985f;       // velocity retention
-            constexpr float kClothGravity = -2.4f;   // world units / s^2 (downward)
-            const float gStep = kClothGravity * dt * dt;
-            for (std::uint32_t i = cols; i < n; ++i)
-            {
-                for (int a = 0; a < 3; ++a)
-                {
-                    const float cur  = clothWorld_[i * 3 + a];
-                    const float prev = clothPrev_[i * 3 + a];
-                    float next = cur + (cur - prev) * kDamping;
-                    if (a == 1) next += gStep;
-                    clothPrev_[i * 3 + a] = cur;
-                    clothWorld_[i * 3 + a] = next;
-                }
-            }
+            // Fixed-timestep Verlet so cloth behaves identically at any FPS.
+            constexpr float kFixedDt = 1.0f / 60.0f;
+            constexpr float kDamping = 0.985f;
+            constexpr float kClothGravity = -2.4f;
+            constexpr float kGStep = kClothGravity * kFixedDt * kFixedDt;
+            constexpr int kMaxSteps = 4;
 
-            // Distance-constraint relaxation. Row 0 is immovable (pinned).
+            clothAccum_ += std::clamp(lastDeltaSeconds_, 0.0f, 0.1f);
+            int steps = static_cast<int>(clothAccum_ / kFixedDt);
+            if (steps > kMaxSteps) steps = kMaxSteps;
+            clothAccum_ -= static_cast<float>(steps) * kFixedDt;
+
             auto satisfy = [&](std::uint32_t ia, std::uint32_t ib, float rest) {
                 if (rest <= 1e-6f) return;
                 const float dx = clothWorld_[ib * 3 + 0] - clothWorld_[ia * 3 + 0];
@@ -2800,17 +2884,34 @@ namespace phoenix::character
                 clothWorld_[ib * 3 + 1] -= dy * diff * wb;
                 clothWorld_[ib * 3 + 2] -= dz * diff * wb;
             };
-            constexpr int kIterations = 10;
-            for (int it = 0; it < kIterations; ++it)
+
+            for (int step = 0; step < steps; ++step)
             {
-                for (std::uint32_t r = 1; r < rows; ++r)
-                    for (std::uint32_t c = 0; c < cols; ++c)
+                for (std::uint32_t i = cols; i < n; ++i)
+                {
+                    for (int a = 0; a < 3; ++a)
                     {
-                        const std::uint32_t i = idx(r, c);
-                        satisfy(i, idx(r - 1, c), clothRestUp_[i]);   // vertical
-                        if (c > 0)
-                            satisfy(i, idx(r, c - 1), clothRestLeft_[i]); // horizontal
+                        const float cur  = clothWorld_[i * 3 + a];
+                        const float prev = clothPrev_[i * 3 + a];
+                        float next = cur + (cur - prev) * kDamping;
+                        if (a == 1) next += kGStep;
+                        clothPrev_[i * 3 + a] = cur;
+                        clothWorld_[i * 3 + a] = next;
                     }
+                }
+
+                constexpr int kIterations = 6;
+                for (int it = 0; it < kIterations; ++it)
+                {
+                    for (std::uint32_t r = 1; r < rows; ++r)
+                        for (std::uint32_t c = 0; c < cols; ++c)
+                        {
+                            const std::uint32_t i = idx(r, c);
+                            satisfy(i, idx(r - 1, c), clothRestUp_[i]);
+                            if (c > 0)
+                                satisfy(i, idx(r, c - 1), clothRestLeft_[i]);
+                        }
+                }
             }
 
             // Write simulated positions back into the render buffer.
@@ -2887,15 +2988,29 @@ namespace phoenix::character
         data_ = source.data_;
         worldVertices_ = source.worldVertices_;
         textureLayerBase_ = source.textureLayerBase_;
+        weaponBoneIndex = source.weaponBoneIndex;
+        shieldBoneIndex = source.shieldBoneIndex;
+        cloakBodyBoneIndex = source.cloakBodyBoneIndex;
+        cloakShoulderBoneIndex = source.cloakShoulderBoneIndex;
+        mountBoneIndex = source.mountBoneIndex;
         characterX_ = 0.0f;
         characterY_ = 0.0f;
         characterZ_ = 0.0f;
+        smoothX_ = 0.0f;
+        smoothY_ = 0.0f;
+        smoothZ_ = 0.0f;
         characterYaw_ = 0.0f;
         verticalVelocity_ = 0.0f;
         animationSeconds_ = 0.0f;
         activeAnimation_ = data_.idleAnimation;
+        previousAnimation_ = activeAnimation_;
+        previousAnimationSeconds_ = 0.0f;
+        animationBlendSeconds_ = 0.0f;
+        animationBlendDuration_ = 0.0f;
         grounded_ = true;
         groundInitialized_ = false;
+        cameraTerrainLift_ = 0.0f;
+        cameraTerrainLiftInitialized_ = false;
         inWater_ = false;
         sitState_ = 0;
         activeEmote_ = 0;
@@ -2908,8 +3023,13 @@ namespace phoenix::character
     {
         characterX_ = x;
         characterY_ = y;
-        smoothCameraY_ = y + 1.25f;
         characterZ_ = z;
+        smoothX_ = x;
+        smoothY_ = y;
+        smoothZ_ = z;
+        smoothCameraY_ = y + 1.25f;
+        cameraTerrainLift_ = 0.0f;
+        cameraTerrainLiftInitialized_ = false;
         characterYaw_ = yaw;
         cameraYaw_ = yaw;
         verticalVelocity_ = 0.0f;
@@ -2917,11 +3037,15 @@ namespace phoenix::character
         groundInitialized_ = true;
         inWater_ = false;
         animationSeconds_ = 0.0f;
+        previousAnimationSeconds_ = 0.0f;
+        animationBlendSeconds_ = 0.0f;
+        animationBlendDuration_ = 0.0f;
         jumpWasDown_ = false;
         reset_cloth();
         if (data_.loaded)
         {
             activeAnimation_ = data_.idleAnimation;
+            previousAnimation_ = activeAnimation_;
             skin_and_transform();
         }
     }
@@ -2935,34 +3059,50 @@ namespace phoenix::character
         const float dirY = std::sin(cameraPitch_);
         const float dirZ = std::cos(cameraPitch_) * std::cos(cameraYaw_);
 
-        // Desired camera position.
-        x = characterX_ - dirX * cameraDistance_;
+        x = smoothX_ - dirX * cameraDistance_;
         y = lookTargetY - dirY * cameraDistance_;
-        z = characterZ_ - dirZ * cameraDistance_;
+        z = smoothZ_ - dirZ * cameraDistance_;
 
         yaw = cameraYaw_;
         pitch = cameraPitch_;
 
-        // Hard clamp: camera must always be above terrain.
+        // Smooth terrain avoidance for the orbit camera.
         if (heightFn_)
         {
             constexpr float kCameraClearance = 2.0f;
+            float desiredLift = 0.0f;
             const float terrainAtCam = heightFn_(x, z, heightUserData_);
             const float minY = terrainAtCam + kCameraClearance;
             if (y < minY)
-                y = minY;
+                desiredLift = std::max(desiredLift, minY - y);
 
             // Also check midpoint between character and camera to catch ridges.
-            const float midX = (characterX_ + x) * 0.5f;
-            const float midZ = (characterZ_ + z) * 0.5f;
+            const float midX = (smoothX_ + x) * 0.5f;
+            const float midZ = (smoothZ_ + z) * 0.5f;
             const float midTerrainY = heightFn_(midX, midZ, heightUserData_) + kCameraClearance;
-            const float midCamY = (lookTargetY + y) * 0.5f;
+            const float midCamY = (lookTargetY + y + desiredLift) * 0.5f;
             if (midCamY < midTerrainY)
             {
                 // Ridge between character and camera — push camera up more.
-                const float lift = midTerrainY - midCamY;
-                y += lift * 2.0f;
+                const float lift = midTerrainY * 2.0f - lookTargetY - y;
+                desiredLift = std::max(desiredLift, lift);
             }
+
+            const float dt = std::clamp(lastDeltaSeconds_, 0.001f, 0.05f);
+            if (!cameraTerrainLiftInitialized_)
+            {
+                cameraTerrainLift_ = desiredLift;
+                cameraTerrainLiftInitialized_ = true;
+            }
+            else
+            {
+                const float response = desiredLift > cameraTerrainLift_ ? 18.0f : 6.0f;
+                const float blend = 1.0f - std::exp(-response * dt);
+                cameraTerrainLift_ += (desiredLift - cameraTerrainLift_) * blend;
+                if (cameraTerrainLift_ < 0.001f)
+                    cameraTerrainLift_ = 0.0f;
+            }
+            y += cameraTerrainLift_;
         }
     }
 

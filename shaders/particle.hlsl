@@ -24,6 +24,7 @@ struct CameraConstants
 {
     float4 positionYaw;
     float4 pitchAspectFov;
+    float4 precomputedTrig; // cosYaw, sinYaw, cosPitch, sinPitch
     float4 fogColorHasSky;
     float4 fogDistances;
     float4 skyLayers;
@@ -52,17 +53,15 @@ VSOutput VSMain(uint vid : SV_VertexID, uint iid : SV_InstanceID)
     const float2 corner = kCorners[vid];
 
     const float3 delta = p.worldPos - camera.positionYaw.xyz;
-    const float yaw = camera.positionYaw.w;
-    const float pitch = camera.pitchAspectFov.x;
     const float aspect = camera.pitchAspectFov.y;
     const float tanHalfFov = camera.pitchAspectFov.z;
     const float farPlane = camera.pitchAspectFov.w;
     const float nearPlane = 2.0f;
 
-    const float cy = cos(yaw);
-    const float sy = sin(yaw);
-    const float cp = cos(pitch);
-    const float sp = sin(pitch);
+    const float cy = camera.precomputedTrig.x;
+    const float sy = camera.precomputedTrig.y;
+    const float cp = camera.precomputedTrig.z;
+    const float sp = camera.precomputedTrig.w;
 
     float cameraX = cy * delta.x - sy * delta.z;
     const float yawZ = sy * delta.x + cy * delta.z;

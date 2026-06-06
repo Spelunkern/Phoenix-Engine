@@ -6,7 +6,6 @@
 // include only from renderer/*.cpp.
 
 #include "renderer/vulkan_renderer.h"
-#include "core/logging.h"
 
 #include "volk.h"
 
@@ -21,12 +20,9 @@
 
 namespace phoenix::renderer
 {
-    inline constexpr std::uint32_t kMaxFramesInFlight = 3;
+    inline constexpr std::uint32_t kMaxFramesInFlight = 2;
 
-    inline void log_line(const char* message)
-    {
-        phoenix::core::write_log_line("Renderer", message);
-    }
+    inline void log_line(const char* /*message*/) {}
 
     // Directory containing the running executable. Used so shaders resolve
     // whether the binary is launched from the repo root, the build folder,
@@ -110,9 +106,15 @@ namespace phoenix::renderer
         VkImageView depthView{};
         VkPipelineLayout terrainPipelineLayout{};
         VkPipeline terrainPipeline{};
+        VkPipeline terrainPipelineZEqual{};
         VkPipeline staticObjectPipeline{};
+        VkPipeline staticObjectPipelineZEqual{};
         VkPipelineLayout skyPipelineLayout{};
         VkPipeline skyPipeline{};
+
+        VkPipeline depthPrepassTerrainPipeline{};
+        VkPipeline depthPrepassStaticPipeline{};
+        bool depthPrepassReady{};
 
         // Procedural weapon-effect particle resources (separate from terrain).
         VkDescriptorSetLayout particleSetLayout{};
@@ -146,15 +148,28 @@ namespace phoenix::renderer
         std::uint32_t previewHeight{};
         bool previewReady{};
         bool previewUploadLogged{};
+        struct ImguiIconTexture
+        {
+            VkImage image{};
+            VkDeviceMemory memory{};
+            VkImageView view{};
+            VkDescriptorSet descriptor{};
+        };
+        std::vector<ImguiIconTexture> imguiIconTextures;
         VkBuffer terrainVertexBuffer{};
         VkDeviceMemory terrainVertexMemory{};
         VkBuffer terrainIndexBuffer{};
         VkDeviceMemory terrainIndexMemory{};
         std::uint32_t terrainIndexCount{};
-        TerrainDrawRange waterDrawRange{};
         std::vector<TerrainDrawRange> terrainDrawRanges;
         std::size_t terrainVertexBytes{};
         bool terrainReady{};
+        VkBuffer waterVertexBuffer{};
+        VkDeviceMemory waterVertexMemory{};
+        VkBuffer waterIndexBuffer{};
+        VkDeviceMemory waterIndexMemory{};
+        std::uint32_t waterIndexCount{};
+        bool waterReady{};
         VkBuffer objectVertexBuffer{};
         VkDeviceMemory objectVertexMemory{};
         VkBuffer objectIndexBuffer{};
@@ -229,6 +244,14 @@ namespace phoenix::renderer
         VkDeviceMemory terrainMapMemory{};
         bool terrainMapReady{};
 
+        // Field lightmap (baked shadows/lighting per terrain section).
+        VkImage lightmapImage{};
+        VkDeviceMemory lightmapMemory{};
+        VkImageView lightmapView{};
+        VkSampler lightmapSampler{};
+        std::uint32_t lightmapSectionCount{}; // 1 (small map) or 2 (big = 2x2)
+        bool lightmapReady{};
+
         // GPU frustum culling + indirect draw resources.
         VkPipelineLayout cullPipelineLayout{};
         VkPipeline cullPipeline{};
@@ -251,37 +274,24 @@ namespace phoenix::renderer
         // We use this flag to prefer the unified cached type on such hardware.
         bool integratedGpu{};
 
-        // GPU compute skinning resources.
-        VkPipelineLayout skinPipelineLayout{};
-        VkPipeline skinPipeline{};
-        VkDescriptorSetLayout skinDescriptorSetLayout{};
-        VkDescriptorPool skinDescriptorPool{};
-        VkDescriptorSet skinDescriptorSet{};
-        VkBuffer skinSourceBuffer{};            // readonly: bind-pose source vertices
-        VkDeviceMemory skinSourceMemory{};
-        VkBuffer skinMatrixBuffer{};            // readonly: per-frame bone matrices
-        VkDeviceMemory skinMatrixMemory{};
-        void* skinMatrixMapped{};              // persistent mapping
-        std::size_t skinMatrixBufferBytes{};
-        std::uint32_t skinSourceVertexCount{};
-        bool skinPipelineReady{};
-        bool skinSourceReady{};
-
-        // Per-frame skin dispatch queue.
-        struct SkinDispatch
-        {
-            std::uint32_t firstVertex;
-            std::uint32_t vertexCount;
-            std::uint32_t boneMatrixOffset;
-        };
-        std::vector<SkinDispatch> skinDispatches;
-
         VkPhysicalDeviceMemoryProperties memoryProperties{};
         VkPipelineCache pipelineCache{};
 
-        float cameraConstants[8]{
+        // GPU timing + statistics queries.
+        VkQueryPool timestampQueryPool{};
+        VkQueryPool statsQueryPool{};
+        float timestampPeriodNs{};
+        bool gpuQueriesReady{};
+        float gpuFrameTimeMs{};
+        std::uint64_t fragmentInvocations{};
+        std::uint64_t vertexInvocations{};
+
+        float cameraConstants[12]{
+            // [0-2] position, [3] yaw, [4] pitch, [5] aspect, [6] tanHalfFov, [7] farPlane
             0.0f, 360.0f, -950.0f, 0.0f,
             -0.32f, 16.0f / 9.0f, 0.7002f, 5000.0f,
+            // [8] cosYaw, [9] sinYaw, [10] cosPitch, [11] sinPitch (CPU-precomputed)
+            1.0f, 0.0f, 1.0f, 0.0f,
         };
         float skyConstants[16]{
             0.42f, 0.58f, 0.74f, 0.0f,
@@ -294,5 +304,6 @@ namespace phoenix::renderer
             1.35f, 0.78f, 0.34f, 0.12f,
             0.82f, 1.10f, 0.22f, 0.06f,
         };
+        float waterStyle[4]{ 0.04f, 0.30f, 0.50f, 0.62f };
     };
 }

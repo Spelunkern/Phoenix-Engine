@@ -8,6 +8,7 @@ struct CameraConstants
 {
     float4 positionYaw;
     float4 pitchAspectFov;
+    float4 precomputedTrig; // cosYaw, sinYaw, cosPitch, sinPitch
     float4 fogColorHasSky;
     float4 fogDistances;
     float4 skyLayers;
@@ -207,7 +208,7 @@ float4 PSMain(VSOutput input) : SV_TARGET
         else if (afternoonSky) { sunTint = float3(1.0, 0.82, 0.52); sunCoreTint = float3(1.0, 0.92, 0.72); }
         color += (sunTint * sunGlow + sunCoreTint * sunCore) * sunStrength;
 
-        if ((nightSky || duskSky) && worldDir.y > 0.02)
+        if (false)
         {
             float horizonFade = smoothstep(0.02, 0.25, worldDir.y);
             float starVisibility = nightSky ? 1.0 : 0.35;
@@ -326,57 +327,11 @@ float4 PSMain(VSOutput input) : SV_TARGET
             }
         }
 
-        float cloudMask = 0.0;
-        if (worldDir.y > 0.035 && !nightSky && !duskSky)
-        {
-            float tCloud = 3400.0 / max(worldDir.y, 0.035);
-            float2 p = (camera.positionYaw.xz + worldDir.xz * tCloud) * 0.00030 + float2(time * 0.012, time * 0.0044);
-            float2 warp = float2(fbm(p * 0.72 + 31.7), fbm(p * 0.72 - 18.4));
-            p += (warp - 0.5) * 1.65;
-            float body = fbm(p);
-            float detail = fbm(p * 3.2 + float2(time * 0.032, -time * 0.011));
-            float wisps = fbm(float2(p.x * 1.85 + time * 0.038, p.y * 0.52));
-            float cloudField = body + detail * (stormSky ? 0.34 : 0.22);
-            if (stormSky)
-                cloudMask = smoothstep(0.36, 0.62, cloudField);
-            else if (snowSky)
-                cloudMask = smoothstep(0.42, 0.68, cloudField);
-            else if (sunsetSky)
-                cloudMask = smoothstep(0.48, 0.74, cloudField);
-            else if (dawnSky)
-                cloudMask = smoothstep(0.46, 0.72, cloudField);
-            else if (overcastSky)
-                cloudMask = smoothstep(0.30, 0.56, cloudField);
-            else if (afternoonSky)
-                cloudMask = smoothstep(0.52, 0.76, cloudField);
-            else
-                cloudMask = smoothstep(0.54, 0.78, cloudField);
-            cloudMask *= smoothstep(0.22, 0.72, wisps);
-            cloudMask = saturate(cloudMask - smoothstep(0.36, 0.78, detail) * 0.18);
-            cloudMask *= smoothstep(0.04, 0.18, worldDir.y) * (1.0 - smoothstep(0.88, 1.0, worldDir.y));
-            float cloudShade = lerp(0.74, 1.08, saturate(dot(worldDir, sunDir) * 0.5 + 0.5));
-            float3 cloudColor = lerp(float3(0.62, 0.67, 0.72), float3(1.0, 0.96, 0.88), cloudShade);
-            if (stormSky)
-                cloudColor = lerp(float3(0.20, 0.22, 0.25), float3(0.43, 0.45, 0.49), cloudShade);
-            else if (snowSky)
-                cloudColor = lerp(float3(0.68, 0.70, 0.73), float3(0.90, 0.92, 0.94), cloudShade);
-            else if (sunsetSky)
-                cloudColor = lerp(float3(0.42, 0.18, 0.28), float3(1.0, 0.52, 0.30), cloudShade);
-            else if (dawnSky)
-                cloudColor = lerp(float3(0.58, 0.32, 0.28), float3(1.0, 0.68, 0.42), cloudShade);
-            else if (overcastSky)
-                cloudColor = lerp(float3(0.44, 0.46, 0.48), float3(0.62, 0.64, 0.66), cloudShade);
-            else if (afternoonSky)
-                cloudColor = lerp(float3(0.72, 0.68, 0.58), float3(1.0, 0.94, 0.82), cloudShade);
-            float cloudAlpha = stormSky ? 0.84 : (snowSky ? 0.76 : (sunsetSky ? 0.70 : (overcastSky ? 0.88 : (dawnSky ? 0.65 : 0.72))));
-            color = lerp(color, cloudColor, cloudMask * cloudAlpha);
-        }
-
         float horizonBlend = saturate((0.12 - worldDir.y) / 0.18);
         color = lerp(color, worldFog, horizonBlend * 0.35);
         if (camera.positionYaw.y < 0.0)
         {
-            const float3 waterTint = float3(0.12, 0.25, 0.34);
+            const float3 waterTint = float3(0.04, 0.16, 0.38);
             float depth = saturate((0.0 - camera.positionYaw.y) * 0.12);
             color = lerp(color * float3(0.82, 0.92, 1.02), waterTint, 0.18 + depth * 0.22);
         }
@@ -451,7 +406,7 @@ float4 PSMain(VSOutput input) : SV_TARGET
 
     if (camera.positionYaw.y < 0.0)
     {
-        const float3 waterTint = float3(0.12, 0.25, 0.34);
+        const float3 waterTint = float3(0.04, 0.16, 0.38);
         float depth = saturate((0.0 - camera.positionYaw.y) * 0.12);
         color = lerp(color * float3(0.82, 0.92, 1.02), waterTint, 0.18 + depth * 0.22);
     }

@@ -150,12 +150,13 @@ namespace phoenix::world
             }
 
             if (!mesh.animationFrames.empty())
-                mesh.vertices = mesh.animationFrames.front();
+                mesh.vertices = std::move(mesh.animationFrames.front());
+            mesh.animationFrames.clear();
             model.meshes.push_back(std::move(mesh));
         }
 
-        model.frameCount = frameCount;
-        model.vertexAnimated = frameCount > 1;
+        model.frameCount = 1;
+        model.vertexAnimated = false;
         model.parsed = !model.meshes.empty();
         return model;
     }

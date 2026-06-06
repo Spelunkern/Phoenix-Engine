@@ -169,7 +169,7 @@ namespace phoenix::assets
 
             const auto& path = entry.path();
             // lexically_relative is pure string math (no filesystem access), unlike
-            // std::filesystem::relative which can stat/resolve — a big cost over 20k+ files.
+            // std::filesystem::relative which can stat/resolve - a big cost over 20k+ files.
             const auto relativePath = path.lexically_relative(dataRoot);
             index.byRelativePath.try_emplace(DataIndex::normalize_key(relativePath), path);
             index.byFileName.try_emplace(lower_ascii(path.filename().string()), path);
