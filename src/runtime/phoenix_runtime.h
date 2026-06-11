@@ -4,8 +4,10 @@
 #include "renderer/vulkan_renderer.h"
 #include "world/wld_loader.h"
 
+#include <algorithm>
 #include <filesystem>
 #include <limits>
+#include <memory>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -38,7 +40,9 @@ namespace phoenix::runtime
         std::uint32_t frameCount{ 1 };
         std::vector<phoenix::renderer::TerrainVertex> previewVertices;
         std::vector<std::uint32_t> previewIndices;
-        std::vector<std::vector<phoenix::renderer::TerrainVertex>> animationFrames;
+        // Shared with AnimatedObjectScene::VertexAnimation — VANI frame data is
+        // large (frames x vertices), so scenes reference it instead of copying.
+        std::shared_ptr<std::vector<std::vector<phoenix::renderer::TerrainVertex>>> animationFrames;
         // Collision mesh in model-local space.
         bool hasCollision{};
         std::vector<float> collisionVertices; // flat x,y,z per vertex
@@ -57,6 +61,8 @@ namespace phoenix::runtime
         bool loaded{};
         std::int32_t sectionIndex{ -1 };
         std::int32_t instanceIndex{ -1 };
+        float maniRotationAxis[3]{};
+        float maniRotationSpeed{};
         bool deleted{};
     };
 
@@ -148,14 +154,13 @@ namespace phoenix::runtime
         {
             std::uint32_t firstVertex{};
             std::uint32_t vertexCount{};
-            std::vector<std::vector<phoenix::renderer::TerrainVertex>> frames;
-        };
-
-        struct InstanceAnimation
-        {
-            std::uint32_t instanceIndex{};
-            float axis[3]{};
-            float speed{};
+            std::uint32_t firstIndex{};
+            std::uint32_t indexCount{};
+            std::uint32_t firstInstance{};
+            std::uint32_t instanceCount{};
+            std::uint32_t currentFrame{ 0xFFFFFFFFu };
+            bool visible{ true };
+            std::shared_ptr<const std::vector<std::vector<phoenix::renderer::TerrainVertex>>> frames;
         };
 
         std::vector<phoenix::renderer::TerrainVertex> vertices;
@@ -165,18 +170,49 @@ namespace phoenix::runtime
         std::vector<phoenix::renderer::ObjectBatch> batches;
         std::vector<StaticObjectScene::BatchBounds> batchBounds;
         std::vector<VertexAnimation> vertexAnimations;
-        std::vector<InstanceAnimation> instanceAnimations;
 
-        // Dirty vertex range tracking — only upload modified regions to GPU.
-        std::uint32_t dirtyVertexMin{ 0xFFFFFFFFu };
-        std::uint32_t dirtyVertexMax{};
+        struct DirtyVertexRange
+        {
+            std::uint32_t firstVertex{};
+            std::uint32_t vertexCount{};
+        };
+
+        // Dirty vertex range tracking: upload each animated asset range separately.
+        std::vector<DirtyVertexRange> dirtyVertexRanges;
         void mark_vertices_dirty(std::uint32_t first, std::uint32_t count)
         {
-            dirtyVertexMin = std::min(dirtyVertexMin, first);
-            dirtyVertexMax = std::max(dirtyVertexMax, first + count);
+            dirtyVertexRanges.push_back({ first, count });
         }
-        void clear_dirty() { dirtyVertexMin = 0xFFFFFFFFu; dirtyVertexMax = 0; }
-        bool has_dirty_vertices() const { return dirtyVertexMin < dirtyVertexMax; }
+        void clear_dirty() { dirtyVertexRanges.clear(); }
+
+        // Coalesce overlapping/contiguous ranges so adjacent assets upload as
+        // one memcpy instead of several small ones.
+        void merge_dirty_ranges()
+        {
+            if (dirtyVertexRanges.size() < 2)
+                return;
+            std::sort(dirtyVertexRanges.begin(), dirtyVertexRanges.end(),
+                [](const DirtyVertexRange& a, const DirtyVertexRange& b) {
+                    return a.firstVertex < b.firstVertex;
+                });
+            std::size_t mergedCount = 0;
+            for (std::size_t i = 1; i < dirtyVertexRanges.size(); ++i)
+            {
+                auto& merged = dirtyVertexRanges[mergedCount];
+                const auto& next = dirtyVertexRanges[i];
+                if (next.firstVertex <= merged.firstVertex + merged.vertexCount)
+                {
+                    const auto end = std::max(merged.firstVertex + merged.vertexCount,
+                        next.firstVertex + next.vertexCount);
+                    merged.vertexCount = end - merged.firstVertex;
+                }
+                else
+                {
+                    dirtyVertexRanges[++mergedCount] = next;
+                }
+            }
+            dirtyVertexRanges.resize(mergedCount + 1);
+        }
     };
 
     // World-space collision triangles with spatial grid for fast queries.
@@ -223,7 +259,6 @@ namespace phoenix::runtime
     public:
         bool initialize(const std::filesystem::path& executableDir, bool loadDefaultMap = true);
         bool load_world_map(std::size_t mapIndex);
-        PreviewImage create_preview_image(std::uint32_t width, std::uint32_t height) const;
         PreviewImage create_3d_preview_image(std::uint32_t width, std::uint32_t height) const;
         // LOD info for terrain chunks — returned alongside the mesh so the
         // visibility builder can pick the right index range per distance.
@@ -247,7 +282,8 @@ namespace phoenix::runtime
         void build_terrain_mesh(std::vector<phoenix::renderer::TerrainVertex>& vertices, std::vector<std::uint32_t>& indices, TerrainLodInfo& lodInfo) const;
         StaticObjectScene build_static_object_scene() const;
         AnimatedObjectScene build_animated_object_scene() const;
-        void update_animated_object_scene(AnimatedObjectScene& scene, float totalTime) const;
+        void update_animated_object_scene(AnimatedObjectScene& scene, float totalTime,
+            float cameraX, float cameraY, float cameraZ) const;
         std::vector<std::filesystem::path> terrain_texture_paths() const;
         std::vector<std::filesystem::path> asset_texture_paths() const;
 
@@ -255,6 +291,27 @@ namespace phoenix::runtime
         // Returns up to 4 lightmap paths (one per section, 2x2 for big maps, 1x1 for small).
         // sectionCount is set to 1 (small) or 2 (big = 2x2 grid).
         std::vector<std::filesystem::path> field_lightmap_paths(std::uint32_t& sectionCount) const;
+
+        // Field alpha splat masks (<stem>_<sec>_a<n>.dds): per-layer terrain
+        // blend weights ("tonality" maps). Returns sections x 8 paths (empty
+        // where missing) and a bitmask of layers that have at least one mask.
+        static constexpr std::uint32_t kFieldAlphaMaskLayers = 8;
+        std::vector<std::filesystem::path> field_alpha_mask_paths(std::uint32_t& layerFlags) const;
+
+        // Dungeon lightmap pages (<dgName>_L<i>.dds next to the DG model),
+        // carrying both baked shadows and colour tones.
+        std::vector<std::filesystem::path> dungeon_lightmap_paths() const;
+
+        // Climbable volumes from the WLD "Object" section (entity/object/
+        // ladders & ivy): world-space axis + vertical range per instance.
+        struct LadderVolume
+        {
+            float x{}, z{};
+            float baseY{};
+            float topY{};
+            float radius{};
+        };
+        std::vector<LadderVolume> ladder_volumes() const;
         std::filesystem::path texture_path_for(std::string_view fileName) const;
         std::filesystem::path audio_path_for(std::string_view fileName) const;
         std::filesystem::path water_texture_path() const;
@@ -283,15 +340,19 @@ namespace phoenix::runtime
         void scan_terrain_textures();
         void scan_audio_assets();
         void load_world_assets();
-        std::uint32_t resolve_asset_texture_layer(std::string_view textureName, bool forceCutout);
+        std::uint32_t resolve_asset_texture_layer(std::string_view textureName);
         void update_status();
         float terrain_height(float worldX, float worldZ) const;
 
         PhoenixRuntimeState state_;
         RuntimeCamera camera_{};
-        // Memoises resolve_asset_texture_layer by (textureName, forceCutout) so the
-        // per-mesh world build doesn't re-resolve+stat the same texture thousands of
+        // Memoises resolve_asset_texture_layer by textureName so the per-mesh
+        // world build doesn't re-resolve+stat the same texture thousands of
         // times. Cleared at the start of each load_world_assets().
         std::unordered_map<std::string, std::uint32_t> assetTextureLayerCache_;
+        // Universal transparency cache: lowercase texture path -> "has cutout
+        // alpha" (decided by alpha content, never by name). Persists across
+        // map loads — texture content doesn't change at runtime.
+        std::unordered_map<std::string, bool> textureCutoutCache_;
     };
 }

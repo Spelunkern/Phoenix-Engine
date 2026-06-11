@@ -1,4 +1,4 @@
-#include "renderer/vulkan_renderer.h"
+﻿#include "renderer/vulkan_renderer.h"
 #include "renderer/vulkan_renderer_internal.h"
 #include "renderer/dds_loader.h"
 #include "platform/sdl_window.h"
@@ -102,8 +102,6 @@ namespace phoenix::renderer
             log_line("Vulkan: sky rendering unavailable (non-fatal)");
         if (!create_particle_pipeline())
             log_line("Vulkan: particle rendering unavailable (non-fatal)");
-
-        create_depth_prepass_pipelines();
 
         {
             VkPhysicalDeviceProperties props{};
@@ -386,6 +384,14 @@ namespace phoenix::renderer
 
         std::vector<VkPhysicalDevice> devices(deviceCount);
         vkEnumeratePhysicalDevices(impl_->instance, &deviceCount, devices.data());
+
+        // Pick the best capable device instead of the first enumerated one:
+        // hybrid laptops often enumerate the integrated GPU first.
+        VkPhysicalDevice bestDevice{};
+        std::uint32_t bestQueueFamily{};
+        VkPhysicalDeviceProperties bestProperties{};
+        int bestScore = -1;
+
         for (const auto device : devices)
         {
             std::uint32_t familyCount{};
@@ -397,24 +403,60 @@ namespace phoenix::renderer
             {
                 VkBool32 presentSupported{};
                 vkGetPhysicalDeviceSurfaceSupportKHR(device, index, impl_->surface, &presentSupported);
-                if ((families[index].queueFlags & VK_QUEUE_GRAPHICS_BIT) && presentSupported)
-                {
-                    impl_->physicalDevice = device;
-                    graphicsQueueFamily_ = index;
+                if (!(families[index].queueFlags & VK_QUEUE_GRAPHICS_BIT) || !presentSupported)
+                    continue;
 
-                    VkPhysicalDeviceProperties properties{};
-                    vkGetPhysicalDeviceProperties(device, &properties);
-                    adapterName_ = properties.deviceName;
-                    impl_->maxSamplerAnisotropy = std::max(1.0f, properties.limits.maxSamplerAnisotropy);
-                    impl_->integratedGpu =
-                        properties.deviceType == VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU;
-                    return true;
+                VkPhysicalDeviceProperties properties{};
+                vkGetPhysicalDeviceProperties(device, &properties);
+
+                int score = 0;
+                switch (properties.deviceType)
+                {
+                case VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU: score = 3; break;
+                case VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU: score = 2; break;
+                case VK_PHYSICAL_DEVICE_TYPE_VIRTUAL_GPU: score = 1; break;
+                default: score = 0; break;
                 }
+                if (score > bestScore)
+                {
+                    bestScore = score;
+                    bestDevice = device;
+                    bestQueueFamily = index;
+                    bestProperties = properties;
+                }
+                break; // first suitable queue family of this device is enough
             }
         }
 
-        log_line("Vulkan: no graphics+present queue");
-        return false;
+        if (bestScore < 0)
+        {
+            log_line("Vulkan: no graphics+present queue");
+            return false;
+        }
+
+        impl_->physicalDevice = bestDevice;
+        graphicsQueueFamily_ = bestQueueFamily;
+        adapterName_ = bestProperties.deviceName;
+        impl_->maxSamplerAnisotropy = std::max(1.0f, bestProperties.limits.maxSamplerAnisotropy);
+        impl_->integratedGpu =
+            bestProperties.deviceType == VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU;
+        impl_->maxImageArrayLayers = bestProperties.limits.maxImageArrayLayers;
+        log_line((std::string("Vulkan: selected adapter ") + bestProperties.deviceName).c_str());
+
+        // Hard requirement check with a clear log instead of a silent pipeline
+        // failure: the camera push-constant block needs 176 bytes (spec minimum
+        // is 128 — older Intel iGPUs and old Mesa drivers report exactly that).
+        constexpr std::uint32_t kRequiredPushConstantBytes = sizeof(float) * 44;
+        if (bestProperties.limits.maxPushConstantsSize < kRequiredPushConstantBytes)
+        {
+            log_line((std::string("Vulkan: maxPushConstantsSize ")
+                + std::to_string(bestProperties.limits.maxPushConstantsSize)
+                + " < required " + std::to_string(kRequiredPushConstantBytes)
+                + " — GPU/driver not supported").c_str());
+            return false;
+        }
+
+        return true;
     }
 
     bool VulkanRenderer::create_device()
@@ -497,26 +539,22 @@ namespace phoenix::renderer
         createInfo.preTransform = capabilities.currentTransform;
         createInfo.compositeAlpha = VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR;
 
-        auto chosenPresentMode = VK_PRESENT_MODE_MAILBOX_KHR;
+        auto chosenPresentMode = VK_PRESENT_MODE_FIFO_KHR; // FIFO is always available per spec
         {
             std::uint32_t modeCount{};
             vkGetPhysicalDeviceSurfacePresentModesKHR(impl_->physicalDevice, impl_->surface, &modeCount, nullptr);
             std::vector<VkPresentModeKHR> modes(modeCount);
             vkGetPhysicalDeviceSurfacePresentModesKHR(impl_->physicalDevice, impl_->surface, &modeCount, modes.data());
-            bool mailboxAvailable = false;
             for (const auto mode : modes)
             {
                 if (mode == VK_PRESENT_MODE_MAILBOX_KHR)
                 {
-                    mailboxAvailable = true;
+                    chosenPresentMode = VK_PRESENT_MODE_MAILBOX_KHR;
                     break;
                 }
             }
-            if (!mailboxAvailable)
-            {
-                log_line("Vulkan: MAILBOX present mode unavailable");
-                return false;
-            }
+            if (chosenPresentMode == VK_PRESENT_MODE_FIFO_KHR)
+                log_line("Vulkan: MAILBOX unavailable, falling back to FIFO");
         }
         createInfo.presentMode = chosenPresentMode;
         createInfo.clipped = VK_TRUE;
@@ -1304,151 +1342,6 @@ namespace phoenix::renderer
         return ok;
     }
 
-    bool VulkanRenderer::create_depth_prepass_pipelines()
-    {
-        VkShaderModule terrainVS{}, staticVS{}, fragShader{};
-        if (!load_shader_module("shaders/compiled/depth_terrain.vert.spv", terrainVS)
-            || !load_shader_module("shaders/compiled/depth_static.vert.spv", staticVS)
-            || !load_shader_module("shaders/compiled/depth_prepass.frag.spv", fragShader))
-        {
-            log_line("Vulkan: depth prepass shaders not found — prepass disabled");
-            if (terrainVS) vkDestroyShaderModule(impl_->device, terrainVS, nullptr);
-            if (staticVS) vkDestroyShaderModule(impl_->device, staticVS, nullptr);
-            if (fragShader) vkDestroyShaderModule(impl_->device, fragShader, nullptr);
-            return false;
-        }
-
-        VkPipelineDepthStencilStateCreateInfo depth{ VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO };
-        depth.depthTestEnable = VK_TRUE;
-        depth.depthWriteEnable = VK_TRUE;
-        depth.depthCompareOp = VK_COMPARE_OP_LESS;
-
-        VkPipelineColorBlendAttachmentState blendAttachment{};
-        blendAttachment.colorWriteMask = 0;
-        VkPipelineColorBlendStateCreateInfo blend{ VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO };
-        blend.attachmentCount = 1;
-        blend.pAttachments = &blendAttachment;
-
-        VkPipelineRasterizationStateCreateInfo raster{ VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO };
-        raster.polygonMode = VK_POLYGON_MODE_FILL;
-        raster.cullMode = VK_CULL_MODE_NONE;
-        raster.frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE;
-        raster.lineWidth = 1.0f;
-
-        VkPipelineMultisampleStateCreateInfo multisample{ VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO };
-        multisample.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
-
-        VkPipelineInputAssemblyStateCreateInfo inputAssembly{ VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO };
-        inputAssembly.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
-
-        VkDynamicState dynamicStates[]{ VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR };
-        VkPipelineDynamicStateCreateInfo dynamicState{ VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO };
-        dynamicState.dynamicStateCount = static_cast<std::uint32_t>(std::size(dynamicStates));
-        dynamicState.pDynamicStates = dynamicStates;
-
-        VkPipelineViewportStateCreateInfo viewportState{ VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO };
-        viewportState.viewportCount = 1;
-        viewportState.scissorCount = 1;
-
-        // Terrain depth prepass.
-        {
-            VkPipelineShaderStageCreateInfo stages[2]{};
-            stages[0].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
-            stages[0].stage = VK_SHADER_STAGE_VERTEX_BIT;
-            stages[0].module = terrainVS;
-            stages[0].pName = "VSMain_Terrain";
-            stages[1].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
-            stages[1].stage = VK_SHADER_STAGE_FRAGMENT_BIT;
-            stages[1].module = fragShader;
-            stages[1].pName = "PSMain";
-
-            VkVertexInputBindingDescription binding{};
-            binding.stride = sizeof(TerrainVertex);
-            VkVertexInputAttributeDescription attrs[5]{};
-            attrs[0] = { 0, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(TerrainVertex, position) };
-            attrs[1] = { 1, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(TerrainVertex, color) };
-            attrs[2] = { 2, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(TerrainVertex, normal) };
-            attrs[3] = { 3, 0, VK_FORMAT_R32G32_SFLOAT, offsetof(TerrainVertex, uv) };
-            attrs[4] = { 4, 0, VK_FORMAT_R32_UINT, offsetof(TerrainVertex, textureLayer) };
-            VkPipelineVertexInputStateCreateInfo vertexInput{ VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO };
-            vertexInput.vertexBindingDescriptionCount = 1;
-            vertexInput.pVertexBindingDescriptions = &binding;
-            vertexInput.vertexAttributeDescriptionCount = 5;
-            vertexInput.pVertexAttributeDescriptions = attrs;
-
-            VkGraphicsPipelineCreateInfo ci{ VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO };
-            ci.stageCount = 2; ci.pStages = stages;
-            ci.pVertexInputState = &vertexInput; ci.pInputAssemblyState = &inputAssembly;
-            ci.pViewportState = &viewportState; ci.pRasterizationState = &raster;
-            ci.pMultisampleState = &multisample; ci.pDepthStencilState = &depth;
-            ci.pColorBlendState = &blend; ci.pDynamicState = &dynamicState;
-            ci.layout = impl_->terrainPipelineLayout; ci.renderPass = impl_->renderPass;
-            if (vkCreateGraphicsPipelines(impl_->device, impl_->pipelineCache, 1, &ci, nullptr, &impl_->depthPrepassTerrainPipeline) != VK_SUCCESS)
-            {
-                log_line("Vulkan: depth prepass terrain pipeline creation failed");
-                vkDestroyShaderModule(impl_->device, terrainVS, nullptr);
-                vkDestroyShaderModule(impl_->device, staticVS, nullptr);
-                vkDestroyShaderModule(impl_->device, fragShader, nullptr);
-                return false;
-            }
-        }
-
-        // Static object depth prepass (instanced).
-        {
-            VkPipelineShaderStageCreateInfo stages[2]{};
-            stages[0].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
-            stages[0].stage = VK_SHADER_STAGE_VERTEX_BIT;
-            stages[0].module = staticVS;
-            stages[0].pName = "VSMain_StaticObject";
-            stages[1].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
-            stages[1].stage = VK_SHADER_STAGE_FRAGMENT_BIT;
-            stages[1].module = fragShader;
-            stages[1].pName = "PSMain";
-
-            VkVertexInputBindingDescription bindings[2]{};
-            bindings[0].binding = 0; bindings[0].stride = sizeof(TerrainVertex);
-            bindings[1].binding = 1; bindings[1].stride = sizeof(ObjectInstance); bindings[1].inputRate = VK_VERTEX_INPUT_RATE_INSTANCE;
-            VkVertexInputAttributeDescription attrs[9]{};
-            attrs[0] = { 0, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(TerrainVertex, position) };
-            attrs[1] = { 1, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(TerrainVertex, color) };
-            attrs[2] = { 2, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(TerrainVertex, normal) };
-            attrs[3] = { 3, 0, VK_FORMAT_R32G32_SFLOAT, offsetof(TerrainVertex, uv) };
-            attrs[4] = { 4, 0, VK_FORMAT_R32_UINT, offsetof(TerrainVertex, textureLayer) };
-            attrs[5] = { 5, 1, VK_FORMAT_R32G32B32A32_SFLOAT, offsetof(ObjectInstance, right) };
-            attrs[6] = { 6, 1, VK_FORMAT_R32G32B32A32_SFLOAT, offsetof(ObjectInstance, up) };
-            attrs[7] = { 7, 1, VK_FORMAT_R32G32B32A32_SFLOAT, offsetof(ObjectInstance, forward) };
-            attrs[8] = { 8, 1, VK_FORMAT_R32G32B32A32_SFLOAT, offsetof(ObjectInstance, position) };
-            VkPipelineVertexInputStateCreateInfo vertexInput{ VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO };
-            vertexInput.vertexBindingDescriptionCount = 2;
-            vertexInput.pVertexBindingDescriptions = bindings;
-            vertexInput.vertexAttributeDescriptionCount = 9;
-            vertexInput.pVertexAttributeDescriptions = attrs;
-
-            VkGraphicsPipelineCreateInfo ci{ VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO };
-            ci.stageCount = 2; ci.pStages = stages;
-            ci.pVertexInputState = &vertexInput; ci.pInputAssemblyState = &inputAssembly;
-            ci.pViewportState = &viewportState; ci.pRasterizationState = &raster;
-            ci.pMultisampleState = &multisample; ci.pDepthStencilState = &depth;
-            ci.pColorBlendState = &blend; ci.pDynamicState = &dynamicState;
-            ci.layout = impl_->terrainPipelineLayout; ci.renderPass = impl_->renderPass;
-            if (vkCreateGraphicsPipelines(impl_->device, impl_->pipelineCache, 1, &ci, nullptr, &impl_->depthPrepassStaticPipeline) != VK_SUCCESS)
-            {
-                log_line("Vulkan: depth prepass static pipeline creation failed");
-                vkDestroyShaderModule(impl_->device, terrainVS, nullptr);
-                vkDestroyShaderModule(impl_->device, staticVS, nullptr);
-                vkDestroyShaderModule(impl_->device, fragShader, nullptr);
-                return false;
-            }
-        }
-
-        vkDestroyShaderModule(impl_->device, terrainVS, nullptr);
-        vkDestroyShaderModule(impl_->device, staticVS, nullptr);
-        vkDestroyShaderModule(impl_->device, fragShader, nullptr);
-        impl_->depthPrepassReady = true;
-        log_line("Vulkan: depth prepass pipelines created");
-        return true;
-    }
-
     bool VulkanRenderer::create_cull_compute_pipeline()
     {
         if (!impl_->multiDrawIndirectSupported)
@@ -1638,7 +1531,8 @@ namespace phoenix::renderer
         return ok;
     }
 
-    bool VulkanRenderer::upload_terrain_textures(const std::vector<DdsTexture>& textures)
+    bool VulkanRenderer::upload_terrain_textures(const std::vector<DdsTexture>& textures,
+        const std::function<void()>& pump)
     {
         if (!ready_)
             return false;
@@ -1678,12 +1572,21 @@ namespace phoenix::renderer
         if (texWidth == 0 || texHeight == 0)
             return false;
 
-        const auto layerCount = static_cast<std::uint32_t>(textures.size());
+        auto layerCount = static_cast<std::uint32_t>(textures.size());
+        if (layerCount > impl_->maxImageArrayLayers)
+        {
+            // Truncate instead of failing outright: assets beyond the limit
+            // lose their textures but the engine keeps rendering.
+            log_line((std::string("Vulkan: texture array needs ")
+                + std::to_string(layerCount) + " layers but device supports "
+                + std::to_string(impl_->maxImageArrayLayers) + " — truncating").c_str());
+            layerCount = impl_->maxImageArrayLayers;
+        }
         const auto maxDim = std::max(texWidth, texHeight);
         const auto fullMips = static_cast<std::uint32_t>(std::floor(std::log2(static_cast<float>(maxDim)))) + 1u;
         const auto mipLevels = std::min(fullMips, static_cast<std::uint32_t>(std::max(1.0, std::log2(static_cast<double>(maxDim)) - 1.0)));
 
-        // ── Try BC-native upload (all textures uniform compressed format) ──
+        // â”€â”€ Try BC-native upload (all textures uniform compressed format) â”€â”€
         VkFormat nativeFormat = VK_FORMAT_UNDEFINED;
         std::uint32_t nativeMips = UINT32_MAX;
         bool canUploadBc = true;
@@ -1728,12 +1631,25 @@ namespace phoenix::renderer
                 mipHeights[mip] = std::max(1u, texHeight >> mip);
             }
 
-            // Build staging buffer with all layers × mip levels.
+            // Build staging buffer with all layers x mip levels. Reserve the
+            // exact size up front — growing a ~100MB vector through repeated
+            // reallocation copies is pure wasted CPU during loading.
+            std::size_t layerBytes = 0;
+            const auto stagingBlockBytes = bc_block_bytes(nativeFormat);
+            for (std::uint32_t mip = 0; mip < nativeMips; ++mip)
+            {
+                const auto blocksW = std::max(1u, (mipWidths[mip] + 3u) / 4u);
+                const auto blocksH = std::max(1u, (mipHeights[mip] + 3u) / 4u);
+                layerBytes += static_cast<std::size_t>(blocksW) * blocksH * stagingBlockBytes;
+            }
             std::vector<std::uint8_t> stagingPixels;
+            stagingPixels.reserve(static_cast<std::size_t>(layerCount) * layerBytes);
             std::vector<VkBufferImageCopy> copyRegions;
             copyRegions.reserve(static_cast<std::size_t>(layerCount) * nativeMips);
             for (std::uint32_t layer = 0; layer < layerCount; ++layer)
             {
+                if (pump && (layer & 63u) == 0u)
+                    pump();
                 for (std::uint32_t mip = 0; mip < nativeMips; ++mip)
                 {
                     const std::vector<std::uint8_t>* src{};
@@ -1853,40 +1769,59 @@ namespace phoenix::renderer
             }
             vkBindImageMemory(impl_->device, impl_->terrainTextureArray, impl_->terrainTextureArrayMemory, 0);
 
-            auto cmd = begin_single_command();
-            VkImageMemoryBarrier toTransfer{ VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER };
-            toTransfer.srcAccessMask = 0;
-            toTransfer.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
-            toTransfer.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-            toTransfer.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
-            toTransfer.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-            toTransfer.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-            toTransfer.image = impl_->terrainTextureArray;
-            toTransfer.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-            toTransfer.subresourceRange.levelCount = nativeMips;
-            toTransfer.subresourceRange.layerCount = layerCount;
-            vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
-                0, 0, nullptr, 0, nullptr, 1, &toTransfer);
+            // Submit the copies in chunks with a pump between each one: a
+            // single command buffer with ~9k copy regions blocks the main
+            // thread for seconds of driver processing, which made the window
+            // unclosable during this phase.
+            {
+                auto cmd = begin_single_command();
+                VkImageMemoryBarrier toTransfer{ VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER };
+                toTransfer.srcAccessMask = 0;
+                toTransfer.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+                toTransfer.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+                toTransfer.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+                toTransfer.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+                toTransfer.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+                toTransfer.image = impl_->terrainTextureArray;
+                toTransfer.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+                toTransfer.subresourceRange.levelCount = nativeMips;
+                toTransfer.subresourceRange.layerCount = layerCount;
+                vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
+                    0, 0, nullptr, 0, nullptr, 1, &toTransfer);
+                end_single_command(cmd);
+            }
 
-            vkCmdCopyBufferToImage(cmd, stagingBuffer, impl_->terrainTextureArray,
-                VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-                static_cast<std::uint32_t>(copyRegions.size()),
-                copyRegions.data());
+            constexpr std::size_t kCopyChunk = 1024;
+            for (std::size_t first = 0; first < copyRegions.size(); first += kCopyChunk)
+            {
+                if (pump)
+                    pump();
+                const auto chunk = std::min(kCopyChunk, copyRegions.size() - first);
+                auto cmd = begin_single_command();
+                vkCmdCopyBufferToImage(cmd, stagingBuffer, impl_->terrainTextureArray,
+                    VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                    static_cast<std::uint32_t>(chunk),
+                    copyRegions.data() + first);
+                end_single_command(cmd);
+            }
 
-            VkImageMemoryBarrier toShader{ VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER };
-            toShader.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
-            toShader.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
-            toShader.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
-            toShader.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-            toShader.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-            toShader.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-            toShader.image = impl_->terrainTextureArray;
-            toShader.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-            toShader.subresourceRange.levelCount = nativeMips;
-            toShader.subresourceRange.layerCount = layerCount;
-            vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
-                0, 0, nullptr, 0, nullptr, 1, &toShader);
-            end_single_command(cmd);
+            {
+                auto cmd = begin_single_command();
+                VkImageMemoryBarrier toShader{ VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER };
+                toShader.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+                toShader.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+                toShader.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+                toShader.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+                toShader.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+                toShader.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+                toShader.image = impl_->terrainTextureArray;
+                toShader.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+                toShader.subresourceRange.levelCount = nativeMips;
+                toShader.subresourceRange.layerCount = layerCount;
+                vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+                    0, 0, nullptr, 0, nullptr, 1, &toShader);
+                end_single_command(cmd);
+            }
 
             vkDestroyBuffer(impl_->device, stagingBuffer, nullptr);
             vkFreeMemory(impl_->device, stagingMemory, nullptr);
@@ -1928,7 +1863,7 @@ namespace phoenix::renderer
             return true;
         }
 
-        // ── RGBA fallback path (when BC-native is not possible) ──
+        // â”€â”€ RGBA fallback path (when BC-native is not possible) â”€â”€
 rgba_texture_fallback:
         const auto layerSize = static_cast<std::size_t>(texWidth) * texHeight * 4;
         std::vector<std::uint32_t> mipWidths(mipLevels);
@@ -1943,6 +1878,8 @@ rgba_texture_fallback:
         std::vector<std::uint8_t> fallbackPixels;
         for (std::uint32_t i = 0; i < layerCount; ++i)
         {
+            if (pump && (i & 15u) == 0u)
+                pump();
             auto* dst = basePixels.data() + static_cast<std::size_t>(i) * layerSize;
             const auto sourceRgba = i < textures.size() && textures[i].valid
                 ? decode_texture_rgba(textures[i])
@@ -3190,7 +3127,7 @@ rgba_texture_fallback:
         if (!create_host_buffer(vertices.data(), vertexBytes, VK_BUFFER_USAGE_TRANSFER_SRC_BIT, stagingBuffer, stagingMemory))
             return false;
 
-        // Copy staging → device-local vertex buffer using a one-shot command.
+        // Copy staging â†’ device-local vertex buffer using a one-shot command.
         auto cmd = begin_single_command();
         VkBufferCopy copyRegion{};
         copyRegion.size = vertexBytes;
@@ -3329,7 +3266,7 @@ rgba_texture_fallback:
         destroy(impl_->indirectDrawBuffer, impl_->indirectDrawMemory);
         impl_->indirectReady = false;
 
-        // Convert ObjectBatch → VkDrawIndexedIndirectCommand.
+        // Convert ObjectBatch â†’ VkDrawIndexedIndirectCommand.
         struct IndirectCmd { std::uint32_t indexCount, instanceCount, firstIndex; std::int32_t vertexOffset; std::uint32_t firstInstance; };
         std::vector<IndirectCmd> cmds(batches.size());
         for (std::size_t i = 0; i < batches.size(); ++i)
@@ -3569,46 +3506,6 @@ rgba_texture_fallback:
         return true;
     }
 
-    bool VulkanRenderer::update_animated_object_scene(
-        const std::vector<TerrainVertex>& vertices,
-        const std::vector<ObjectInstance>& instances)
-    {
-        if (!impl_ || !impl_->animatedObjectsReady)
-            return false;
-
-        const auto vertexBytes = vertices.size() * sizeof(TerrainVertex);
-        const auto instanceBytes = instances.size() * sizeof(ObjectInstance);
-        if (vertexBytes > impl_->animatedObjectVertexBytes || instanceBytes > impl_->animatedObjectInstanceBytes)
-            return false;
-
-        // Persistent-mapped path: direct memcpy, no map/unmap overhead per frame.
-        if (vertexBytes > 0 && impl_->animatedObjectVertexMapped)
-            std::memcpy(impl_->animatedObjectVertexMapped, vertices.data(), vertexBytes);
-
-        if (instanceBytes > 0 && impl_->animatedObjectInstanceMapped)
-            std::memcpy(impl_->animatedObjectInstanceMapped, instances.data(), instanceBytes);
-
-        // Fallback if persistent mapping is unavailable.
-        if (vertexBytes > 0 && !impl_->animatedObjectVertexMapped)
-        {
-            void* mapped = nullptr;
-            if (vkMapMemory(impl_->device, impl_->animatedObjectVertexMemory, 0, vertexBytes, 0, &mapped) != VK_SUCCESS)
-                return false;
-            std::memcpy(mapped, vertices.data(), vertexBytes);
-            vkUnmapMemory(impl_->device, impl_->animatedObjectVertexMemory);
-        }
-
-        if (instanceBytes > 0 && !impl_->animatedObjectInstanceMapped)
-        {
-            void* mapped = nullptr;
-            if (vkMapMemory(impl_->device, impl_->animatedObjectInstanceMemory, 0, instanceBytes, 0, &mapped) != VK_SUCCESS)
-                return false;
-            std::memcpy(mapped, instances.data(), instanceBytes);
-            vkUnmapMemory(impl_->device, impl_->animatedObjectInstanceMemory);
-        }
-        return true;
-    }
-
     bool VulkanRenderer::update_animated_object_vertices_range(
         const TerrainVertex* vertices, std::uint32_t firstVertex, std::uint32_t vertexCount)
     {
@@ -3630,28 +3527,6 @@ rgba_texture_fallback:
             return false;
         std::memcpy(mapped, vertices + firstVertex, rangeBytes);
         vkUnmapMemory(impl_->device, impl_->animatedObjectVertexMemory);
-        return true;
-    }
-
-    bool VulkanRenderer::update_animated_object_instances(
-        const std::vector<ObjectInstance>& instances)
-    {
-        if (!impl_ || !impl_->animatedObjectsReady)
-            return false;
-        const auto instanceBytes = instances.size() * sizeof(ObjectInstance);
-        if (instanceBytes > impl_->animatedObjectInstanceBytes)
-            return false;
-        if (instanceBytes > 0 && impl_->animatedObjectInstanceMapped)
-            std::memcpy(impl_->animatedObjectInstanceMapped, instances.data(), instanceBytes);
-        else if (instanceBytes > 0)
-        {
-            void* mapped = nullptr;
-            if (vkMapMemory(impl_->device, impl_->animatedObjectInstanceMemory,
-                            0, instanceBytes, 0, &mapped) != VK_SUCCESS)
-                return false;
-            std::memcpy(mapped, instances.data(), instanceBytes);
-            vkUnmapMemory(impl_->device, impl_->animatedObjectInstanceMemory);
-        }
         return true;
     }
 
@@ -3738,7 +3613,7 @@ rgba_texture_fallback:
         const auto vertexBytes = vertices.size() * sizeof(TerrainVertex);
         const auto indexBytes = indices.size() * sizeof(std::uint32_t);
 
-        // Over-allocate 4× so appearance swaps can reuse without recreating.
+        // Over-allocate 4Ã— so appearance swaps can reuse without recreating.
         const auto vertexCapacity = vertexBytes * 4;
         const auto indexCapacity = indexBytes * 4;
 
@@ -3942,6 +3817,33 @@ rgba_texture_fallback:
         return true;
     }
 
+    bool VulkanRenderer::update_bot_character_vertices_range(
+        const TerrainVertex* vertices, std::uint32_t firstVertex, std::uint32_t vertexCount)
+    {
+        if (!impl_ || !impl_->botCharacterVertexBuffer || !vertices || vertexCount == 0)
+            return false;
+
+        const auto offsetBytes = static_cast<std::size_t>(firstVertex) * sizeof(TerrainVertex);
+        const auto rangeBytes = static_cast<std::size_t>(vertexCount) * sizeof(TerrainVertex);
+        if (offsetBytes + rangeBytes > impl_->botCharacterVertexCapacity)
+            return false;
+
+        if (impl_->botCharacterVertexMapped)
+        {
+            std::memcpy(static_cast<char*>(impl_->botCharacterVertexMapped) + offsetBytes,
+                vertices + firstVertex, rangeBytes);
+            return true;
+        }
+
+        void* mapped{};
+        if (vkMapMemory(impl_->device, impl_->botCharacterVertexMemory,
+                offsetBytes, rangeBytes, 0, &mapped) != VK_SUCCESS)
+            return false;
+        std::memcpy(mapped, vertices + firstVertex, rangeBytes);
+        vkUnmapMemory(impl_->device, impl_->botCharacterVertexMemory);
+        return true;
+    }
+
     bool VulkanRenderer::update_bot_character_instances(
         const std::vector<ObjectInstance>& instances,
         const std::vector<ObjectBatch>& batches)
@@ -4016,7 +3918,7 @@ rgba_texture_fallback:
         impl_->cameraConstants[5] = std::max(0.1f, aspect);
         impl_->cameraConstants[6] = 0.7002f;
         impl_->cameraConstants[7] = std::max(100.0f, farPlane);
-        // CPU-precomputed trig (double precision → float) to eliminate
+        // CPU-precomputed trig (double precision â†’ float) to eliminate
         // per-vertex GPU sin/cos jitter during camera movement.
         impl_->cameraConstants[8] = static_cast<float>(std::cos(static_cast<double>(yaw)));
         impl_->cameraConstants[9] = static_cast<float>(std::sin(static_cast<double>(yaw)));
@@ -4092,6 +3994,19 @@ rgba_texture_fallback:
         impl_->skyConstants[14] = totalTime;
     }
 
+    void VulkanRenderer::disable_field_lightmaps()
+    {
+        if (!impl_)
+            return;
+        // Clear the lightmap-enabled flag (fogDistances.zw). Without this, maps
+        // without lightmaps inherit stale sky-layer values in these slots and
+        // the terrain/static shaders would sample a stale or unbound lightmap.
+        impl_->skyConstants[6] = 0.0f;
+        impl_->skyConstants[7] = 0.0f;
+        impl_->lightmapSectionCount = 0;
+        impl_->lightmapReady = false;
+    }
+
     bool VulkanRenderer::upload_field_lightmaps(const std::vector<DdsTexture>& lightmaps, std::uint32_t sectionCount)
     {
         if (!ready_ || lightmaps.empty())
@@ -4165,66 +4080,81 @@ rgba_texture_fallback:
         }
         vkBindImageMemory(impl_->device, impl_->lightmapImage, impl_->lightmapMemory, 0);
 
-        // Upload each layer via staging buffer.
-        for (std::uint32_t i = 0; i < layerCount; ++i)
+        // Upload all layers in ONE submit: a single staging buffer plus one
+        // command buffer (dungeons can have 90+ pages — per-layer submits used
+        // to mean 90 synchronous queue round-trips).
         {
-            const auto& lm = lightmaps[i];
-            if (!lm.valid || lm.mipData.empty())
-                continue;
+            std::vector<std::uint8_t> stagingPixels;
+            std::vector<VkBufferImageCopy> copyRegions;
+            copyRegions.reserve(layerCount);
+            for (std::uint32_t i = 0; i < layerCount; ++i)
+            {
+                const auto& lm = lightmaps[i];
+                if (!lm.valid || lm.mipData.empty())
+                    continue;
+                const auto& mipBytes = lm.mipData[0];
 
-            const auto& mipBytes = lm.mipData[0];
+                VkBufferImageCopy region{};
+                region.bufferOffset = static_cast<VkDeviceSize>(stagingPixels.size());
+                region.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+                region.imageSubresource.mipLevel = 0;
+                region.imageSubresource.baseArrayLayer = i;
+                region.imageSubresource.layerCount = 1;
+                region.imageExtent = { lmWidth, lmHeight, 1 };
+                copyRegions.push_back(region);
+                stagingPixels.insert(stagingPixels.end(), mipBytes.begin(), mipBytes.end());
+            }
+
             VkBuffer staging{};
             VkDeviceMemory stagingMem{};
-            if (!create_host_buffer(mipBytes.data(), mipBytes.size(),
+            if (!copyRegions.empty()
+                && create_host_buffer(stagingPixels.data(), stagingPixels.size(),
                     VK_BUFFER_USAGE_TRANSFER_SRC_BIT, staging, stagingMem))
-                continue;
+            {
+                auto cmd = begin_single_command();
 
-            auto cmd = begin_single_command();
+                // Transition ALL layers (also the invalid ones) so every layer
+                // ends in SHADER_READ_ONLY with a defined layout.
+                VkImageMemoryBarrier toTransfer{ VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER };
+                toTransfer.srcAccessMask = 0;
+                toTransfer.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+                toTransfer.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+                toTransfer.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+                toTransfer.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+                toTransfer.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+                toTransfer.image = impl_->lightmapImage;
+                toTransfer.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+                toTransfer.subresourceRange.baseMipLevel = 0;
+                toTransfer.subresourceRange.levelCount = 1;
+                toTransfer.subresourceRange.baseArrayLayer = 0;
+                toTransfer.subresourceRange.layerCount = layerCount;
+                vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
+                    0, 0, nullptr, 0, nullptr, 1, &toTransfer);
 
-            VkImageMemoryBarrier toTransfer{ VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER };
-            toTransfer.srcAccessMask = 0;
-            toTransfer.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
-            toTransfer.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-            toTransfer.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
-            toTransfer.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-            toTransfer.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-            toTransfer.image = impl_->lightmapImage;
-            toTransfer.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-            toTransfer.subresourceRange.baseMipLevel = 0;
-            toTransfer.subresourceRange.levelCount = 1;
-            toTransfer.subresourceRange.baseArrayLayer = i;
-            toTransfer.subresourceRange.layerCount = 1;
-            vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
-                0, 0, nullptr, 0, nullptr, 1, &toTransfer);
+                vkCmdCopyBufferToImage(cmd, staging, impl_->lightmapImage,
+                    VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                    static_cast<std::uint32_t>(copyRegions.size()), copyRegions.data());
 
-            VkBufferImageCopy region{};
-            region.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-            region.imageSubresource.mipLevel = 0;
-            region.imageSubresource.baseArrayLayer = i;
-            region.imageSubresource.layerCount = 1;
-            region.imageExtent = { lmWidth, lmHeight, 1 };
-            vkCmdCopyBufferToImage(cmd, staging, impl_->lightmapImage,
-                VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
+                VkImageMemoryBarrier toShader{ VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER };
+                toShader.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+                toShader.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+                toShader.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+                toShader.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+                toShader.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+                toShader.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+                toShader.image = impl_->lightmapImage;
+                toShader.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+                toShader.subresourceRange.baseMipLevel = 0;
+                toShader.subresourceRange.levelCount = 1;
+                toShader.subresourceRange.baseArrayLayer = 0;
+                toShader.subresourceRange.layerCount = layerCount;
+                vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+                    0, 0, nullptr, 0, nullptr, 1, &toShader);
 
-            VkImageMemoryBarrier toShader{ VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER };
-            toShader.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
-            toShader.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
-            toShader.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
-            toShader.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-            toShader.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-            toShader.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-            toShader.image = impl_->lightmapImage;
-            toShader.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-            toShader.subresourceRange.baseMipLevel = 0;
-            toShader.subresourceRange.levelCount = 1;
-            toShader.subresourceRange.baseArrayLayer = i;
-            toShader.subresourceRange.layerCount = 1;
-            vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
-                0, 0, nullptr, 0, nullptr, 1, &toShader);
-
-            end_single_command(cmd);
-            vkDestroyBuffer(impl_->device, staging, nullptr);
-            vkFreeMemory(impl_->device, stagingMem, nullptr);
+                end_single_command(cmd);
+                vkDestroyBuffer(impl_->device, staging, nullptr);
+                vkFreeMemory(impl_->device, stagingMem, nullptr);
+            }
         }
 
         // Create image view.
@@ -4269,7 +4199,9 @@ rgba_texture_fallback:
         std::uint32_t side,
         float mapSize,
         const float* tileSizes,
-        std::uint32_t tileSizeCount)
+        std::uint32_t tileSizeCount,
+        std::uint32_t alphaMaskLayerFlags,
+        std::uint32_t splatLayerCount)
     {
         if (!impl_ || data.empty() || side == 0)
             return false;
@@ -4287,7 +4219,9 @@ rgba_texture_fallback:
         const auto mapBytes = data.size();
         const auto mapBytesPadded = (mapBytes + 3u) & ~3u;
         const auto tileSizeBytes = kMaxTileSizes * sizeof(float);
-        const auto totalBytes = mapBytesPadded + tileSizeBytes;
+        // Tail after tile sizes: [alphaMaskLayerFlags][splatLayerCount] (u32 each)
+        // — read by the terrain shader for alpha-mask splat blending.
+        const auto totalBytes = mapBytesPadded + tileSizeBytes + 2 * sizeof(std::uint32_t);
 
         std::vector<std::uint8_t> buffer(totalBytes, 0);
         std::memcpy(buffer.data(), data.data(), mapBytes);
@@ -4295,6 +4229,10 @@ rgba_texture_fallback:
         auto* tileSizeDst = reinterpret_cast<float*>(buffer.data() + mapBytesPadded);
         for (std::uint32_t i = 0; i < kMaxTileSizes; ++i)
             tileSizeDst[i] = (i < tileSizeCount && tileSizes) ? std::max(1.0f, tileSizes[i]) : 8.0f;
+
+        auto* splatDst = reinterpret_cast<std::uint32_t*>(buffer.data() + mapBytesPadded + tileSizeBytes);
+        splatDst[0] = alphaMaskLayerFlags;
+        splatDst[1] = std::min(splatLayerCount, kMaxTileSizes);
 
         if (!create_host_buffer(buffer.data(), totalBytes,
             VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
@@ -4425,7 +4363,7 @@ rgba_texture_fallback:
             renderPassInfo.clearValueCount = static_cast<std::uint32_t>(std::size(clears));
             renderPassInfo.pClearValues = clears;
 
-            // ── GPU frustum culling compute pass (before render pass) ──
+            // â”€â”€ GPU frustum culling compute pass (before render pass) â”€â”€
             if (impl_->indirectReady && impl_->objectsReady)
             {
                 vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, impl_->cullPipeline);
@@ -4451,7 +4389,7 @@ rgba_texture_fallback:
                     VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(cullPc), &cullPc);
                 vkCmdDispatch(commandBuffer, (impl_->indirectBatchCount + 63) / 64, 1, 1);
 
-                // Barrier: compute write → indirect draw read.
+                // Barrier: compute write â†’ indirect draw read.
                 VkMemoryBarrier barrier{ VK_STRUCTURE_TYPE_MEMORY_BARRIER };
                 barrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
                 barrier.dstAccessMask = VK_ACCESS_INDIRECT_COMMAND_READ_BIT;
@@ -4494,7 +4432,7 @@ rgba_texture_fallback:
                     impl_->terrainPipelineLayout, 0, 1, &impl_->descriptorSet, 0, nullptr);
             }
 
-            // ── Main color pass ──
+            // â”€â”€ Main color pass â”€â”€
             const auto terrainPipe = impl_->terrainPipeline;
             const auto staticPipe = impl_->staticObjectPipeline;
 
@@ -4964,10 +4902,6 @@ rgba_texture_fallback:
             vkDestroyPipeline(impl_->device, impl_->staticObjectPipeline, nullptr);
         if (impl_->staticObjectPipelineZEqual)
             vkDestroyPipeline(impl_->device, impl_->staticObjectPipelineZEqual, nullptr);
-        if (impl_->depthPrepassTerrainPipeline)
-            vkDestroyPipeline(impl_->device, impl_->depthPrepassTerrainPipeline, nullptr);
-        if (impl_->depthPrepassStaticPipeline)
-            vkDestroyPipeline(impl_->device, impl_->depthPrepassStaticPipeline, nullptr);
         // GPU culling resources.
         if (impl_->indirectTemplateBuffer)
             vkDestroyBuffer(impl_->device, impl_->indirectTemplateBuffer, nullptr);

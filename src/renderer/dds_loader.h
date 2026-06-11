@@ -39,6 +39,11 @@ namespace phoenix::renderer
     /// the renderer can apply alpha-test instead of guessing by filename.
     bool texture_has_alpha_cutout(const DdsTexture& texture);
 
+    /// Convenience: load a DDS from disk and classify its alpha content.
+    /// This is THE universal transparency decision for every asset type that
+    /// does not carry an explicit alpha mode in its data tables.
+    bool dds_file_has_alpha_cutout(const std::filesystem::path& path);
+
     /// Normalise a single texture to BC3 at target dimensions with a full mip chain.
     /// Handles BC1, BC2, BC3, and uncompressed textures.  Invalid textures are filled
     /// with a solid-colour fallback.

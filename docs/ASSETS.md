@@ -5,45 +5,40 @@ Phoenix Engine does not include commercial game data or extracted client/server 
 Phoenix Engine resolves runtime data from the first valid location in this order:
 
 1. `PHOENIX_ENGINE_DATA` environment variable.
-2. `Data/` next to the executable.
-3. `Data/` in the current working directory.
-4. `Data/` in parent directories above the executable.
+2. `data/` next to the executable.
+3. `data/` in the current working directory.
+4. `data/` in parent directories above the executable.
 
 Platform-specific fallback locations:
 
 | Platform | Paths |
 |----------|-------|
-| Windows | `%LOCALAPPDATA%/Phoenix Engine/Data`, `%PROGRAMDATA%/Phoenix Engine/Data` |
-| Linux | `~/.local/share/Phoenix Engine/Data` |
+| Windows | `%LOCALAPPDATA%/Phoenix Engine/data`, `%PROGRAMDATA%/Phoenix Engine/data` |
+| Linux | `~/.local/share/Phoenix Engine/data` |
 
 For local development, place your own data directory at the project root:
 
 ```text
-Data/
+data/
 ```
 
-The current runtime expects a layout similar to:
+The data tree is all-lowercase (legacy capitalised layouts still resolve on
+case-sensitive filesystems). The runtime expects this layout:
 
 ```text
-Data/
-  Character/
-  Entity/
-  Effect/
-  Monster/
-    mob.csv
-    monster.csv
-  Npc/
-    npc.csv
-    NpcQuest.csv
-  Sound/
-  Terrain/
-  World/
-    svmap/{mapId}/
-      metadata.csv
-      monster_areas.csv
-      monster_spawns.csv
-      npcs.csv
-      npc_positions.csv
+data/
+  world/              All maps as flat <id>.wld files.
+    field/<id>/       Field lightmaps  <id>_<sec>_l.dds (baked shadow + tone)
+                      and alpha splat masks <id>_<sec>_a0..a7.dds per section.
+    dungeon/          <name>.dg models plus <name>/<name>_L<i>.dds lightmap pages.
+  entity/             Placeable world assets grouped by WLD section:
+                      building/ shape/ tree/ grass/ vani/ mani/ terrain/ texture/
+                      object/ (climbable ladders & ivy).
+  character/<race>/   3dc/ dds/ ani/ plus <prefix>_<part>.csv and <prefix>_action.csv.
+  weapons/            3do/ dds/ plus per-type CSVs (sword1h.csv, bow.csv, shieldlight.csv, ...).
+  vehicle/            3dc/ dds/ ani/ plus vehicle_<class>_01.csv.
+  mantles/            3DC/ DDS/ plus mantle_<race>.csv.
+  sound/              OGG audio referenced by maps/terrain only.
 ```
 
 ### File formats
@@ -51,21 +46,40 @@ Data/
 **Binary formats** (loaded as-is from the original client):
 
 - World/map data: `.wld`, `.dg`
-- Static and animated models: `.smod`, `.3dc`, `.vani`, `.mani`
+- Static and animated models: `.smod`, `.vani`, `.mani`, `.3dc`, `.3do`
 - Animation: `.ani`
-- Textures: `.dds`, `.bmp`, `.tga`
+- Textures: `.dds` (see canonical format below), `.bmp`, `.tga`
 
-**CSV formats** (replacing legacy binary equivalents):
+**CSV tables** (trimmed to the columns the engine consumes):
 
-- `mob.csv` / `npc.csv` — monster and NPC model definitions (replaces binary `.mon`)
-- `monster.csv` / `NpcQuest.csv` — server metadata (replaces binary `.sdata`)
-- `svmap/{mapId}/*.csv` — spawn maps and NPC placement (replaces binary `.svmap`)
+- `weapons/<type>.csv` — `RecordIndex,MeshName,TextureName,AlphaBlendingMode`,
+  deduplicated by mesh+texture pair.
+- `vehicle/vehicle_<class>_01.csv` — animations, `Objects` (mesh:texture list),
+  `Bone` (rider seat bone), `Bone2` (reserved), `AlternateAnimation` (0/1).
+- `character/<race>/<prefix>_<part>.csv` — body part tables by record index.
+- `character/<race>/<prefix>_action.csv` — animation clips by action id.
+
+**Canonical texture format:**
+
+Every `.dds` is expected as **BC3 (DXT5) with a full mip chain** — 256x256 for
+content textures, native dimensions under `world/`. The renderer then uploads
+GPU-native with no load-time conversion. New or imported textures should be run
+through the bundled tool once (idempotent):
+
+```text
+bin/tools/Release/dds_normalize <directory> 256 256   # resize + convert
+bin/tools/Release/dds_normalize <directory> 0 0       # convert only, keep dimensions
+```
+
+Transparency is decided by each texture's actual alpha content (cutout
+auto-detection); character/weapon tables additionally declare their alpha mode
+via `AlphaBlendingMode`.
 
 **Audio:**
 
 - `.ogg` (Vorbis) — WLD files reference `.wav` names but the engine resolves them to `.ogg` on disk
 
-The `.gitignore` intentionally excludes `Data/` at every repository depth. Keep this rule unless the project later gains a fully original asset pack that is safe to redistribute.
+The `.gitignore` intentionally excludes `data/` at every repository depth. Keep this rule unless the project later gains a fully original asset pack that is safe to redistribute.
 
 ## Legal Boundary
 

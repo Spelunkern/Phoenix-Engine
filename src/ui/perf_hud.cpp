@@ -76,9 +76,8 @@ namespace phoenix::ui
             // Cache icon lookups once so draw never does string ops.
             const auto& os = hud.osName;
             if (contains_ci(os, "windows")) hud.cachedOsIcon = hud.windowsIcon;
-            else if (contains_ci(os, "linux") || contains_ci(os, "ubuntu") || contains_ci(os, "debian")
-                || contains_ci(os, "fedora") || contains_ci(os, "arch")) hud.cachedOsIcon = hud.linuxIcon;
             else if (contains_ci(os, "mac") || contains_ci(os, "darwin")) hud.cachedOsIcon = hud.macIcon;
+            else hud.cachedOsIcon = hud.linuxIcon; // Everything not Windows/Mac shows Tux
 
             auto resolve_vendor = [&](const std::string& name) -> std::uint64_t {
                 if (contains_ci(name, "nvidia") || contains_ci(name, "geforce") || contains_ci(name, "rtx") || contains_ci(name, "gtx"))
@@ -245,19 +244,31 @@ namespace phoenix::ui
         }
 #else
         {
+            // Line-based parse: token streaming desyncs on /proc/meminfo lines
+            // without a unit (HugePages_*), and kernels/containers without
+            // MemAvailable need the MemFree+Buffers+Cached fallback — both
+            // made the HUD show bogus values (e.g. RAM permanently full).
             std::ifstream meminfo("/proc/meminfo");
-            std::string key, unit; long long val = 0, totalKb = 0, availKb = 0;
-            while (meminfo >> key >> val >> unit)
+            std::string line;
+            long long totalKb = 0, availKb = -1, freeKb = 0, buffersKb = 0, cachedKb = 0;
+            while (std::getline(meminfo, line))
             {
-                if (key == "MemTotal:") totalKb = val;
-                else if (key == "MemAvailable:") availKb = val;
-                if (totalKb && availKb) break;
+                long long kb = 0;
+                if (std::sscanf(line.c_str(), "MemTotal: %lld", &kb) == 1) totalKb = kb;
+                else if (std::sscanf(line.c_str(), "MemAvailable: %lld", &kb) == 1) availKb = kb;
+                else if (std::sscanf(line.c_str(), "MemFree: %lld", &kb) == 1) freeKb = kb;
+                else if (std::sscanf(line.c_str(), "Buffers: %lld", &kb) == 1) buffersKb = kb;
+                else if (std::sscanf(line.c_str(), "Cached: %lld", &kb) == 1) cachedKb = kb;
             }
             if (totalKb > 0)
             {
+                const long long effectiveAvailKb = availKb >= 0
+                    ? availKb
+                    : (freeKb + buffersKb + cachedKb);
+                const auto clampedAvail = std::clamp<long long>(effectiveAvailKb, 0, totalKb);
                 ramTotalMB = static_cast<float>(totalKb) / 1024.0f;
-                ramUsedMB = static_cast<float>(totalKb - availKb) / 1024.0f;
-                ramPercent = (1.0f - static_cast<float>(availKb) / static_cast<float>(totalKb)) * 100.0f;
+                ramUsedMB = static_cast<float>(totalKb - clampedAvail) / 1024.0f;
+                ramPercent = (1.0f - static_cast<float>(clampedAvail) / static_cast<float>(totalKb)) * 100.0f;
             }
         }
         {

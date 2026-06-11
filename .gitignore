@@ -10,14 +10,17 @@
 /.claude/
 
 # Local runtime data and extracted assets
+/data/
 /Data/
 /**/Data/
 /backup/
+/data_dds_backup/
 
 # Logs and local state
 /Logs/
 *.log
 imgui.ini
+perf_hud.ini
 /diagnostics/
 *.user
 *.suo

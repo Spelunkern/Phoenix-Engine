@@ -434,6 +434,25 @@ namespace phoenix::renderer
                     std::memcpy(result.rgba.data(), data.data() + kPayloadOffset, size);
                 }
             }
+            else if (bitCount == 24)
+            {
+                // 24-bit RGB (no alpha) — expand to RGBA with opaque alpha.
+                const auto pixelCount = static_cast<std::size_t>(result.width) * result.height;
+                if (kPayloadOffset + pixelCount * 3 > data.size())
+                    return result;
+
+                const auto rMask = read_u32(data.data() + 92);
+                const bool bgr = rMask == 0x00FF0000u;
+                result.rgba.resize(pixelCount * 4);
+                for (std::size_t i = 0; i < pixelCount; ++i)
+                {
+                    const auto s = kPayloadOffset + i * 3;
+                    result.rgba[i * 4 + 0] = bgr ? data[s + 2] : data[s + 0];
+                    result.rgba[i * 4 + 1] = data[s + 1];
+                    result.rgba[i * 4 + 2] = bgr ? data[s + 0] : data[s + 2];
+                    result.rgba[i * 4 + 3] = 255;
+                }
+            }
             else
             {
                 return result;
@@ -770,6 +789,14 @@ namespace phoenix::renderer
         return false;
     }
 
+    bool dds_file_has_alpha_cutout(const std::filesystem::path& path)
+    {
+        if (path.empty())
+            return false;
+        const auto texture = load_dds(path);
+        return texture_has_alpha_cutout(texture);
+    }
+
     void convert_texture_to_bc3(DdsTexture& texture,
                                 std::uint32_t targetWidth,
                                 std::uint32_t targetHeight,
@@ -805,16 +832,17 @@ namespace phoenix::renderer
                 rgba = texture.rgba;
         }
 
-        // Build fallback solid colour if we couldn't decode.
+        // Build fallback solid colour if we couldn't decode. Muted earthy tone
+        // instead of debug magenta — broken textures should blend in, not glow.
         if (rgba.empty() || rgba.size() < static_cast<std::size_t>(texture.width) * texture.height * 4)
         {
             const auto fallbackSize = static_cast<std::size_t>(targetWidth) * targetHeight * 4;
             rgba.resize(fallbackSize);
             for (std::size_t p = 0; p < static_cast<std::size_t>(targetWidth) * targetHeight; ++p)
             {
-                rgba[p * 4 + 0] = 255;
-                rgba[p * 4 + 1] = 0;
-                rgba[p * 4 + 2] = 255;
+                rgba[p * 4 + 0] = 96;
+                rgba[p * 4 + 1] = 104;
+                rgba[p * 4 + 2] = 88;
                 rgba[p * 4 + 3] = 255;
             }
             texture.width = targetWidth;

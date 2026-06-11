@@ -4,6 +4,72 @@ All notable changes to Phoenix Engine are documented here. Dates are ISO-8601.
 
 ## [Unreleased]
 
+## [v0.7] - 2026-06-11
+
+### Added
+- Full lightmap support: field maps (baked shadow/tone `_l.dds` per section)
+  and dungeons (per-vertex lightmap page sampling from `<name>_L<i>.dds`),
+  applied only when the map itself is a dungeon.
+- Alpha-mask terrain splatting ("tonality" maps): field `_a0.._a7.dds` weights
+  packed four-per-RGBA into two lightmap-array layers per section, blended in
+  the terrain shader with a one-sample fast path.
+- VANI vertex-animated decor with distance LOD (animates under 100m, frozen
+  beyond, distance-culled by the universal render distance) and MANI rotating
+  objects driven entirely on the GPU (Rodrigues rotation packed in instance
+  data).
+- Ladder climbing: WLD "Object"-section assets (ladders/ivy) no longer collide;
+  proximity latches the character into the climb animation (action 18) up to
+  the top, ending with a small forward step.
+- Occasional idle gestures (idle1/idle2 one-shots between breathing cycles).
+- Universal content-based transparency: cutout is decided by each texture's
+  actual alpha channel (BC3 block inspection); filename heuristics removed.
+  Mounts and cloaks now classify their transparency correctly.
+- Canonical DDS pipeline: every texture pre-normalised to BC3 + full mip chain
+  by the new `dds_normalize` tool (`tools/`), activating the renderer's
+  GPU-native upload path — the load-time conversion stage dropped from ~1.1s
+  to ~8ms.
+- Per-mount data-driven seat bone (`Bone` column), secondary-rider placeholder
+  (`Bone2`), and alternate ride animation flag (`AlternateAnimation`) in the
+  vehicle CSVs.
+- Device hard-requirement validation at startup (push constant budget) with
+  graceful texture-array truncation when a GPU's layer limit is exceeded;
+  discrete GPU is now preferred on hybrid systems.
+- 24-bit RGB DDS support in the texture loader.
+
+### Changed
+- Data tree reorganised and lower-cased: all maps live flat in `data/world/`
+  (`<id>.wld`), field lightmaps in `data/world/field/<id>/`, dungeon assets in
+  `data/world/dungeon/`; `Assets/` renamed to `entity/` (with `ladder/` →
+  `object/`). Legacy capitalised layouts still resolve on case-sensitive
+  filesystems.
+- Weapon CSVs renamed from numeric ids to type names (`sword1h.csv`, ...) and
+  trimmed to the four columns the engine reads; rows with duplicate or missing
+  assets removed, along with the orphaned asset files (sound, character,
+  weapon, and vehicle data deep-cleaned).
+- World asset building parallelised (texture-layer assignment stays
+  deterministic); bot pose skinning reuses the persistent worker pool; bot and
+  VANI vertex uploads send only dirty ranges; lightmap/mask preparation runs
+  across all cores.
+- Terrain splat sampling uses explicit-gradient `SampleGrad` with a single
+  sample on uniform terrain; instance distance culling moved before rotation
+  math and tests the instance origin (fixes screen-covering smeared triangles
+  on far VANI objects).
+- Footstep sounds only play while grounded (never while jumping, falling,
+  swimming, or climbing); changing maps stops all playing audio immediately.
+- Dodge displacement now respects world collision; dodging is blocked while
+  mounted or climbing; emotes and idle gestures play their full duration.
+- The window closes instantly at any moment, including mid-load: every loading
+  phase pumps messages (chunked GPU uploads, parallel lightmap prep) and the
+  exit path skips teardown entirely.
+- Linux RAM metrics in the performance HUD fixed (robust /proc/meminfo parsing
+  with MemAvailable fallback).
+
+### Removed
+- Dead subsystems: unused world loaders (`mon`, `eft`, `svmap`, `sdata`,
+  `phoenix_world`), the never-drawn depth prepass pipelines and shaders, the
+  file logging system, WLD preview PNG generation, the unpopulated BC3 RAM
+  cache, and assorted write-only fields across the WLD analysis structures.
+
 ## [v0.4] - 2026-06-02
 
 ### Added

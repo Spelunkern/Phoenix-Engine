@@ -1,4 +1,4 @@
-#include "character/character_system.h"
+﻿#include "character/character_system.h"
 
 #include "assets/data_index.h"
 #include "character/weapon_bone_map.h"
@@ -38,6 +38,9 @@ namespace phoenix::character
         constexpr float kBuoyancySpeed = 1.05f;
         constexpr float kJumpImpulse = 2.7f;
         constexpr float kGravity = 7.5f;
+        constexpr float kClimbSpeed = 1.9f;        // ladder ascent (units/s)
+        constexpr float kClimbExitNudge = 0.55f;   // forward push at the top
+        constexpr float kClimbCooldown = 0.8f;     // grace before re-latching
         // Native animation frame rate, recovered by reverse-engineering the retail
         // client (game-pt-ps0182.exe). The keyframe advancer FUN_00411470 computes
         //   currentFrame += dtSeconds * 30.0f
@@ -553,6 +556,7 @@ namespace phoenix::character
                 for (char c : line)
                     if (c != '"') clean += c;
 
+                // Format: RecordIndex,MeshName,TextureName,AlphaBlendingMode
                 std::size_t pos = 0;
                 auto next = [&]() -> std::string {
                     auto comma = clean.find(',', pos);
@@ -561,14 +565,10 @@ namespace phoenix::character
                     pos = comma < clean.size() ? comma + 1 : clean.size();
                     return token;
                 };
-                next(); // SourceFile
-                next(); // Header
                 const auto idx = std::atoi(next().c_str()); // RecordIndex
                 if (idx != recordIndex)
                     continue;
-                next(); // MeshIndex
                 auto meshName = trim(next()); // MeshName
-                next(); // TextureIndex
                 auto textureName = trim(next()); // TextureName
                 auto alphaMode = trim(next()); // AlphaBlendingMode
 
@@ -674,55 +674,6 @@ namespace phoenix::character
         std::string animation_cache_key(const std::filesystem::path& animationRoot, std::string_view prefix)
         {
             return path_key(animationRoot) + "|" + lower_ascii(std::string(prefix));
-        }
-
-        bool is_display_character_texture(std::string stem)
-        {
-            stem = lower_ascii(std::move(stem));
-            const auto startsWithDigits = [&](std::size_t pos) {
-                return pos + 3 <= stem.size()
-                    && std::isdigit(static_cast<unsigned char>(stem[pos]))
-                    && std::isdigit(static_cast<unsigned char>(stem[pos + 1]))
-                    && std::isdigit(static_cast<unsigned char>(stem[pos + 2]));
-            };
-
-            const auto checkEquipment = [&](std::string_view marker) {
-                const auto pos = stem.find(marker);
-                if (pos == std::string::npos || pos < 4)
-                    return false;
-                const auto indexPos = pos + marker.size();
-                if (!startsWithDigits(indexPos))
-                    return false;
-                return stem.size() == indexPos + 3
-                    || (stem.size() == indexPos + 4
-                        && (stem[indexPos + 3] == '1' || stem[indexPos + 3] == '2'));
-            };
-
-            if (stem.starts_with("co_"))
-                return checkEquipment("_torso")
-                    || checkEquipment("_lower")
-                    || checkEquipment("_hand")
-                    || checkEquipment("_boots");
-
-            if (checkEquipment("_torso")
-                || checkEquipment("_lower")
-                || checkEquipment("_hand")
-                || checkEquipment("_boots"))
-                return true;
-
-            const auto checkBody = [&](std::string_view marker) {
-                const auto pos = stem.find(marker);
-                if (pos == std::string::npos || pos < 3)
-                    return false;
-                const auto indexPos = pos + marker.size();
-                if (!startsWithDigits(indexPos))
-                    return false;
-                return stem.size() == indexPos + 3
-                    || (stem.size() == indexPos + 5
-                        && stem[indexPos + 3] == '_'
-                        && std::isdigit(static_cast<unsigned char>(stem[indexPos + 4])));
-            };
-            return checkBody("_face") || checkBody("_hair");
         }
 
         struct PartTableEntry
@@ -878,13 +829,6 @@ namespace phoenix::character
         }
     }
 
-    const renderer::DdsTexture* CharacterSystem::bc3_texture_for(const std::filesystem::path& path) const
-    {
-        const auto key = path_key(path);
-        const auto it = cachedBc3Textures_.find(key);
-        return it != cachedBc3Textures_.end() ? &it->second : nullptr;
-    }
-
     bool CharacterSystem::preload(const std::filesystem::path& dataRoot)
     {
         if (cacheReady_ && cachedDataRoot_ == dataRoot)
@@ -893,10 +837,6 @@ namespace phoenix::character
         cachedDataRoot_ = dataRoot;
         cachedModels_.clear();
         cachedAnimations_.clear();
-        cachedTextureSlotByPath_.clear();
-        cachedTexturePaths_.clear();
-        cachedBc3Textures_.clear();
-        bc3CacheReady_ = false;
 
         const auto characterRoot = resolve_ci(dataRoot / "Character");
         if (!std::filesystem::exists(characterRoot))
@@ -917,26 +857,6 @@ namespace phoenix::character
                     auto model = world::load_character_3dc(entry.path());
                     if (model.parsed)
                         cachedModels_.emplace(path_key(entry.path()), std::move(model));
-                }
-            }
-
-            const auto textureRoot = resolve_ci(raceEntry.path() / "DDS");
-            if (std::filesystem::exists(textureRoot))
-            {
-                for (const auto& entry : std::filesystem::directory_iterator(textureRoot))
-                {
-                    if (!entry.is_regular_file()
-                        || lower_ascii(entry.path().extension().string()) != ".dds"
-                        || !is_display_character_texture(entry.path().stem().string()))
-                    {
-                        continue;
-                    }
-                    const auto key = path_key(entry.path());
-                    if (cachedTextureSlotByPath_.contains(key))
-                        continue;
-                    const auto slot = static_cast<std::uint32_t>(cachedTexturePaths_.size());
-                    cachedTextureSlotByPath_.emplace(key, slot);
-                    cachedTexturePaths_.push_back(entry.path());
                 }
             }
 
@@ -964,44 +884,7 @@ namespace phoenix::character
             }
         }
 
-        // ---- BC3 target resolution (used by on-demand conversion at swap time) ----
-        // ~80% of textures are already BC3 at 256×256 on disk, so pre-converting
-        // all 1963 character textures into a RAM cache was heavy CPU work (~50s)
-        // for negligible swap-time benefit. We now just record the target resolution
-        // and let the swap path (reloadCharacterIntoRenderer) load + convert the
-        // ~9 textures it actually needs on demand — milliseconds, not seconds.
-        {
-            bc3TargetWidth_ = 256;
-            bc3TargetHeight_ = 256;
-            const auto maxDim = std::max(bc3TargetWidth_, bc3TargetHeight_);
-            const auto fullMips = static_cast<std::uint32_t>(std::floor(std::log2(static_cast<float>(maxDim)))) + 1u;
-            bc3TargetMips_ = std::min(fullMips,
-                static_cast<std::uint32_t>(std::max(1.0, std::log2(static_cast<double>(maxDim)) - 1.0)));
-            bc3CacheReady_ = true;   // signal that the target params are set
-        }
-
         cacheReady_ = true;
-        {
-            std::size_t modelBytes = 0;
-            for (const auto& [k, m] : cachedModels_)
-                modelBytes += m.vertices.capacity() * sizeof(world::CharacterVertex)
-                    + m.faces.capacity() * sizeof(world::CharacterFace)
-                    + m.bones.capacity() * sizeof(world::CharacterBone);
-            std::size_t animBytes = 0;
-            std::size_t totalAnims = 0;
-            for (const auto& [k, choices] : cachedAnimations_)
-            {
-                for (const auto& c : choices)
-                {
-                    if (!c.animation.parsed) continue;
-                    ++totalAnims;
-                    for (const auto& bone : c.animation.bones)
-                        animBytes += bone.rotationFrames.capacity() * sizeof(world::CharacterAnimationRotationFrame)
-                            + bone.translationFrames.capacity() * sizeof(world::CharacterAnimationTranslationFrame)
-                            + sizeof(world::CharacterAnimationBone);
-                }
-            }
-        }
         return true;
     }
 
@@ -1024,30 +907,8 @@ namespace phoenix::character
                 cachedItemModels_.emplace(path_key(entry.path()), std::move(model));
         }
 
-        // Item DDS textures are loaded on demand at swap time (same as character
-        // textures). The bulk pre-cache was removed — it burned CPU converting
-        // hundreds of textures that may never be used. Only register the paths so
-        // the slot map is ready for on-demand lookup.
-        const auto ddsRoot = itemRoot / "dds";
-        if (std::filesystem::exists(ddsRoot))
-        {
-            for (const auto& entry : std::filesystem::directory_iterator(ddsRoot))
-            {
-                if (!entry.is_regular_file() || lower_ascii(entry.path().extension().string()) != ".dds")
-                    continue;
-                const auto key = path_key(entry.path());
-                if (!cachedTextureSlotByPath_.contains(key))
-                {
-                    const auto slot = static_cast<std::uint32_t>(cachedTexturePaths_.size());
-                    cachedTextureSlotByPath_.emplace(key, slot);
-                    cachedTexturePaths_.push_back(entry.path());
-                }
-            }
-        }
-
+        // Item DDS textures load on demand at swap time — no pre-registration needed.
         itemCacheReady_ = true;
-        {
-        }
         return true;
     }
 
@@ -1320,8 +1181,7 @@ namespace phoenix::character
         auto loadItemPart = [&](WeaponType type, int index, CharacterData::WeaponPart& outPart) -> bool {
             if (type == WeaponType::None || index < 0)
                 return false;
-            const auto typeId = std::format("{:02d}", static_cast<int>(type));
-            const auto csvPath = resolve_ci(itemRoot / (typeId + ".csv"));
+            const auto csvPath = resolve_ci(itemRoot / (std::string(weapon_type_csv_name(type)) + ".csv"));
             auto entry = resolve_item_from_csv(csvPath, index);
             if (!entry)
                 return false;
@@ -1495,6 +1355,9 @@ namespace phoenix::character
                     data_.texturePaths.push_back(texPath);
                 }
 
+                // Universal transparency: decided by the texture's alpha content.
+                const bool cloakCutout = phoenix::renderer::dds_file_has_alpha_cutout(texPath);
+
                 outPart.vertices.resize(model.vertices.size());
                 for (std::size_t v = 0; v < model.vertices.size(); ++v)
                 {
@@ -1511,7 +1374,7 @@ namespace phoenix::character
                 }
                 outPart.faces = model.faces;
                 outPart.textureIndex = textureIndex;
-                outPart.alphaCutout = false;
+                outPart.alphaCutout = cloakCutout;
                 outPart.vertexOffset = static_cast<std::uint32_t>(data_.bindVertices.size());
                 outPart.indexOffset = static_cast<std::uint32_t>(data_.indices.size());
                 outPart.vertexCount = static_cast<std::uint32_t>(model.vertices.size());
@@ -1529,14 +1392,14 @@ namespace phoenix::character
                     gv.normal[2] = sv.normal[2];
                     gv.uv[0] = sv.uv[0];
                     gv.uv[1] = sv.uv[1];
-                    gv.textureLayer = textureIndex;
+                    gv.textureLayer = textureIndex + (cloakCutout ? 2048u : 0u);
                     data_.bindVertices.push_back(gv);
                 }
 
                 CharacterBatch batch{};
                 batch.textureIndex = textureIndex;
                 batch.startIndex = outPart.indexOffset;
-                batch.alphaCutout = false;
+                batch.alphaCutout = cloakCutout;
                 for (const auto& face : model.faces)
                 {
                     data_.indices.push_back(outPart.vertexOffset + face.indices[0]);
@@ -1643,6 +1506,8 @@ namespace phoenix::character
                 return fields;
             };
 
+            // Column layout: 0=RecordIndex 1=Name 2=Walk 3=Run 4=Jump 5=Breath
+            // 6=Idle 7=Objects 8=Bone 9=Bone2 10=AlternateAnimation.
             std::vector<std::string> row;
             {
                 auto csv = assets::open_ifstream(csvPath);
@@ -1654,9 +1519,9 @@ namespace phoenix::character
                     {
                         if (line.empty()) continue;
                         auto fields = splitCsv(line);
-                        if (fields.size() < 26) continue;
+                        if (fields.size() < 8) continue;
                         int rec = -1;
-                        try { rec = std::stoi(fields[2]); } catch (...) { continue; }
+                        try { rec = std::stoi(fields[0]); } catch (...) { continue; }
                         if (rec == appearance.mountIndex) { row = std::move(fields); break; }
                     }
                 }
@@ -1664,14 +1529,41 @@ namespace phoenix::character
 
             if (!row.empty())
             {
-                // Column layout (MON->CSV): 5=Walk 6=Run 7=Jump 11=Breath
-                // 13=Idle 24=Objects 25=Height.
-                const std::string& objects = row[24];
+                const std::string& objects = row[7];
+
+                // Bone: seat bone the rider attaches to, defined per mount in
+                // the CSV (the ImGui "Seat bone" input stays as a live tool).
+                if (row.size() > 8)
+                {
+                    try
+                    {
+                        const int bone = std::stoi(trim(row[8]));
+                        if (bone >= 0)
+                            mountBoneIndex = bone;
+                    }
+                    catch (...) {}
+                }
+                // Bone2 (row[9]) is a placeholder for a future secondary rider.
+
+                // AlternateAnimation = 1: this mount makes the rider use the
+                // variant clips — action 22 for run, action 97 for breathing.
+                if (row.size() > 10)
+                {
+                    try
+                    {
+                        if (std::stoi(trim(row[10])) == 1)
+                        {
+                            data_.vehicleRun1Animation = resolve_action(data_.animations, 22);
+                            data_.vehicleIdleAnimation = resolve_action(data_.animations, 97);
+                        }
+                    }
+                    catch (...) {}
+                }
 
                 // Append a mount mesh part: GPU verts into bindVertices/indices/
                 // batches (shared render path); source verts + bones into mount.*
                 // so the rider's skin loop never sees them.
-                auto appendMountPart = [&](const world::CharacterModel& model, std::uint32_t textureIndex) {
+                auto appendMountPart = [&](const world::CharacterModel& model, std::uint32_t textureIndex, bool alphaCutout) {
                     const auto baseVertex = static_cast<std::uint32_t>(data_.bindVertices.size());
                     const auto meshBoneBase = static_cast<std::uint32_t>(data_.mount.meshBones.size());
                     const auto meshBoneCount = static_cast<std::uint32_t>(model.bones.size());
@@ -1709,14 +1601,14 @@ namespace phoenix::character
                         gv.normal[2] = sv.normal[2];
                         gv.uv[0] = sv.uv[0];
                         gv.uv[1] = sv.uv[1];
-                        gv.textureLayer = textureIndex;
+                        gv.textureLayer = textureIndex + (alphaCutout ? 2048u : 0u);
                         data_.bindVertices.push_back(gv);
                     }
 
                     CharacterBatch batch{};
                     batch.textureIndex = textureIndex;
                     batch.startIndex = static_cast<std::uint32_t>(data_.indices.size());
-                    batch.alphaCutout = false;
+                    batch.alphaCutout = alphaCutout;
                     for (const auto& face : model.faces)
                     {
                         data_.indices.push_back(baseVertex + face.indices[0]);
@@ -1757,7 +1649,9 @@ namespace phoenix::character
                         selectedTextureSlotByPath.emplace(textureKey, textureIndex);
                         data_.texturePaths.push_back(texPath);
                     }
-                    appendMountPart(model, textureIndex);
+                    // Universal transparency: decided by the texture's alpha content.
+                    appendMountPart(model, textureIndex,
+                        phoenix::renderer::dds_file_has_alpha_cutout(texPath));
                     anyPart = true;
                 }
                 data_.mount.vertexCount =
@@ -1778,11 +1672,11 @@ namespace phoenix::character
                         data_.mount.animations.push_back(std::move(choice));
                         return data_.mount.animations.size() - 1;
                     };
-                    data_.mount.idleAnimation   = loadMountAni(row[13]);
-                    data_.mount.walkAnimation   = loadMountAni(row[5]);
-                    data_.mount.runAnimation    = loadMountAni(row[6]);
-                    data_.mount.jumpAnimation   = loadMountAni(row[7]);
-                    data_.mount.breathAnimation = loadMountAni(row[11]);
+                    data_.mount.idleAnimation   = loadMountAni(row[6]);
+                    data_.mount.walkAnimation   = loadMountAni(row[2]);
+                    data_.mount.runAnimation    = loadMountAni(row[3]);
+                    data_.mount.jumpAnimation   = loadMountAni(row[4]);
+                    data_.mount.breathAnimation = loadMountAni(row[5]);
                     data_.mount.scale = 1.0f;
                     data_.mount.localGroundY = compute_bind_ground_y(
                         data_.mount.sourceVertices, kCharacterScale * data_.mount.scale);
@@ -1894,7 +1788,56 @@ namespace phoenix::character
             inWater_ = false;
         }
 
-        if (moving)
+        // ---- Ladder climbing ----
+        // Ladders don't collide: getting close enough latches the character on
+        // and it climbs (action 18) to the top, then steps slightly forward.
+        climbCooldown_ = std::max(0.0f, climbCooldown_ - clampedDelta);
+        if (!climbing_ && !data_.hasMount && !inWater_ && grounded_
+            && climbCooldown_ <= 0.0f && sitState_ == 0 && dodgePlayTimer_ <= 0.0f)
+        {
+            for (std::size_t i = 0; i < ladders_.size(); ++i)
+            {
+                const auto& ladder = ladders_[i];
+                const float dx = ladder.x - characterX_;
+                const float dz = ladder.z - characterZ_;
+                if (dx * dx + dz * dz > ladder.radius * ladder.radius)
+                    continue;
+                if (characterY_ >= ladder.topY - 0.5f || characterY_ < ladder.baseY - 1.5f)
+                    continue;
+                climbing_ = true;
+                climbingLadder_ = i;
+                climbYaw_ = std::atan2(dx, dz);
+                characterYaw_ = climbYaw_;
+                verticalVelocity_ = 0.0f;
+                break;
+            }
+        }
+
+        if (climbing_)
+        {
+            const auto& ladder = ladders_[climbingLadder_];
+            // Hold onto the ladder axis while ascending.
+            const float snap = std::min(1.0f, 9.0f * clampedDelta);
+            characterX_ += (ladder.x - characterX_) * snap;
+            characterZ_ += (ladder.z - characterZ_) * snap;
+            characterY_ += kClimbSpeed * clampedDelta;
+            characterYaw_ = climbYaw_;
+            grounded_ = false;
+
+            if (characterY_ >= ladder.topY)
+            {
+                // Top reached: step slightly forward off the ladder and let
+                // gravity settle the character onto whatever is up there.
+                characterY_ = ladder.topY;
+                characterX_ += std::sin(climbYaw_) * kClimbExitNudge;
+                characterZ_ += std::cos(climbYaw_) * kClimbExitNudge;
+                climbing_ = false;
+                climbCooldown_ = kClimbCooldown;
+                verticalVelocity_ = 0.0f;
+            }
+        }
+
+        if (moving && !climbing_)
         {
             moveX /= moveLength;
             moveY = inWater_ ? moveY / moveLength : 0.0f;
@@ -1915,7 +1858,7 @@ namespace phoenix::character
         }
 
         // ---- Collision with world objects ----
-        if (collisionFn_ && moving)
+        if (collisionFn_ && moving && !climbing_)
         {
             float adjustedX = characterX_;
             float adjustedZ = characterZ_;
@@ -1937,7 +1880,12 @@ namespace phoenix::character
         if (heightFn_)
             groundY = heightFn_(characterX_, characterZ_, heightUserData_);
 
-        if (inWater_)
+        if (climbing_)
+        {
+            // Vertical motion is fully driven by the climb — no gravity, no
+            // terrain snapping, no buoyancy.
+        }
+        else if (inWater_)
         {
             const float floorY = groundY + kGroundClearance;
             const float floatY = floatLevelY;
@@ -2100,11 +2048,53 @@ namespace phoenix::character
                 if (anim.parsed)
                 {
                     const float duration = static_cast<float>(anim.endKeyframe - anim.startKeyframe) / 30.0f;
-                    if (animationSeconds_ >= duration * 0.95f)
+                    if (animationSeconds_ >= duration)
                     {
                         activeEmote_ = 0;
                         animationSeconds_ = 0.0f;
                     }
+                }
+            }
+        }
+
+        // ---- Occasional idle gesture ----
+        // Standing still plays the breathe loop; every so often a one-shot
+        // idle1/idle2 gesture interrupts it, then breathing resumes.
+        {
+            const bool standingIdle = grounded_ && !moving && !inWater_ && !climbing_
+                && !data_.hasMount && sitState_ == 0 && dodgePlayTimer_ <= 0.0f
+                && activeEmote_ == 0;
+            if (!standingIdle)
+            {
+                idleGestureTimer_ = 0.0f;
+                activeIdleGesture_ = 0;
+            }
+            else if (activeIdleGesture_ == 0)
+            {
+                idleGestureTimer_ += clampedDelta;
+                // 8-14s between gestures, varied so it doesn't feel metronomic.
+                const float interval = 8.0f + static_cast<float>((idleGesturePick_ * 37u) % 60u) * 0.1f;
+                if (idleGestureTimer_ >= interval)
+                {
+                    idleGestureTimer_ = 0.0f;
+                    const std::size_t gestures[] = { data_.idle1Animation, data_.idle2Animation };
+                    const auto pick = gestures[idleGesturePick_ % std::size(gestures)];
+                    ++idleGesturePick_;
+                    if (pick > 0 && pick < data_.animations.size()
+                        && data_.animations[pick].animation.parsed)
+                        activeIdleGesture_ = pick;
+                }
+            }
+            else if (activeIdleGesture_ < data_.animations.size())
+            {
+                // Finish after one full playthrough, then return to breathing.
+                const auto& anim = data_.animations[activeIdleGesture_].animation;
+                const float duration = static_cast<float>(anim.endKeyframe - anim.startKeyframe) / 30.0f;
+                if (animationSeconds_ >= duration)
+                {
+                    activeIdleGesture_ = 0;
+                    idleGestureTimer_ = 0.0f;
+                    animationSeconds_ = 0.0f;
                 }
             }
         }
@@ -2118,6 +2108,7 @@ namespace phoenix::character
         constexpr float kDodgeDistance = 7.0f;  // total displacement (world units)
         {
             const bool canDodge = dodgePlayTimer_ <= 0.0f && grounded_ && !inWater_
+                && !data_.hasMount && !climbing_
                 && sitState_ == 0 && activeEmote_ == 0;
             // Backward
             if (!input.backward && lastBackward_)
@@ -2160,12 +2151,27 @@ namespace phoenix::character
             dodgeLeftTimer_ = std::max(0.0f, dodgeLeftTimer_ - clampedDelta);
             dodgeRightTimer_ = std::max(0.0f, dodgeRightTimer_ - clampedDelta);
 
-            // Displace character during active dodge.
+            // Displace character during active dodge. The dodge respects world
+            // collision exactly like normal movement — it must not phase
+            // through structures.
             if (dodgePlayTimer_ > 0.0f)
             {
                 const float speed = kDodgeDistance / kDodgeDuration;
+                const float prevX = characterX_;
+                const float prevZ = characterZ_;
                 characterX_ += dodgeDirX_ * speed * clampedDelta;
                 characterZ_ += dodgeDirZ_ * speed * clampedDelta;
+                if (collisionFn_)
+                {
+                    float adjustedX = characterX_;
+                    float adjustedZ = characterZ_;
+                    if (collisionFn_(characterX_, characterZ_, prevX, prevZ,
+                        characterY_, adjustedX, adjustedZ, collisionUserData_))
+                    {
+                        characterX_ = adjustedX;
+                        characterZ_ = adjustedZ;
+                    }
+                }
                 dodgePlayTimer_ -= clampedDelta;
             }
         }
@@ -2216,6 +2222,10 @@ namespace phoenix::character
             else
                 desiredAnimation = data_.vehicleIdleAnimation;
         }
+        else if (climbing_)
+        {
+            desiredAnimation = data_.ladderAnimation;
+        }
         else if (dodgePlayTimer_ > 0.0f && dodgeAnimation_ > 0)
         {
             desiredAnimation = dodgeAnimation_;
@@ -2254,6 +2264,10 @@ namespace phoenix::character
                 desiredAnimation = data_.rightAnimation;
             else
                 desiredAnimation = input.fast ? weaponRunAnim() : data_.walkAnimation;
+        }
+        else if (activeIdleGesture_ > 0)
+        {
+            desiredAnimation = activeIdleGesture_;
         }
         if (desiredAnimation != activeAnimation_)
         {
@@ -2340,57 +2354,6 @@ namespace phoenix::character
         // ---- Skinning + world transform ----
         lastDeltaSeconds_ = clampedDelta;
         skin_and_transform();
-    }
-
-    void CharacterSystem::update_state_only(float deltaSeconds, const PlayableInput& input)
-    {
-        // Same as update() but skips skin_and_transform().
-        // Callers use character_data() + active_animation() + animation_seconds()
-        // to compute bone matrices for GPU skinning instead.
-
-        // Save and restore the original update's contract: we run the full state
-        // machine (movement, animation selection, physics) but never touch vertices.
-        // Rather than duplicating 300 lines, we call update() and just mark that the
-        // skin results are stale (they get overwritten by GPU skinning anyway).
-        // This is a pragmatic shortcut — the overhead of skin_and_transform on an
-        // unrendered bot is what we avoid by not collecting its vertices.
-
-        // Minimal reimplementation: advance animation timer + movement only.
-        if (!data_.loaded) return;
-        const float clampedDelta = std::clamp(deltaSeconds, 0.0f, 0.1f);
-        animationSeconds_ += clampedDelta;
-
-        // Movement (simplified — forward only, no water/jump/collision).
-        if (input.forward)
-        {
-            const float speed = input.fast ? 8.0f : 4.0f;
-            characterX_ += std::sin(characterYaw_) * speed * clampedDelta;
-            characterZ_ += std::cos(characterYaw_) * speed * clampedDelta;
-            if (heightFn_)
-                characterY_ = heightFn_(characterX_, characterZ_, heightUserData_);
-        }
-
-        // Animation selection (simplified).
-        if (input.forward)
-            activeAnimation_ = input.fast ? data_.runAnimation : data_.walkAnimation;
-        else if (input.jump && data_.jumpAnimation > 0)
-            activeAnimation_ = data_.jumpAnimation;
-        else if (input.emote > 0)
-        {
-            const std::size_t emoteAnims[] = {
-                data_.emote1Animation, data_.emote2Animation, data_.emote3Animation,
-                data_.emote4Animation, data_.emote5Animation, data_.emote6Animation,
-                data_.emote7Animation, data_.emote8Animation, data_.emote9Animation,
-                data_.emote10Animation,
-            };
-            const auto idx = static_cast<std::size_t>(input.emote - 1);
-            if (idx < std::size(emoteAnims) && emoteAnims[idx] > 0)
-                activeAnimation_ = emoteAnims[idx];
-        }
-        else
-            activeAnimation_ = data_.idleAnimation;
-
-        lastDeltaSeconds_ = clampedDelta;
     }
 
     void CharacterSystem::advance_pose(float deltaSeconds, std::size_t animationIndex)

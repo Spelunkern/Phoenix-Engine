@@ -1,4 +1,4 @@
-// Camera-facing billboard particles for procedural weapon effects.
+﻿// Camera-facing billboard particles for procedural weapon effects.
 // Per-particle instances live in a StructuredBuffer (binding 0); each instance
 // is expanded into a screen-aligned quad in the vertex shader using the same
 // camera transform as terrain.hlsl, so particles project identically to world

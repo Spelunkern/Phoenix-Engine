@@ -92,18 +92,12 @@ namespace phoenix::world
         bool read_names(
             const std::vector<std::uint8_t>& data,
             std::size_t& offset,
-            std::vector<std::string>& names,
-            std::uint64_t* countOffset = nullptr,
-            std::uint32_t* originalCount = nullptr)
+            std::vector<std::string>& names)
         {
             if (offset + 4 > data.size())
                 return false;
 
-            if (countOffset)
-                *countOffset = static_cast<std::uint64_t>(offset);
             const auto count = read_u32(data, offset);
-            if (originalCount)
-                *originalCount = count;
             offset += 4;
             if (count > 100000 || offset + static_cast<std::size_t>(count) * 256 > data.size())
                 return false;
@@ -135,7 +129,6 @@ namespace phoenix::world
             for (std::uint32_t i = 0; i < count; ++i)
             {
                 WldObjectInstance instance{};
-                instance.fileOffset = static_cast<std::uint64_t>(offset);
                 instance.assetIndex = static_cast<std::int32_t>(read_u32(data, offset));
                 offset += 4;
                 for (float& value : instance.position)
@@ -193,7 +186,6 @@ namespace phoenix::world
             for (std::uint32_t i = 0; i < count; ++i)
             {
                 WldManiInstance instance{};
-                instance.fileOffset = static_cast<std::uint64_t>(offset);
                 instance.buildingAssetId = static_cast<std::int32_t>(read_u32(data, offset));
                 offset += 4;
                 instance.maniAssetIndex = static_cast<std::int32_t>(read_u32(data, offset));
@@ -235,7 +227,6 @@ namespace phoenix::world
             for (std::uint32_t i = 0; i < count; ++i)
             {
                 WldEffectInstance instance{};
-                instance.fileOffset = offset;
                 for (float& value : instance.position)
                 {
                     value = read_f32(data, offset);
@@ -280,14 +271,11 @@ namespace phoenix::world
         bool read_music_zones(
             const std::vector<std::uint8_t>& data,
             std::size_t& offset,
-            std::vector<WldMusicZone>& zones,
-            std::uint64_t* countOffset = nullptr)
+            std::vector<WldMusicZone>& zones)
         {
             if (offset + 4 > data.size())
                 return false;
 
-            if (countOffset)
-                *countOffset = static_cast<std::uint64_t>(offset);
             const auto count = read_u32(data, offset);
             offset += 4;
             if (count > 100000 || offset + static_cast<std::size_t>(count) * 36 > data.size())
@@ -297,7 +285,6 @@ namespace phoenix::world
             for (std::uint32_t i = 0; i < count; ++i)
             {
                 WldMusicZone zone{};
-                zone.fileOffset = static_cast<std::uint64_t>(offset);
                 if (!read_bounding_box(data, offset, zone.box))
                     return false;
                 zone.radius = read_f32(data, offset);
@@ -314,14 +301,11 @@ namespace phoenix::world
         bool read_sound_effects(
             const std::vector<std::uint8_t>& data,
             std::size_t& offset,
-            std::vector<WldSoundEffect>& sounds,
-            std::uint64_t* countOffset = nullptr)
+            std::vector<WldSoundEffect>& sounds)
         {
             if (offset + 4 > data.size())
                 return false;
 
-            if (countOffset)
-                *countOffset = static_cast<std::uint64_t>(offset);
             const auto count = read_u32(data, offset);
             offset += 4;
             if (count > 100000 || offset + static_cast<std::size_t>(count) * 20 > data.size())
@@ -331,7 +315,6 @@ namespace phoenix::world
             for (std::uint32_t i = 0; i < count; ++i)
             {
                 WldSoundEffect sound{};
-                sound.fileOffset = static_cast<std::uint64_t>(offset);
                 sound.soundEffectAssetId = static_cast<std::int32_t>(read_u32(data, offset));
                 offset += 4;
                 for (float& value : sound.center)
@@ -360,7 +343,6 @@ namespace phoenix::world
             for (std::uint32_t i = 0; i < count; ++i)
             {
                 WldPortal portal{};
-                portal.fileOffset = static_cast<std::uint64_t>(offset);
                 if (!read_bounding_box(data, offset, portal.box))
                     return false;
                 portal.radius = read_f32(data, offset);
@@ -463,11 +445,11 @@ namespace phoenix::world
             if (!read_effect_instances(data, offset, analysis.effectInstances)
                 || !skip_bytes(data, offset, 12)
                 || !read_names_and_object_instances(data, offset, "Object", analysis)
-                || !read_names(data, offset, analysis.musicAssets, &analysis.musicAssetCountOffset, &analysis.musicAssetOriginalCount)
-                || !read_music_zones(data, offset, analysis.musicZones, &analysis.musicZoneCountOffset)
-                || !read_names(data, offset, analysis.soundEffectAssets, &analysis.soundEffectAssetCountOffset, &analysis.soundEffectAssetOriginalCount)
+                || !read_names(data, offset, analysis.musicAssets)
+                || !read_music_zones(data, offset, analysis.musicZones)
+                || !read_names(data, offset, analysis.soundEffectAssets)
                 || !skip_zones(data, offset)
-                || !read_sound_effects(data, offset, analysis.soundEffects, &analysis.soundEffectCountOffset)
+                || !read_sound_effects(data, offset, analysis.soundEffects)
                 || !skip_fixed_list(data, offset, 28)
                 || !read_portals(data, offset, analysis.portals)
                 || !skip_fixed_list(data, offset, 40)
@@ -478,22 +460,17 @@ namespace phoenix::world
             if (offset + 768 > data.size())
                 return false;
 
-            analysis.skyFileNameOffset = static_cast<std::uint64_t>(offset);
             analysis.skyFileName = read_string256(data, offset);
             offset += 256;
-            analysis.primaryCloudFileNameOffset = static_cast<std::uint64_t>(offset);
             analysis.primaryCloudFileName = read_string256(data, offset);
             offset += 256;
-            analysis.secondaryCloudFileNameOffset = static_cast<std::uint64_t>(offset);
             analysis.secondaryCloudFileName = read_string256(data, offset);
             offset += 256;
-            analysis.hasSkyOffsets = true;
 
             if (offset + 44 <= data.size())
             {
                 // The WLD stores two unused colors before the fog color and distances.
                 offset += 24;
-                analysis.fogColorOffset = static_cast<std::uint64_t>(offset);
                 for (float& value : analysis.fogColor)
                 {
                     value = read_f32(data, offset);
@@ -501,95 +478,17 @@ namespace phoenix::world
                     if (value > 1.0f)
                         value /= 255.0f;
                 }
-                analysis.fogStartOffset = static_cast<std::uint64_t>(offset);
                 analysis.fogStartDistance = read_f32(data, offset);
                 offset += 4;
-                analysis.fogEndOffset = static_cast<std::uint64_t>(offset);
                 analysis.fogEndDistance = read_f32(data, offset);
-                analysis.hasFogOffsets = true;
             }
 
             analysis.parsedSky = true;
             return true;
         }
-
-        bool is_resource_string(const std::string& value)
-        {
-            auto lower = value;
-            std::transform(lower.begin(), lower.end(), lower.begin(), [](unsigned char ch) {
-                return static_cast<char>(std::tolower(ch));
-            });
-
-            return lower.ends_with(".dds")
-                || lower.ends_with(".tga")
-                || lower.ends_with(".bmp")
-                || lower.ends_with(".smod")
-                || lower.find("water") != std::string::npos
-                || lower.find("sky") != std::string::npos;
-        }
-
-        std::vector<WldStringReference> collect_resource_strings(const std::vector<std::uint8_t>& data)
-        {
-            std::vector<WldStringReference> result;
-            std::string token;
-            std::uint64_t tokenStart{};
-
-            for (std::size_t i = 0; i < data.size(); ++i)
-            {
-                const auto ch = data[i];
-                if (ch >= 0x20 && ch <= 0x7E)
-                {
-                    if (token.empty())
-                        tokenStart = i;
-
-                    token.push_back(static_cast<char>(ch));
-                    continue;
-                }
-
-                if (token.size() >= 3 && is_resource_string(token))
-                    result.push_back({ tokenStart, token });
-
-                token.clear();
-            }
-
-            if (token.size() >= 3 && is_resource_string(token))
-                result.push_back({ tokenStart, token });
-
-            return result;
-        }
-
-        bool write_initial_height_preview(
-            const std::vector<float>& samples,
-            std::uint32_t side,
-            float minHeight,
-            float maxHeight,
-            const std::filesystem::path& previewPath)
-        {
-            if (samples.empty() || side == 0)
-                return false;
-
-            std::filesystem::create_directories(previewPath.parent_path());
-
-            std::ofstream output(previewPath, std::ios::binary | std::ios::trunc);
-            if (!output)
-                return false;
-
-            output << "P6\n" << side << " " << side << "\n255\n";
-
-            const auto range = std::max(0.001f, maxHeight - minHeight);
-            for (const auto value : samples)
-            {
-                const auto normalized = std::clamp((value - minHeight) / range, 0.0f, 1.0f);
-                const auto shade = static_cast<unsigned char>(normalized * 255.0f);
-                const std::array<unsigned char, 3> pixel{ shade, shade, shade };
-                output.write(reinterpret_cast<const char*>(pixel.data()), pixel.size());
-            }
-
-            return static_cast<bool>(output);
-        }
     }
 
-    WldAnalysis analyze_wld(const std::filesystem::path& path, const std::filesystem::path& previewPath)
+    WldAnalysis analyze_wld(const std::filesystem::path& path)
     {
         WldAnalysis analysis{};
         analysis.path = path;
@@ -609,7 +508,6 @@ namespace phoenix::world
                 return analysis;
 
             analysis.dungeonDgFileName = read_string256(data, 4);
-            analysis.resourceStrings = collect_resource_strings(data);
 
             std::size_t offset = 260;
             if (!read_names_and_object_instances(data, offset, "Building", analysis)
@@ -639,11 +537,11 @@ namespace phoenix::world
             if (offset + 12 <= data.size())
                 offset += 12;
             read_names_and_object_instances(data, offset, "Object", analysis);
-            read_names(data, offset, analysis.musicAssets, &analysis.musicAssetCountOffset, &analysis.musicAssetOriginalCount);
-            read_music_zones(data, offset, analysis.musicZones, &analysis.musicZoneCountOffset);
-            read_names(data, offset, analysis.soundEffectAssets, &analysis.soundEffectAssetCountOffset, &analysis.soundEffectAssetOriginalCount);
+            read_names(data, offset, analysis.musicAssets);
+            read_music_zones(data, offset, analysis.musicZones);
+            read_names(data, offset, analysis.soundEffectAssets);
             skip_zones(data, offset);
-            read_sound_effects(data, offset, analysis.soundEffects, &analysis.soundEffectCountOffset);
+            read_sound_effects(data, offset, analysis.soundEffects);
             skip_fixed_list(data, offset, 28);
             read_portals(data, offset, analysis.portals);
 
@@ -679,7 +577,6 @@ namespace phoenix::world
             analysis.maxInitialHeight = std::max(analysis.maxInitialHeight, value);
         }
 
-        analysis.resourceStrings = collect_resource_strings(data);
         analysis.terrainTextureMap.assign(
             data.begin() + static_cast<std::ptrdiff_t>(textureMapOffset),
             data.begin() + static_cast<std::ptrdiff_t>(textureMapOffset + textureMapByteCount));
@@ -694,7 +591,6 @@ namespace phoenix::world
                 if (layerOffset + 516 > data.size())
                     break;
 
-                analysis.terrainLayerTextureOffsets.push_back(static_cast<std::uint64_t>(layerOffset));
                 WldTerrainLayer layer{};
                 layer.textureFileName = read_string256(data, layerOffset);
                 layer.tileSize = read_f32(data, layerOffset + 256);
@@ -702,17 +598,9 @@ namespace phoenix::world
                 analysis.terrainLayers.push_back(std::move(layer));
                 layerOffset += 516;
             }
-            analysis.hasTerrainLayerOffsets = !analysis.terrainLayerTextureOffsets.empty();
-
             parse_field_tail(data, layerOffset, analysis);
         }
 
-        analysis.wrotePreview = write_initial_height_preview(
-            analysis.heightSamples,
-            analysis.heightMapSide,
-            analysis.minInitialHeight,
-            analysis.maxInitialHeight,
-            previewPath);
         analysis.parsed = true;
         return analysis;
     }

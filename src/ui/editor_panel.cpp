@@ -693,13 +693,15 @@ namespace phoenix::ui
                     ImGui::InputInt("Index", &appearance.mountIndex);
                     if (appearance.mountIndex < 0) appearance.mountIndex = 0;
 
-                    const int maxMountBone = std::max(0, characterSystem.mount_bone_count() - 1);
-                    if (maxMountBone > 0)
-                    {
-                        ImGui::SetNextItemWidth(80.0f);
-                        ImGui::InputInt("Seat bone", &characterSystem.mountBoneIndex);
-                        characterSystem.mountBoneIndex = std::clamp(characterSystem.mountBoneIndex, 0, maxMountBone);
-                    }
+                    // Always expose the seat bone — even mounts whose skeleton
+                    // reports 0/1 bones must stay editable from the tool.
+                    ImGui::SetNextItemWidth(80.0f);
+                    ImGui::InputInt("Seat bone", &characterSystem.mountBoneIndex);
+                    const int boneCount = characterSystem.mount_bone_count();
+                    if (boneCount > 0)
+                        characterSystem.mountBoneIndex = std::clamp(characterSystem.mountBoneIndex, 0, boneCount - 1);
+                    else
+                        characterSystem.mountBoneIndex = std::max(0, characterSystem.mountBoneIndex);
                 }
             }
         }

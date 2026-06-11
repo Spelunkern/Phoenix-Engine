@@ -4,6 +4,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <string>
 #include <vector>
 
@@ -112,13 +113,8 @@ namespace phoenix::renderer
             const std::vector<std::uint32_t>& indices,
             const std::vector<ObjectInstance>& instances,
             const std::vector<ObjectBatch>& batches);
-        bool update_animated_object_scene(
-            const std::vector<TerrainVertex>& vertices,
-            const std::vector<ObjectInstance>& instances);
         bool update_animated_object_vertices_range(
             const TerrainVertex* vertices, std::uint32_t firstVertex, std::uint32_t vertexCount);
-        bool update_animated_object_instances(
-            const std::vector<ObjectInstance>& instances);
         bool update_terrain_indices(const std::vector<std::uint32_t>& indices);
         void set_static_object_batches(const std::vector<ObjectBatch>& batches);
         bool upload_indirect_draw_data(
@@ -140,11 +136,17 @@ namespace phoenix::renderer
         void set_character_visible(bool visible);
         bool set_bot_character_mesh(const std::vector<TerrainVertex>& vertices, const std::vector<std::uint32_t>& indices);
         bool update_bot_character_vertices(const std::vector<TerrainVertex>& vertices);
+        bool update_bot_character_vertices_range(
+            const TerrainVertex* vertices, std::uint32_t firstVertex, std::uint32_t vertexCount);
         bool update_bot_character_instances(
             const std::vector<ObjectInstance>& instances,
             const std::vector<ObjectBatch>& batches);
         void set_bot_character_visible(bool visible);
-        bool upload_terrain_textures(const std::vector<DdsTexture>& textures);
+        // `pump` (optional) is invoked periodically during the CPU staging
+        // phase so the caller can keep processing window messages — the
+        // upload takes seconds and the app must stay closable throughout.
+        bool upload_terrain_textures(const std::vector<DdsTexture>& textures,
+            const std::function<void()>& pump = {});
         bool upload_terrain_texture_layers(std::uint32_t firstLayer, const std::vector<DdsTexture>& textures);
         // Procedural weapon-effect particles. set_particle_instances uploads the
         // per-frame billboard list; sprites are rendered as a soft procedural dot
@@ -152,6 +154,7 @@ namespace phoenix::renderer
         // [additiveStart, end) with additive blending.
         void set_particle_instances(const std::vector<ParticleInstance>& instances, std::uint32_t additiveStart);
         bool upload_field_lightmaps(const std::vector<DdsTexture>& lightmaps, std::uint32_t sectionCount);
+        void disable_field_lightmaps();
         void set_sky_settings(const float* fogColor, float fogStartDistance, float fogEndDistance, bool hasWorldSky);
         void set_sky_texture_layers(std::uint32_t skyLayer, std::uint32_t primaryCloudLayer, std::uint32_t secondaryCloudLayer);
         void set_sky_tuning(const float* values, std::uint32_t count);
@@ -164,7 +167,9 @@ namespace phoenix::renderer
             std::uint32_t side,
             float mapSize,
             const float* tileSizes,
-            std::uint32_t tileSizeCount);
+            std::uint32_t tileSizeCount,
+            std::uint32_t alphaMaskLayerFlags = 0,
+            std::uint32_t splatLayerCount = 0);
         void set_camera(float x, float y, float z, float yaw, float pitch, float aspect, float farPlane);
         bool resize(std::uint32_t width, std::uint32_t height);
         // Recreate the swapchain at the surface's current extent regardless of the
@@ -204,7 +209,6 @@ namespace phoenix::renderer
         bool create_terrain_pipeline();
         bool create_static_object_pipeline();
         bool create_cull_compute_pipeline();
-        bool create_depth_prepass_pipelines();
         bool create_sky_pipeline();
         bool create_particle_pipeline();
         bool create_descriptor_resources();

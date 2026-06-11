@@ -1,11 +1,13 @@
-#define _CRT_SECURE_NO_WARNINGS
+﻿#define _CRT_SECURE_NO_WARNINGS
 #include "runtime/phoenix_runtime.h"
 
 #include "assets/data_index.h"
+#include "renderer/dds_loader.h"
 #include "world/dg_loader.h"
 #include "world/smod_loader.h"
 #include "world/vani_loader.h"
-#include "world/phoenix_world_loader.h"
+#include "world/mani_loader.h"
+#include "world/wld_loader.h"
 #include "world/water_constants.h"
 
 #include <algorithm>
@@ -33,6 +35,7 @@ namespace phoenix::runtime
         constexpr std::uint32_t kAssetTextureLayerBase = 66;
         constexpr std::uint32_t kAssetCutoutLayerBase = 2048;
         constexpr std::uint32_t kMaxAssetTextureLayers = 960;
+        constexpr float kManiTicksPerSecond = 30.0f;
 
         inline std::filesystem::path resolve_ci(const std::filesystem::path& path)
         {
@@ -121,37 +124,86 @@ namespace phoenix::runtime
             return hash;
         }
 
-        bool static_texture_uses_cutout(std::string_view textureName)
+        // Build a renderer instance from a scene object: orthonormal basis from
+        // the stored forward/up, MANI rotation axis*speed packed into the .w
+        // components, and the distance-cull flag in position.w.
+        phoenix::renderer::ObjectInstance make_object_instance(
+            const phoenix::runtime::SceneObject& object, float cullDistance)
         {
-            const auto lowerName = phoenix::assets::lower_ascii(std::string(textureName));
-            constexpr std::string_view cutoutTokens[] = {
-                "leaf", "leav", "tree", "grass", "bush", "flower", "plant",
-                "weed", "branch", "vine", "fern", "shrub",
+            const auto normalize = [](float* vector, const float* fallback) {
+                const auto length = std::sqrt(vector[0] * vector[0] + vector[1] * vector[1] + vector[2] * vector[2]);
+                if (length < 0.001f)
+                {
+                    vector[0] = fallback[0];
+                    vector[1] = fallback[1];
+                    vector[2] = fallback[2];
+                    return;
+                }
+                vector[0] /= length;
+                vector[1] /= length;
+                vector[2] /= length;
             };
-            for (const auto token : cutoutTokens)
-            {
-                if (lowerName.find(token) != std::string::npos)
-                    return true;
-            }
-            return false;
-        }
 
-        bool static_asset_uses_cutout(std::string_view assetName, const std::filesystem::path& assetPath)
-        {
-            auto lowerName = phoenix::assets::lower_ascii(std::string(assetName));
-            auto lowerPath = phoenix::assets::lower_ascii(assetPath.string());
-            std::ranges::replace(lowerPath, '\\', '/');
-            constexpr std::string_view cutoutTokens[] = {
-                "/tree/", "/grass/",
-                "tree", "leaf", "leav", "bush", "plant", "grass",
-                "branch", "vine", "fern", "shrub",
+            float forward[3]{ object.forward[0], object.forward[1], object.forward[2] };
+            float up[3]{ object.up[0], object.up[1], object.up[2] };
+            const float fallbackForward[3]{ 0.0f, 0.0f, 1.0f };
+            const float fallbackUp[3]{ 0.0f, 1.0f, 0.0f };
+            normalize(forward, fallbackForward);
+            normalize(up, fallbackUp);
+
+            const float right[3]{
+                up[1] * forward[2] - up[2] * forward[1],
+                up[2] * forward[0] - up[0] * forward[2],
+                up[0] * forward[1] - up[1] * forward[0],
             };
-            for (const auto token : cutoutTokens)
+
+            float axisSpeed[3]{};
+            if (std::abs(object.maniRotationSpeed) >= 0.0001f)
             {
-                if (lowerName.find(token) != std::string::npos || lowerPath.find(token) != std::string::npos)
-                    return true;
+                for (int axis = 0; axis < 3; ++axis)
+                {
+                    axisSpeed[axis] =
+                        right[axis] * object.maniRotationAxis[0]
+                        + up[axis] * object.maniRotationAxis[1]
+                        + forward[axis] * object.maniRotationAxis[2];
+                }
+                const auto axisLength = std::sqrt(
+                    axisSpeed[0] * axisSpeed[0]
+                    + axisSpeed[1] * axisSpeed[1]
+                    + axisSpeed[2] * axisSpeed[2]);
+                if (axisLength >= 0.001f)
+                {
+                    const auto scale = object.maniRotationSpeed / axisLength;
+                    axisSpeed[0] *= scale;
+                    axisSpeed[1] *= scale;
+                    axisSpeed[2] *= scale;
+                }
+                else
+                {
+                    axisSpeed[0] = 0.0f;
+                    axisSpeed[1] = 0.0f;
+                    axisSpeed[2] = 0.0f;
+                }
             }
-            return false;
+
+            phoenix::renderer::ObjectInstance instance{};
+            instance.right[0] = right[0];
+            instance.right[1] = right[1];
+            instance.right[2] = right[2];
+            instance.right[3] = axisSpeed[0];
+            instance.up[0] = up[0];
+            instance.up[1] = up[1];
+            instance.up[2] = up[2];
+            instance.up[3] = axisSpeed[1];
+            instance.forward[0] = forward[0];
+            instance.forward[1] = forward[1];
+            instance.forward[2] = forward[2];
+            instance.forward[3] = axisSpeed[2];
+            instance.position[0] = object.x;
+            instance.position[1] = object.y;
+            instance.position[2] = object.z;
+            instance.position[3] = cullDistance; // 0 = no cull, >0 = max render distance
+            return instance;
         }
 
         float normal_light(const float* normal)
@@ -178,6 +230,34 @@ namespace phoenix::runtime
             vertex.color[0] = (0.43f + tint * 0.23f) * light;
             vertex.color[1] = (0.39f + (1.0f - tint) * 0.20f) * light;
             vertex.color[2] = (0.31f + static_cast<float>((materialHash >> 8) & 0x7Fu) / 720.0f) * light;
+            vertex.normal[0] = normal[0];
+            vertex.normal[1] = normal[1];
+            vertex.normal[2] = normal[2];
+            vertex.uv[0] = uv ? uv[0] : 0.0f;
+            vertex.uv[1] = uv ? uv[1] : 0.0f;
+            vertex.textureLayer = textureLayer;
+            vertices.push_back(vertex);
+        }
+
+        // Dungeon variant: vertex color carries lightmap UV + page index using
+        // the encoding the static_object pixel shader expects (color.rg = UV,
+        // color.b = page + 2.0 — values >= 1.5 select the lightmap path).
+        void append_preview_vertex_lightmapped(
+            std::vector<phoenix::renderer::TerrainVertex>& vertices,
+            const float* position,
+            const float* normal,
+            const float* uv,
+            const float* lightmapUv,
+            std::int32_t lightmapPage,
+            std::uint32_t textureLayer)
+        {
+            phoenix::renderer::TerrainVertex vertex{};
+            vertex.position[0] = position[0];
+            vertex.position[1] = position[1];
+            vertex.position[2] = position[2];
+            vertex.color[0] = lightmapUv[0];
+            vertex.color[1] = lightmapUv[1];
+            vertex.color[2] = static_cast<float>(lightmapPage) + 2.0f;
             vertex.normal[0] = normal[0];
             vertex.normal[1] = normal[1];
             vertex.normal[2] = normal[2];
@@ -299,7 +379,10 @@ namespace phoenix::runtime
     bool PhoenixRuntime::initialize(const std::filesystem::path& executableDir, bool loadDefaultMap)
     {
         state_.dataRoot = find_data_root(executableDir);
-        state_.entityRoot = assets::resolve_existing_path_case_insensitive(state_.dataRoot / "Assets");
+        // Placeable entities live in data/entity/ (renamed from Assets/).
+        state_.entityRoot = assets::resolve_existing_path_case_insensitive(state_.dataRoot / "entity");
+        if (state_.entityRoot.empty() || !std::filesystem::exists(state_.entityRoot))
+            state_.entityRoot = assets::resolve_existing_path_case_insensitive(state_.dataRoot / "Assets");
         state_.assets = phoenix::assets::index_data_directory(state_.dataRoot);
         scan_entity_assets();
         scan_world_maps();
@@ -310,16 +393,13 @@ namespace phoenix::runtime
         std::size_t defaultMap{};
         for (std::size_t i = 0; i < state_.worldMapPaths.size(); ++i)
         {
-            const auto stem = state_.worldMapPaths[i].filename().string();
-            if (stem.size() > 5)
+            const auto stem = state_.worldMapPaths[i].stem().string();
+            char* end = nullptr;
+            const long n = std::strtol(stem.c_str(), &end, 10);
+            if (end != stem.c_str() && *end == '\0' && n == 1)
             {
-                char* end = nullptr;
-                const long n = std::strtol(stem.c_str() + 5, &end, 10);
-                if (end != stem.c_str() + 5 && *end == '\0' && n == 1)
-                {
-                    defaultMap = i;
-                    break;
-                }
+                defaultMap = i;
+                break;
             }
         }
         if (loadDefaultMap && !state_.worldMapPaths.empty())
@@ -332,8 +412,14 @@ namespace phoenix::runtime
 
     std::filesystem::path PhoenixRuntime::find_data_root(const std::filesystem::path& executableDir) const
     {
+        // The data tree is all-lowercase ("data/world", "data/assets", ...).
+        // Keep checking the legacy capitalised names too so external installs
+        // (env override, AppData) don't break on case-sensitive filesystems.
         auto validDataRoot = [](const std::filesystem::path& path) {
-            return std::filesystem::exists(path / "World")
+            return std::filesystem::exists(path / "world")
+                || std::filesystem::exists(path / "entity")
+                || std::filesystem::exists(path / "character")
+                || std::filesystem::exists(path / "World")
                 || std::filesystem::exists(path / "Assets")
                 || std::filesystem::exists(path / "Character");
         };
@@ -342,27 +428,34 @@ namespace phoenix::runtime
         if (const char* envValue = std::getenv("PHOENIX_ENGINE_DATA"); envValue && envValue[0])
             candidates.emplace_back(envValue);
 
-        candidates.push_back(executableDir / "Data");
-        candidates.push_back(std::filesystem::current_path() / "Data");
-        candidates.push_back(executableDir.parent_path() / "Data");
-        candidates.push_back(executableDir.parent_path().parent_path() / "Data");
-        candidates.push_back(executableDir.parent_path().parent_path().parent_path() / "Data");
+        const std::filesystem::path parentDirs[] = {
+            executableDir,
+            std::filesystem::current_path(),
+            executableDir.parent_path(),
+            executableDir.parent_path().parent_path(),
+            executableDir.parent_path().parent_path().parent_path(),
+        };
+        for (const auto& dir : parentDirs)
+        {
+            candidates.push_back(dir / "data");
+            candidates.push_back(dir / "Data");
+        }
 
 #ifdef _WIN32
         if (const char* localAppData = std::getenv("LOCALAPPDATA"); localAppData && localAppData[0])
-            candidates.emplace_back(std::filesystem::path(localAppData) / "Phoenix Engine" / "Data");
+            candidates.emplace_back(std::filesystem::path(localAppData) / "Phoenix Engine" / "data");
         if (const char* programData = std::getenv("PROGRAMDATA"); programData && programData[0])
-            candidates.emplace_back(std::filesystem::path(programData) / "Phoenix Engine" / "Data");
+            candidates.emplace_back(std::filesystem::path(programData) / "Phoenix Engine" / "data");
 #else
         if (const char* home = std::getenv("HOME"); home && home[0])
-            candidates.emplace_back(std::filesystem::path(home) / ".local" / "share" / "Phoenix Engine" / "Data");
+            candidates.emplace_back(std::filesystem::path(home) / ".local" / "share" / "Phoenix Engine" / "data");
 #endif
 
         for (const auto& candidate : candidates)
             if (validDataRoot(candidate))
                 return candidate;
 
-        return candidates.empty() ? executableDir / "Data" : candidates.front();
+        return candidates.empty() ? executableDir / "data" : candidates.front();
     }
 
     bool PhoenixRuntime::load_world_map(std::size_t mapIndex)
@@ -371,7 +464,16 @@ namespace phoenix::runtime
             return false;
 
         state_.selectedWorldMap = mapIndex;
-        state_.world = phoenix::world::load_phoenix_world(state_.worldMapPaths[mapIndex]);
+        const auto& wldPath = state_.worldMapPaths[mapIndex];
+        const auto worldDir = wldPath.parent_path();
+        state_.world = phoenix::world::analyze_wld(wldPath);
+
+        // Set field directory for lightmap loading (World/field/<mapId>/).
+        {
+            const auto fieldDir = resolve_ci(worldDir / "field" / wldPath.stem());
+            if (!fieldDir.empty() && std::filesystem::is_directory(fieldDir))
+                state_.world.phoenixWorldFieldDir = fieldDir;
+        }
         load_world_assets();
         update_status();
 
@@ -451,6 +553,24 @@ namespace phoenix::runtime
             state_.entityAssets.push_back(std::move(asset));
         }
 
+        // Dungeon assets live in World/dungeon/ (moved out of Assets/) but
+        // still belong in the entity browser under the "dungeon" section.
+        const auto dungeonRoot = resolve_ci(state_.dataRoot / "World" / "dungeon");
+        if (!dungeonRoot.empty() && std::filesystem::is_directory(dungeonRoot))
+        {
+            for (const auto& entry : std::filesystem::recursive_directory_iterator(dungeonRoot))
+            {
+                if (!entry.is_regular_file() || !is_world_asset_extension(entry.path().extension().string()))
+                    continue;
+                EntityAsset asset{};
+                asset.path = entry.path();
+                const auto relativePath = std::filesystem::relative(entry.path(), dungeonRoot);
+                asset.displayName = "dungeon/" + relativePath.string();
+                asset.section = "dungeon";
+                state_.entityAssets.push_back(std::move(asset));
+            }
+        }
+
         std::ranges::sort(state_.entityAssets, [](const auto& lhs, const auto& rhs) {
             const auto sl = phoenix::assets::lower_ascii(lhs.section);
             const auto sr = phoenix::assets::lower_ascii(rhs.section);
@@ -468,22 +588,21 @@ namespace phoenix::runtime
         if (!std::filesystem::exists(worldRoot))
             return;
 
-        // Scan for worldN/ directories containing map.csv (Phoenix World format).
+        // Flat layout: all <id>.wld files live directly in World/, lightmaps
+        // in World/field/<id>/, dungeon assets in World/dungeon/.
         for (const auto& entry : std::filesystem::directory_iterator(worldRoot))
         {
-            if (!entry.is_directory())
+            if (!entry.is_regular_file())
                 continue;
-            const auto dirName = entry.path().filename().string();
-            if (dirName.size() < 6 || dirName.substr(0, 5) != "world")
-                continue;
-            if (!std::filesystem::exists(entry.path() / "map.csv"))
+            const auto ext = phoenix::assets::lower_ascii(entry.path().extension().string());
+            if (ext != ".wld")
                 continue;
             state_.worldMapPaths.push_back(entry.path());
         }
 
         std::ranges::sort(state_.worldMapPaths, [](const auto& lhs, const auto& rhs) {
-            const auto nameL = lhs.filename().string().substr(5); // strip "world"
-            const auto nameR = rhs.filename().string().substr(5);
+            const auto nameL = lhs.stem().string();
+            const auto nameR = rhs.stem().string();
             char* endL = nullptr;
             char* endR = nullptr;
             const auto numL = std::strtol(nameL.c_str(), &endL, 10);
@@ -497,9 +616,11 @@ namespace phoenix::runtime
             return nameL < nameR;
         });
 
+        // Display names stay "world<id>" — the UI, portals and the default-map
+        // selection all key off that convention.
         state_.worldMapNames.reserve(state_.worldMapPaths.size());
         for (const auto& path : state_.worldMapPaths)
-            state_.worldMapNames.push_back(path.filename().string());
+            state_.worldMapNames.push_back("world" + path.stem().string());
     }
 
     void PhoenixRuntime::scan_sky_assets()
@@ -606,15 +727,12 @@ namespace phoenix::runtime
         }
     }
 
-    std::uint32_t PhoenixRuntime::resolve_asset_texture_layer(std::string_view textureName, bool forceCutout)
+    std::uint32_t PhoenixRuntime::resolve_asset_texture_layer(std::string_view textureName)
     {
-        // Memoise by name+cutout: the world build asks for the same texture across
+        // Memoise by name: the world build asks for the same texture across
         // many meshes, and resolving (3x path lookups + a disk stat) is the bulk of
         // the world-load cost. Same input => same layer, so this is behaviour-exact.
-        std::string cacheKey;
-        cacheKey.reserve(textureName.size() + 1);
-        cacheKey.append(textureName);
-        cacheKey.push_back(forceCutout ? '\x01' : '\x00');
+        std::string cacheKey(textureName);
         if (const auto it = assetTextureLayerCache_.find(cacheKey); it != assetTextureLayerCache_.end())
             return it->second;
         const auto cacheResult = [&](std::uint32_t layer) {
@@ -627,7 +745,14 @@ namespace phoenix::runtime
             return cacheResult(0xFFFFFFFFu);
 
         const auto key = phoenix::assets::lower_ascii(path.string());
-        const auto cutoutOffset = (forceCutout || static_texture_uses_cutout(textureName)) ? kAssetCutoutLayerBase : 0u;
+        // Universal transparency: cutout is decided by the texture's actual
+        // alpha content (pre-warmed in parallel by load_world_assets), never
+        // by filename heuristics.
+        const auto cutoutIt = textureCutoutCache_.find(key);
+        const bool cutout = cutoutIt != textureCutoutCache_.end()
+            ? cutoutIt->second
+            : textureCutoutCache_.emplace(key, phoenix::renderer::dds_file_has_alpha_cutout(path)).first->second;
+        const auto cutoutOffset = cutout ? kAssetCutoutLayerBase : 0u;
         if (const auto it = state_.textureSlotByPath.find(key); it != state_.textureSlotByPath.end())
             return cacheResult(kAssetTextureLayerBase + cutoutOffset + it->second);
 
@@ -667,8 +792,8 @@ namespace phoenix::runtime
 
         std::unordered_set<std::string> seen;
         state_.textureSlotByPath.clear();
-        const auto assetTextureLayer = [this](std::string_view textureName, bool forceCutout) -> std::uint32_t {
-            return resolve_asset_texture_layer(textureName, forceCutout);
+        const auto assetTextureLayer = [this](std::string_view textureName) -> std::uint32_t {
+            return resolve_asset_texture_layer(textureName);
         };
 
         // ---- Pass 0: collect unique assets in load order (serial dedup). ----
@@ -732,18 +857,115 @@ namespace phoenix::runtime
             for (auto& worker : workers) worker.join();
         }
 
-        // ---- Pass 2: build world assets serially (same order => identical output,
-        // including texture-layer slot assignment). ----
-        for (auto& p : pending)
+        // ---- Pass 1b: pre-warm the texture cutout cache in parallel. The
+        // universal transparency decision inspects each texture's alpha
+        // content, which costs a file read — fan it out across cores here so
+        // the serial layer-assignment pass below only does map lookups. ----
         {
+            std::vector<std::string> uniqueTextures;
             {
-                LoadedWorldAsset asset{};
+                std::unordered_set<std::string> seenTextures;
+                for (const auto& p : pending)
+                {
+                    if (p.kind == 1)
+                    {
+                        for (const auto& mesh : p.smod.meshes)
+                        {
+                            if (seenTextures.insert(phoenix::assets::lower_ascii(mesh.textureName)).second)
+                                uniqueTextures.push_back(mesh.textureName);
+                        }
+                    }
+                    else if (p.kind == 2)
+                    {
+                        for (const auto& mesh : p.dg.meshes)
+                        {
+                            if (seenTextures.insert(phoenix::assets::lower_ascii(mesh.textureName)).second)
+                                uniqueTextures.push_back(mesh.textureName);
+                        }
+                    }
+                }
+            }
+
+            std::vector<std::pair<std::string, bool>> results(uniqueTextures.size());
+            std::atomic<std::size_t> nextIdx{ 0 };
+            const auto workerCount = std::min(
+                static_cast<std::size_t>(std::max(1u, std::thread::hardware_concurrency())),
+                std::max<std::size_t>(1, uniqueTextures.size()));
+            std::vector<std::thread> workers;
+            workers.reserve(workerCount);
+            for (std::size_t w = 0; w < workerCount; ++w)
+            {
+                workers.emplace_back([&]() {
+                    for (;;)
+                    {
+                        const auto i = nextIdx.fetch_add(1);
+                        if (i >= uniqueTextures.size()) break;
+                        auto path = phoenix::assets::resolve_texture_asset(state_.assets, uniqueTextures[i]);
+                        if (path.empty())
+                            continue;
+                        auto key = phoenix::assets::lower_ascii(path.string());
+                        // Already classified on a previous map: skip the file
+                        // read entirely (concurrent reads of the cache are safe
+                        // — nothing mutates it during this phase).
+                        if (textureCutoutCache_.contains(key))
+                            continue;
+                        results[i].second = phoenix::renderer::dds_file_has_alpha_cutout(path);
+                        results[i].first = std::move(key);
+                    }
+                });
+            }
+            for (auto& worker : workers) worker.join();
+
+            for (auto& [key, cutout] : results)
+            {
+                if (!key.empty())
+                    textureCutoutCache_.emplace(std::move(key), cutout);
+            }
+        }
+
+        // ---- Pass 2a: resolve texture layers serially (deterministic slot
+        // assignment — same order => identical layer/slot output). ----
+        struct MeshLayerInfo
+        {
+            std::uint32_t materialHash{};
+            std::uint32_t textureLayer{};
+        };
+        std::vector<std::vector<MeshLayerInfo>> meshLayers(pending.size());
+        for (std::size_t pi = 0; pi < pending.size(); ++pi)
+        {
+            const auto& p = pending[pi];
+            if (p.path.empty())
+                continue;
+            if (p.kind == 1)
+            {
+                meshLayers[pi].reserve(p.smod.meshes.size());
+                for (const auto& mesh : p.smod.meshes)
+                    meshLayers[pi].push_back({ color_hash(mesh.textureName), assetTextureLayer(mesh.textureName) });
+            }
+            else if (p.kind == 2)
+            {
+                meshLayers[pi].reserve(p.dg.meshes.size());
+                for (const auto& mesh : p.dg.meshes)
+                    meshLayers[pi].push_back({ color_hash(mesh.textureName), assetTextureLayer(mesh.textureName) });
+            }
+        }
+
+        // ---- Pass 2b: convert vertices/collision per asset in parallel.
+        // Each slot is independent; layer/material data comes from pass 2a. ----
+        state_.worldAssets.resize(pending.size());
+        {
+            std::atomic<std::size_t> nextIdx{ 0 };
+            const auto workerCount = std::min(
+                static_cast<std::size_t>(std::max(1u, std::thread::hardware_concurrency())),
+                std::max<std::size_t>(1, pending.size()));
+            const auto buildAsset = [&](std::size_t pi) {
+                auto& p = pending[pi];
+                auto& asset = state_.worldAssets[pi];
                 asset.name = p.name;
                 asset.path = p.path;
                 const bool isVani = p.key.ends_with(".vani");
                 if (!asset.path.empty())
                 {
-                    const auto assetCutout = static_asset_uses_cutout(p.name, asset.path);
                     if (p.kind == 1)
                     {
                         auto& model = p.smod;
@@ -757,11 +979,12 @@ namespace phoenix::runtime
                             asset.collisionVertices = std::move(model.collision.vertices);
                             asset.collisionIndices = std::move(model.collision.indices);
                         }
-                        for (const auto& mesh : model.meshes)
+                        for (std::size_t mi = 0; mi < model.meshes.size(); ++mi)
                         {
+                            const auto& mesh = model.meshes[mi];
                             asset.vertices += static_cast<std::uint32_t>(mesh.vertices.size());
-                            const auto materialHash = color_hash(mesh.textureName);
-                            const auto textureLayer = assetTextureLayer(mesh.textureName, assetCutout);
+                            const auto materialHash = meshLayers[pi][mi].materialHash;
+                            const auto textureLayer = meshLayers[pi][mi].textureLayer;
                             const auto base = static_cast<std::uint32_t>(asset.previewVertices.size());
                             asset.previewVertices.reserve(asset.previewVertices.size() + mesh.vertices.size());
                             for (const auto& vertex : mesh.vertices)
@@ -776,11 +999,11 @@ namespace phoenix::runtime
 
                             if (asset.vertexAnimated && mesh.animationFrames.size() == asset.frameCount)
                             {
-                                if (asset.animationFrames.empty())
-                                    asset.animationFrames.resize(asset.frameCount);
+                                if (!asset.animationFrames)
+                                    asset.animationFrames = std::make_shared<std::vector<std::vector<phoenix::renderer::TerrainVertex>>>(asset.frameCount);
                                 for (std::uint32_t frame = 0; frame < asset.frameCount; ++frame)
                                 {
-                                    auto& frameVertices = asset.animationFrames[frame];
+                                    auto& frameVertices = (*asset.animationFrames)[frame];
                                     frameVertices.reserve(frameVertices.size() + mesh.animationFrames[frame].size());
                                     for (const auto& vertex : mesh.animationFrames[frame])
                                         append_preview_vertex(frameVertices, vertex.position, vertex.normal, vertex.uv, materialHash, textureLayer);
@@ -799,15 +1022,31 @@ namespace phoenix::runtime
                             asset.collisionVertices = std::move(model.collision.vertices);
                             asset.collisionIndices = std::move(model.collision.indices);
                         }
-                        for (const auto& mesh : model.meshes)
+                        for (std::size_t mi = 0; mi < model.meshes.size(); ++mi)
                         {
+                            const auto& mesh = model.meshes[mi];
                             asset.vertices += static_cast<std::uint32_t>(mesh.vertices.size());
-                            const auto materialHash = color_hash(mesh.textureName);
-                            const auto textureLayer = assetTextureLayer(mesh.textureName, assetCutout);
+                            const auto materialHash = meshLayers[pi][mi].materialHash;
+                            const auto textureLayer = meshLayers[pi][mi].textureLayer;
                             const auto base = static_cast<std::uint32_t>(asset.previewVertices.size());
+                            // Lightmap pages only apply when the whole map IS a
+                            // dungeon. A DG placed as an open-world asset must
+                            // not sample the field lightmap array with its own
+                            // page indices.
+                            const bool meshHasLightmap = state_.world.isDungeon
+                                && model.lightmapCount > 0
+                                && mesh.lightmapIndex >= 0
+                                && static_cast<std::uint32_t>(mesh.lightmapIndex) < model.lightmapCount;
                             asset.previewVertices.reserve(asset.previewVertices.size() + mesh.vertices.size());
                             for (const auto& vertex : mesh.vertices)
-                                append_preview_vertex(asset.previewVertices, vertex.position, vertex.normal, vertex.uv, materialHash, textureLayer);
+                            {
+                                if (meshHasLightmap)
+                                    append_preview_vertex_lightmapped(asset.previewVertices, vertex.position,
+                                        vertex.normal, vertex.uv, vertex.lightmapUv, mesh.lightmapIndex, textureLayer);
+                                else
+                                    append_preview_vertex(asset.previewVertices, vertex.position, vertex.normal,
+                                        vertex.uv, materialHash, textureLayer);
+                            }
                             asset.previewIndices.reserve(asset.previewIndices.size() + mesh.indices.size());
                             for (const auto index : mesh.indices)
                                 asset.previewIndices.push_back(base + index);
@@ -831,8 +1070,22 @@ namespace phoenix::runtime
                     asset.collisionIndices = asset.previewIndices;
                     asset.hasCollision = true;
                 }
-                state_.worldAssets.push_back(std::move(asset));
+            };
+
+            std::vector<std::thread> workers;
+            workers.reserve(workerCount);
+            for (std::size_t w = 0; w < workerCount; ++w)
+            {
+                workers.emplace_back([&pending, &nextIdx, &buildAsset]() {
+                    for (;;)
+                    {
+                        const auto i = nextIdx.fetch_add(1);
+                        if (i >= pending.size()) break;
+                        buildAsset(i);
+                    }
+                });
             }
+            for (auto& worker : workers) worker.join();
         }
         std::unordered_map<std::string, const LoadedWorldAsset*> assetByName;
         std::unordered_map<std::string, std::int32_t> assetSlotByName;
@@ -846,6 +1099,28 @@ namespace phoenix::runtime
         const auto mapSize = static_cast<float>(std::max(1u, state_.world.mapSize));
         const auto halfMap = state_.world.isDungeon ? 0.0f : mapSize * 0.5f;
         state_.sceneObjects.reserve(70000);
+
+        std::unordered_map<int, phoenix::world::ManiAnimation> maniCache;
+        const auto maniAnimationFor = [&](std::int32_t maniAssetIndex) -> const phoenix::world::ManiAnimation& {
+            static const phoenix::world::ManiAnimation empty{};
+            if (maniAssetIndex < 0
+                || static_cast<std::size_t>(maniAssetIndex) >= state_.world.maniAssets.size())
+                return empty;
+
+            if (const auto it = maniCache.find(maniAssetIndex); it != maniCache.end())
+                return it->second;
+
+            auto animation = phoenix::world::ManiAnimation{};
+            const auto& maniName = state_.world.maniAssets[static_cast<std::size_t>(maniAssetIndex)];
+            const auto maniPath = state_.assets.resolve(maniName);
+            if (!maniPath.empty())
+                animation = phoenix::world::load_mani(maniPath);
+
+            const auto [it, inserted] = maniCache.emplace(maniAssetIndex, animation);
+            (void)inserted;
+            return it->second;
+        };
+
         for (std::size_t sectionIdx = 0; sectionIdx < state_.world.objectSections.size(); ++sectionIdx)
         {
             const auto& section = state_.world.objectSections[sectionIdx];
@@ -876,6 +1151,63 @@ namespace phoenix::runtime
                         object.assetSlot = slot->second;
                 }
                 state_.sceneObjects.push_back(object);
+            }
+        }
+
+        // ---- MANI instances: separate placements of Building assets ----
+        // Each WldManiInstance places a Building asset at its own position/rotation.
+        // buildingAssetId indexes into the Building section's asset list.
+        if (!state_.world.maniInstances.empty())
+        {
+            // Find the Building section to resolve asset names.
+            std::int32_t buildingSectionIdx = -1;
+            for (std::size_t s = 0; s < state_.world.objectSections.size(); ++s)
+            {
+                if (state_.world.objectSections[s].name == "Building")
+                {
+                    buildingSectionIdx = static_cast<std::int32_t>(s);
+                    break;
+                }
+            }
+
+            if (buildingSectionIdx >= 0)
+            {
+                const auto& buildingSection = state_.world.objectSections[static_cast<std::size_t>(buildingSectionIdx)];
+                for (std::size_t mi = 0; mi < state_.world.maniInstances.size(); ++mi)
+                {
+                    const auto& maniInst = state_.world.maniInstances[mi];
+                    const auto bId = maniInst.buildingAssetId;
+                    if (bId < 0 || static_cast<std::size_t>(bId) >= buildingSection.assets.size())
+                        continue;
+
+                    const auto key = phoenix::assets::lower_ascii(buildingSection.assets[static_cast<std::size_t>(bId)]);
+
+                    SceneObject object{};
+                    object.x = maniInst.position[0] - halfMap;
+                    object.y = maniInst.position[1];
+                    object.z = maniInst.position[2] - halfMap;
+                    std::copy(std::begin(maniInst.rotationForward), std::end(maniInst.rotationForward), std::begin(object.forward));
+                    std::copy(std::begin(maniInst.rotationUp), std::end(maniInst.rotationUp), std::begin(object.up));
+                    object.sectionIndex = buildingSectionIdx;
+                    object.instanceIndex = -1; // not a regular section instance
+
+                    if (const auto it = assetByName.find(key); it != assetByName.end())
+                    {
+                        object.loaded = it->second->loaded;
+                        object.radius = it->second->radius;
+                    }
+                    if (const auto slot = assetSlotByName.find(key); slot != assetSlotByName.end())
+                        object.assetSlot = slot->second;
+
+                    const auto& mani = maniAnimationFor(maniInst.maniAssetIndex);
+                    if (mani.parsed && mani.enableRotation && std::abs(mani.animationSpeed) >= 0.0001f)
+                    {
+                        std::copy(std::begin(mani.rotationAxis), std::end(mani.rotationAxis), std::begin(object.maniRotationAxis));
+                        object.maniRotationSpeed = mani.animationSpeed * kManiTicksPerSecond;
+                    }
+
+                    state_.sceneObjects.push_back(object);
+                }
             }
         }
 
@@ -933,95 +1265,6 @@ namespace phoenix::runtime
             return {};
 
         return audio_path_for(soundName);
-    }
-
-    PreviewImage PhoenixRuntime::create_preview_image(std::uint32_t width, std::uint32_t height) const
-    {
-        PreviewImage image{};
-        image.width = std::max(1u, width);
-        image.height = std::max(1u, height);
-        image.bgra.assign(static_cast<std::size_t>(image.width) * image.height * 4, 255);
-
-        for (std::uint32_t y = 0; y < image.height; ++y)
-        {
-            for (std::uint32_t x = 0; x < image.width; ++x)
-                put_pixel(image, static_cast<int>(x), static_cast<int>(y), 18, 22, 26);
-        }
-
-        if (!state_.world.parsed || state_.world.heightSamples.empty() || state_.world.heightMapSide < 2)
-            return image;
-
-        const auto side = state_.world.heightMapSide;
-        const auto mapSide = std::min(image.width, image.height) - 48u;
-        const auto originX = static_cast<int>((image.width - mapSide) / 2u);
-        const auto originY = static_cast<int>((image.height - mapSide) / 2u);
-
-        float minHeight = state_.world.heightSamples.front();
-        float maxHeight = state_.world.heightSamples.front();
-        for (const auto h : state_.world.heightSamples)
-        {
-            minHeight = std::min(minHeight, h);
-            maxHeight = std::max(maxHeight, h);
-        }
-        const auto heightRange = std::max(1.0f, maxHeight - minHeight);
-
-        for (std::uint32_t y = 0; y < mapSide; ++y)
-        {
-            const auto sampleY = std::min(side - 1, static_cast<std::uint32_t>((static_cast<std::uint64_t>(y) * (side - 1)) / std::max(1u, mapSide - 1)));
-            for (std::uint32_t x = 0; x < mapSide; ++x)
-            {
-                const auto sampleX = std::min(side - 1, static_cast<std::uint32_t>((static_cast<std::uint64_t>(x) * (side - 1)) / std::max(1u, mapSide - 1)));
-                const auto h = state_.world.heightSamples[static_cast<std::size_t>(sampleY) * side + sampleX];
-                const auto normalized = std::clamp((h - minHeight) / heightRange, 0.0f, 1.0f);
-                const auto shade = static_cast<std::uint8_t>(normalized * 95.0f);
-                const auto water = normalized < 0.17f;
-                const auto r = water ? static_cast<std::uint8_t>(24 + shade / 5) : static_cast<std::uint8_t>(34 + shade);
-                const auto g = water ? static_cast<std::uint8_t>(86 + shade / 3) : static_cast<std::uint8_t>(82 + shade);
-                const auto b = water ? static_cast<std::uint8_t>(115 + shade / 2) : static_cast<std::uint8_t>(38 + shade / 2);
-                put_pixel(image, originX + static_cast<int>(x), originY + static_cast<int>(y), r, g, b);
-            }
-        }
-
-        for (std::uint32_t i = 0; i <= mapSide; i += std::max(1u, mapSide / 16u))
-        {
-            for (std::uint32_t p = 0; p < mapSide; ++p)
-            {
-                put_pixel(image, originX + static_cast<int>(i), originY + static_cast<int>(p), 58, 69, 72);
-                put_pixel(image, originX + static_cast<int>(p), originY + static_cast<int>(i), 58, 69, 72);
-            }
-        }
-
-        const auto mapSize = static_cast<float>(std::max(1u, state_.world.mapSize));
-        for (const auto& section : state_.world.objectSections)
-        {
-            for (const auto& instance : section.instances)
-            {
-                auto x = instance.position[0] / mapSize;
-                auto z = instance.position[2] / mapSize;
-                if (x < -0.25f || x > 1.25f || z < -0.25f || z > 1.25f)
-                {
-                    x = (instance.position[0] + mapSize * 0.5f) / mapSize;
-                    z = (instance.position[2] + mapSize * 0.5f) / mapSize;
-                }
-
-                const auto px = originX + static_cast<int>(std::clamp(x, 0.0f, 1.0f) * static_cast<float>(mapSide - 1));
-                const auto py = originY + static_cast<int>(std::clamp(z, 0.0f, 1.0f) * static_cast<float>(mapSide - 1));
-                draw_dot(image, px, py, 2, 238, 179, 58);
-            }
-        }
-
-        for (int y = originY - 1; y <= originY + static_cast<int>(mapSide); ++y)
-        {
-            put_pixel(image, originX - 1, y, 210, 218, 214);
-            put_pixel(image, originX + static_cast<int>(mapSide), y, 210, 218, 214);
-        }
-        for (int x = originX - 1; x <= originX + static_cast<int>(mapSide); ++x)
-        {
-            put_pixel(image, x, originY - 1, 210, 218, 214);
-            put_pixel(image, x, originY + static_cast<int>(mapSide), 210, 218, 214);
-        }
-
-        return image;
     }
 
     PreviewImage PhoenixRuntime::create_3d_preview_image(std::uint32_t width, std::uint32_t height) const
@@ -1207,6 +1450,75 @@ namespace phoenix::runtime
         {
             const auto name = stem + "_" + sections[i] + "_l.dds";
             auto p = resolve_ci(fieldDir / name);
+            paths.push_back(std::move(p));
+        }
+        return paths;
+    }
+
+    std::vector<std::filesystem::path> PhoenixRuntime::field_alpha_mask_paths(std::uint32_t& layerFlags) const
+    {
+        layerFlags = 0;
+        if (!state_.world.parsed || state_.world.isDungeon)
+            return {};
+
+        const auto stem = state_.world.path.stem().string();
+        if (stem.empty())
+            return {};
+
+        auto fieldDir = state_.world.phoenixWorldFieldDir;
+        if (fieldDir.empty())
+            fieldDir = resolve_ci(state_.dataRoot / "World" / "field" / stem);
+        if (fieldDir.empty() || !std::filesystem::is_directory(fieldDir))
+            return {};
+
+        const bool bigMap = state_.world.mapSize >= 1536;
+        const std::string sections[] = { "00", "01", "10", "11" };
+        const auto sectionTotal = bigMap ? 4u : 1u;
+
+        // Ordered section-major: [section][maskLayer 0..7].
+        std::vector<std::filesystem::path> paths;
+        paths.reserve(static_cast<std::size_t>(sectionTotal) * kFieldAlphaMaskLayers);
+        for (std::uint32_t s = 0; s < sectionTotal; ++s)
+        {
+            for (std::uint32_t n = 0; n < kFieldAlphaMaskLayers; ++n)
+            {
+                const auto name = stem + "_" + sections[s] + "_a" + std::to_string(n) + ".dds";
+                auto p = resolve_ci(fieldDir / name);
+                if (!p.empty() && std::filesystem::exists(p))
+                    layerFlags |= 1u << n;
+                else
+                    p.clear();
+                paths.push_back(std::move(p));
+            }
+        }
+        if (layerFlags == 0)
+            return {};
+        return paths;
+    }
+
+    std::vector<std::filesystem::path> PhoenixRuntime::dungeon_lightmap_paths() const
+    {
+        if (!state_.world.parsed || !state_.world.isDungeon
+            || state_.world.dungeonDgFileName.empty())
+            return {};
+
+        const auto dgPath = state_.assets.resolve(state_.world.dungeonDgFileName);
+        if (dgPath.empty())
+            return {};
+
+        // Pages live in a folder named after the DG next to it:
+        // dungeon/<name>.dg + dungeon/<name>/<name>_L<i>.dds
+        const auto stem = dgPath.stem().string();
+        auto pageDir = resolve_ci(dgPath.parent_path() / stem);
+        if (pageDir.empty() || !std::filesystem::is_directory(pageDir))
+            pageDir = dgPath.parent_path(); // fallback: pages next to the DG
+
+        std::vector<std::filesystem::path> paths;
+        for (std::uint32_t i = 0; i < 256; ++i)
+        {
+            auto p = resolve_ci(pageDir / (stem + "_L" + std::to_string(i) + ".dds"));
+            if (p.empty() || !std::filesystem::exists(p))
+                break;
             paths.push_back(std::move(p));
         }
         return paths;
@@ -1805,50 +2117,10 @@ namespace phoenix::runtime
         scene.batches.reserve(batchCount);
         scene.batchBounds.reserve(batchCount);
 
-        const auto normalize = [](float* vector, const float* fallback) {
-            const auto length = std::sqrt(vector[0] * vector[0] + vector[1] * vector[1] + vector[2] * vector[2]);
-            if (length < 0.001f)
-            {
-                vector[0] = fallback[0];
-                vector[1] = fallback[1];
-                vector[2] = fallback[2];
-                return;
-            }
-
-            vector[0] /= length;
-            vector[1] /= length;
-            vector[2] /= length;
-        };
+        float currentCullDistance = 0.0f; // 0 = no cull, >0 = max render distance (VANI)
 
         const auto appendInstance = [&](const SceneObject& object) {
-            float forward[3]{ object.forward[0], object.forward[1], object.forward[2] };
-            float up[3]{ object.up[0], object.up[1], object.up[2] };
-            const float fallbackForward[3]{ 0.0f, 0.0f, 1.0f };
-            const float fallbackUp[3]{ 0.0f, 1.0f, 0.0f };
-            normalize(forward, fallbackForward);
-            normalize(up, fallbackUp);
-
-            const float right[3]{
-                up[1] * forward[2] - up[2] * forward[1],
-                up[2] * forward[0] - up[0] * forward[2],
-                up[0] * forward[1] - up[1] * forward[0],
-            };
-
-            phoenix::renderer::ObjectInstance instance{};
-            instance.right[0] = right[0];
-            instance.right[1] = right[1];
-            instance.right[2] = right[2];
-            instance.up[0] = up[0];
-            instance.up[1] = up[1];
-            instance.up[2] = up[2];
-            instance.forward[0] = forward[0];
-            instance.forward[1] = forward[1];
-            instance.forward[2] = forward[2];
-            instance.position[0] = object.x;
-            instance.position[1] = object.y;
-            instance.position[2] = object.z;
-            instance.position[3] = 1.0f;
-            scene.instances.push_back(instance);
+            scene.instances.push_back(make_object_instance(object, currentCullDistance));
         };
 
         for (std::size_t assetSlot = 0; assetSlot < state_.worldAssets.size(); ++assetSlot)
@@ -1863,6 +2135,11 @@ namespace phoenix::runtime
             });
 
             const auto& asset = state_.worldAssets[assetSlot];
+
+            // VANI assets: distance-cullable; the vertex shader clamps to the
+            // universal render distance (fog cull).
+            const auto assetKey = phoenix::assets::lower_ascii(asset.name);
+            currentCullDistance = assetKey.ends_with(".vani") ? 1.0e8f : 0.0f;
 
             const auto baseVertex = static_cast<std::uint32_t>(scene.vertices.size());
             const auto firstIndex = static_cast<std::uint32_t>(scene.indices.size());
@@ -1921,7 +2198,6 @@ namespace phoenix::runtime
             scene.batchBounds.push_back(bounds);
         }
 
-
         return scene;
     }
 
@@ -1947,48 +2223,10 @@ namespace phoenix::runtime
                 groupsByAsset[assetSlot].push_back(objectIndex);
         }
 
-        const auto normalize = [](float* vector, const float* fallback) {
-            const auto length = std::sqrt(vector[0] * vector[0] + vector[1] * vector[1] + vector[2] * vector[2]);
-            if (length < 0.001f)
-            {
-                vector[0] = fallback[0];
-                vector[1] = fallback[1];
-                vector[2] = fallback[2];
-                return;
-            }
-            vector[0] /= length;
-            vector[1] /= length;
-            vector[2] /= length;
-        };
+        float animCullDistance = 0.0f;
 
         const auto appendInstance = [&](const SceneObject& object) {
-            float forward[3]{ object.forward[0], object.forward[1], object.forward[2] };
-            float up[3]{ object.up[0], object.up[1], object.up[2] };
-            const float fallbackForward[3]{ 0.0f, 0.0f, 1.0f };
-            const float fallbackUp[3]{ 0.0f, 1.0f, 0.0f };
-            normalize(forward, fallbackForward);
-            normalize(up, fallbackUp);
-
-            const float right[3]{
-                up[1] * forward[2] - up[2] * forward[1],
-                up[2] * forward[0] - up[0] * forward[2],
-                up[0] * forward[1] - up[1] * forward[0],
-            };
-
-            phoenix::renderer::ObjectInstance instance{};
-            instance.right[0] = right[0];
-            instance.right[1] = right[1];
-            instance.right[2] = right[2];
-            instance.up[0] = up[0];
-            instance.up[1] = up[1];
-            instance.up[2] = up[2];
-            instance.forward[0] = forward[0];
-            instance.forward[1] = forward[1];
-            instance.forward[2] = forward[2];
-            instance.position[0] = object.x;
-            instance.position[1] = object.y;
-            instance.position[2] = object.z;
-            instance.position[3] = 1.0f;
+            const auto instance = make_object_instance(object, animCullDistance);
             scene.baseInstances.push_back(instance);
             scene.instances.push_back(instance);
         };
@@ -2000,18 +2238,28 @@ namespace phoenix::runtime
                 continue;
 
             const auto& asset = state_.worldAssets[assetSlot];
+            const auto animKey = phoenix::assets::lower_ascii(asset.name);
+            // VANI instances are distance-cullable; the vertex shader clamps this
+            // to the universal render distance (fog cull), so a large sentinel
+            // means "follow the universal rule".
+            animCullDistance = animKey.ends_with(".vani") ? 1.0e8f : 0.0f;
             const auto baseVertex = static_cast<std::uint32_t>(scene.vertices.size());
             const auto firstIndex = static_cast<std::uint32_t>(scene.indices.size());
             scene.vertices.insert(scene.vertices.end(), asset.previewVertices.begin(), asset.previewVertices.end());
             for (const auto index : asset.previewIndices)
                 scene.indices.push_back(baseVertex + index);
 
-            if (asset.vertexAnimated && asset.animationFrames.size() == asset.frameCount)
+            if (asset.vertexAnimated && asset.animationFrames
+                && asset.animationFrames->size() == asset.frameCount)
             {
                 AnimatedObjectScene::VertexAnimation animation{};
                 animation.firstVertex = baseVertex;
                 animation.vertexCount = static_cast<std::uint32_t>(asset.previewVertices.size());
-                animation.frames = asset.animationFrames;
+                animation.firstIndex = firstIndex;
+                animation.indexCount = static_cast<std::uint32_t>(asset.previewIndices.size());
+                animation.firstInstance = static_cast<std::uint32_t>(scene.instances.size());
+                animation.instanceCount = static_cast<std::uint32_t>(objectIndices.size());
+                animation.frames = asset.animationFrames; // shared, no copy
                 scene.vertexAnimations.push_back(std::move(animation));
             }
 
@@ -2057,61 +2305,52 @@ namespace phoenix::runtime
         return scene;
     }
 
-    void PhoenixRuntime::update_animated_object_scene(AnimatedObjectScene& scene, float totalTime) const
+    void PhoenixRuntime::update_animated_object_scene(AnimatedObjectScene& scene, float totalTime,
+        float cameraX, float cameraY, float cameraZ) const
     {
         constexpr float kDecorFps = 12.0f;
+        // Beyond this distance VANI assets stop animating and stay frozen on
+        // their last frame — no CPU skinning, no GPU vertex uploads.
+        constexpr float kAnimateDistance = 100.0f;
+        constexpr float kAnimateDistanceSq = kAnimateDistance * kAnimateDistance;
 
         for (auto& animation : scene.vertexAnimations)
         {
-            if (animation.frames.empty())
+            if (!animation.visible || !animation.frames || animation.frames->empty())
                 continue;
-            const auto frame = static_cast<std::size_t>(std::floor(totalTime * kDecorFps)) % animation.frames.size();
-            const auto& frameVertices = animation.frames[frame];
+
+            // Animate only if the nearest instance of this asset is close enough.
+            bool anyInstanceNear = false;
+            const auto instanceEnd = std::min<std::size_t>(
+                static_cast<std::size_t>(animation.firstInstance) + animation.instanceCount,
+                scene.baseInstances.size());
+            for (std::size_t i = animation.firstInstance; i < instanceEnd; ++i)
+            {
+                const auto& position = scene.baseInstances[i].position;
+                const float dx = position[0] - cameraX;
+                const float dy = position[1] - cameraY;
+                const float dz = position[2] - cameraZ;
+                if (dx * dx + dy * dy + dz * dz <= kAnimateDistanceSq)
+                {
+                    anyInstanceNear = true;
+                    break;
+                }
+            }
+            if (!anyInstanceNear)
+                continue;
+
+            const auto frame = static_cast<std::uint32_t>(
+                static_cast<std::size_t>(std::floor(totalTime * kDecorFps)) % animation.frames->size());
+            if (frame == animation.currentFrame)
+                continue;
+            animation.currentFrame = frame;
+            const auto& frameVertices = (*animation.frames)[frame];
             const auto count = std::min<std::size_t>(animation.vertexCount, frameVertices.size());
             if (static_cast<std::size_t>(animation.firstVertex) + count <= scene.vertices.size())
             {
                 std::copy_n(frameVertices.begin(), count, scene.vertices.begin() + animation.firstVertex);
                 scene.mark_vertices_dirty(animation.firstVertex, static_cast<std::uint32_t>(count));
             }
-        }
-
-
-        scene.instances = scene.baseInstances;
-        const auto rotateVector = [](float* v, const float* axis, float angle) {
-            const float c = std::cos(angle);
-            const float s = std::sin(angle);
-            const float dot = v[0] * axis[0] + v[1] * axis[1] + v[2] * axis[2];
-            const float cross[3]{
-                axis[1] * v[2] - axis[2] * v[1],
-                axis[2] * v[0] - axis[0] * v[2],
-                axis[0] * v[1] - axis[1] * v[0],
-            };
-            v[0] = v[0] * c + cross[0] * s + axis[0] * dot * (1.0f - c);
-            v[1] = v[1] * c + cross[1] * s + axis[1] * dot * (1.0f - c);
-            v[2] = v[2] * c + cross[2] * s + axis[2] * dot * (1.0f - c);
-        };
-
-        for (const auto& animation : scene.instanceAnimations)
-        {
-            if (animation.instanceIndex >= scene.instances.size())
-                continue;
-            auto& instance = scene.instances[animation.instanceIndex];
-            float axis[3]{
-                instance.right[0] * animation.axis[0] + instance.up[0] * animation.axis[1] + instance.forward[0] * animation.axis[2],
-                instance.right[1] * animation.axis[0] + instance.up[1] * animation.axis[1] + instance.forward[1] * animation.axis[2],
-                instance.right[2] * animation.axis[0] + instance.up[2] * animation.axis[1] + instance.forward[2] * animation.axis[2],
-            };
-            const auto axisLength = std::sqrt(axis[0] * axis[0] + axis[1] * axis[1] + axis[2] * axis[2]);
-            if (axisLength < 0.001f)
-                continue;
-            axis[0] /= axisLength;
-            axis[1] /= axisLength;
-            axis[2] /= axisLength;
-
-            const auto angle = totalTime * animation.speed * 6.28318530718f;
-            rotateVector(instance.right, axis, angle);
-            rotateVector(instance.up, axis, angle);
-            rotateVector(instance.forward, axis, angle);
         }
     }
 
@@ -2501,6 +2740,83 @@ namespace phoenix::runtime
         return bestY;
     }
 
+    std::vector<PhoenixRuntime::LadderVolume> PhoenixRuntime::ladder_volumes() const
+    {
+        std::vector<LadderVolume> volumes;
+        for (const auto& obj : state_.sceneObjects)
+        {
+            if (obj.deleted || obj.assetSlot < 0)
+                continue;
+            if (obj.sectionIndex < 0
+                || static_cast<std::size_t>(obj.sectionIndex) >= state_.world.objectSections.size()
+                || state_.world.objectSections[static_cast<std::size_t>(obj.sectionIndex)].name != "Object")
+                continue;
+            const auto slot = static_cast<std::size_t>(obj.assetSlot);
+            if (slot >= state_.worldAssets.size())
+                continue;
+            const auto& asset = state_.worldAssets[slot];
+            if (asset.previewVertices.empty())
+                continue;
+
+            // Local AABB of the climbable mesh.
+            float minL[3]{ std::numeric_limits<float>::max(), std::numeric_limits<float>::max(), std::numeric_limits<float>::max() };
+            float maxL[3]{ std::numeric_limits<float>::lowest(), std::numeric_limits<float>::lowest(), std::numeric_limits<float>::lowest() };
+            for (const auto& vertex : asset.previewVertices)
+            {
+                for (int axis = 0; axis < 3; ++axis)
+                {
+                    minL[axis] = std::min(minL[axis], vertex.position[axis]);
+                    maxL[axis] = std::max(maxL[axis], vertex.position[axis]);
+                }
+            }
+
+            // World AABB: transform the 8 local corners by the instance basis.
+            float forward[3]{ obj.forward[0], obj.forward[1], obj.forward[2] };
+            float up[3]{ obj.up[0], obj.up[1], obj.up[2] };
+            auto normalize = [](float* v, float fx, float fy, float fz) {
+                const float len = std::sqrt(v[0] * v[0] + v[1] * v[1] + v[2] * v[2]);
+                if (len < 0.001f) { v[0] = fx; v[1] = fy; v[2] = fz; return; }
+                v[0] /= len; v[1] /= len; v[2] /= len;
+            };
+            normalize(forward, 0.0f, 0.0f, 1.0f);
+            normalize(up, 0.0f, 1.0f, 0.0f);
+            const float right[3]{
+                up[1] * forward[2] - up[2] * forward[1],
+                up[2] * forward[0] - up[0] * forward[2],
+                up[0] * forward[1] - up[1] * forward[0],
+            };
+
+            float minW[3]{ std::numeric_limits<float>::max(), std::numeric_limits<float>::max(), std::numeric_limits<float>::max() };
+            float maxW[3]{ std::numeric_limits<float>::lowest(), std::numeric_limits<float>::lowest(), std::numeric_limits<float>::lowest() };
+            for (int corner = 0; corner < 8; ++corner)
+            {
+                const float lx = (corner & 1) ? maxL[0] : minL[0];
+                const float ly = (corner & 2) ? maxL[1] : minL[1];
+                const float lz = (corner & 4) ? maxL[2] : minL[2];
+                const float wx = obj.x + right[0] * lx + up[0] * ly + forward[0] * lz;
+                const float wy = obj.y + right[1] * lx + up[1] * ly + forward[1] * lz;
+                const float wz = obj.z + right[2] * lx + up[2] * ly + forward[2] * lz;
+                minW[0] = std::min(minW[0], wx); maxW[0] = std::max(maxW[0], wx);
+                minW[1] = std::min(minW[1], wy); maxW[1] = std::max(maxW[1], wy);
+                minW[2] = std::min(minW[2], wz); maxW[2] = std::max(maxW[2], wz);
+            }
+
+            LadderVolume volume{};
+            volume.x = (minW[0] + maxW[0]) * 0.5f;
+            volume.z = (minW[2] + maxW[2]) * 0.5f;
+            volume.baseY = minW[1];
+            volume.topY = maxW[1];
+            // Capture radius: the ladder's horizontal footprint plus a small
+            // approach margin so walking up to it latches reliably.
+            const float extentX = (maxW[0] - minW[0]) * 0.5f;
+            const float extentZ = (maxW[2] - minW[2]) * 0.5f;
+            volume.radius = std::max(extentX, extentZ) + 0.9f;
+            if (volume.topY - volume.baseY >= 1.5f) // ignore flat/short objects
+                volumes.push_back(volume);
+        }
+        return volumes;
+    }
+
     WorldCollisionMesh PhoenixRuntime::build_collision_mesh() const
     {
         WorldCollisionMesh mesh;
@@ -2516,6 +2832,12 @@ namespace phoenix::runtime
                 continue;
             const auto slot = static_cast<std::size_t>(obj.assetSlot);
             if (slot >= state_.worldAssets.size())
+                continue;
+            // "Object" section assets (ladders/ivy in entity/object/) never
+            // collide — the character latches onto them and climbs instead.
+            if (obj.sectionIndex >= 0
+                && static_cast<std::size_t>(obj.sectionIndex) < state_.world.objectSections.size()
+                && state_.world.objectSections[static_cast<std::size_t>(obj.sectionIndex)].name == "Object")
                 continue;
             const auto& asset = state_.worldAssets[slot];
             if (!asset.hasCollision || asset.collisionVertices.empty() || asset.collisionIndices.empty())

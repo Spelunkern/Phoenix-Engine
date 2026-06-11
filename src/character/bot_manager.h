@@ -1,5 +1,6 @@
 #pragma once
 
+#include "app/loading_scheduler.h"
 #include "assets/data_index.h"
 #include "character/character_system.h"
 #include "character/weapon_effect.h"
@@ -120,9 +121,10 @@ namespace phoenix::character
         const auto addItem = [&](phoenix::character::WeaponType type) {
             if (type == phoenix::character::WeaponType::None)
                 return;
-            const auto typeId = static_cast<int>(type);
-            const auto csvPath = itemRoot / std::format("{:02d}.csv", typeId);
-            pools.itemIndices[type] = scan_csv_indices_column(csvPath, 2);
+            // Weapon CSVs are named by type (sword1h.csv, ...) with format
+            // RecordIndex,MeshName,TextureName,AlphaBlendingMode.
+            const auto csvPath = itemRoot / (std::string(phoenix::character::weapon_type_csv_name(type)) + ".csv");
+            pools.itemIndices[type] = scan_csv_indices_column(csvPath, 0);
         };
     
         addItem(phoenix::character::WeaponType::Sword1H);
@@ -149,7 +151,7 @@ namespace phoenix::character
     
         const auto vehicleRoot = phoenix::assets::resolve_existing_path_case_insensitive(dataRoot / "Vehicle");
         for (const auto mountClass : { "hu", "de", "el", "vi" })
-            pools.mountIndicesByClass[mountClass] = scan_csv_indices_column(vehicleRoot / ("vehicle_" + std::string(mountClass) + "_01.csv"), 2);
+            pools.mountIndicesByClass[mountClass] = scan_csv_indices_column(vehicleRoot / ("vehicle_" + std::string(mountClass) + "_01.csv"), 0);
     
         return pools;
     }
@@ -399,14 +401,6 @@ namespace phoenix::character
             return static_cast<std::uint16_t>(randomInt(0, static_cast<int>(visualPresets.size()) - 1));
         }
 
-        static int mount_bone_for_race(const std::string& raceAbbrev)
-        {
-            if (raceAbbrev == "de") return 34;
-            if (raceAbbrev == "el") return 19;
-            if (raceAbbrev == "vi") return 19;
-            return 25;
-        }
-
         static bool weapon_can_carry_shield(phoenix::character::WeaponType type)
         {
             switch (type)
@@ -552,8 +546,8 @@ namespace phoenix::character
                 preset.appearance = appearance;
                 preset.textureBase = nextTextureSlot;
                 preset.mounted = appearance.mounted;
-                const int mountBoneIndex = mount_bone_for_race(raceAbbrev);
-                preset.poses[kPoseIdle].mountBoneIndex = mountBoneIndex;
+                // Seat bone comes from the vehicle CSV (Bone column) during
+                // load and propagates to the other poses via clone_from.
     
                 // Load into pose slot 0 (idle) — all others clone from it.
                 if (!preset.poses[kPoseIdle].load(dataRoot, appearance, allowPreload)
@@ -569,12 +563,7 @@ namespace phoenix::character
                 bool allTexturesValid = true;
                 for (std::uint32_t i = 0; i < textureCount; ++i)
                 {
-                    // Use BC3 cache when available (correct format, no disk I/O).
-                    const auto* cached = preset.poses[kPoseIdle].bc3_texture_for(texPaths[i]);
-                    if (cached)
-                        textureSlots[preset.textureBase + i] = *cached;
-                    else
-                        textureSlots[preset.textureBase + i] = phoenix::renderer::load_dds(texPaths[i]);
+                    textureSlots[preset.textureBase + i] = phoenix::renderer::load_dds(texPaths[i]);
                     if (!textureSlots[preset.textureBase + i].valid)
                         allTexturesValid = false;
                 }
@@ -585,7 +574,6 @@ namespace phoenix::character
                 for (std::size_t p = 1; p < kPoseCount; ++p)
                 {
                     preset.poses[p].clone_from(preset.poses[kPoseIdle]);
-                    preset.poses[p].mountBoneIndex = mountBoneIndex;
                     preset.poses[p].set_texture_layer_base(preset.textureBase);
                     preset.poses[p].set_world_position(0.0f, 0.0f, 0.0f, 0.0f);
                 }
@@ -718,7 +706,8 @@ namespace phoenix::character
         }
     
         void update(float dt, float camX, float camZ, float cullDist,
-            phoenix::character::HeightSampleFn heightFn, void* heightUserData)
+            phoenix::character::HeightSampleFn heightFn, void* heightUserData,
+            phoenix::app::LoadingScheduler* workerPool = nullptr)
         {
             pendingEffects.clear();
             if (bots.empty())
@@ -879,31 +868,20 @@ namespace phoenix::character
                         }
                     }
     
-                    // Parallel pose skinning across all CPU cores.
+                    // Parallel pose skinning on the persistent worker pool —
+                    // spawning/joining std::threads here (up to 30x/s) costs
+                    // more than the skinning itself for small bot counts.
                     const auto workCount = skinWork.size();
-                    const auto threadCount = std::max(1u, std::thread::hardware_concurrency());
-                    if (workCount <= 2 || threadCount <= 1)
+                    if (workCount <= 2 || !workerPool || workerPool->worker_count() <= 1)
                     {
                         for (auto& w : skinWork)
                             w.pose->advance_pose(poseDt, w.animIdx);
                     }
                     else
                     {
-                        std::atomic<std::size_t> nextIdx{ 0 };
-                        auto worker = [&]() {
-                            for (;;)
-                            {
-                                const auto i = nextIdx.fetch_add(1, std::memory_order_relaxed);
-                                if (i >= workCount) break;
-                                skinWork[i].pose->advance_pose(poseDt, skinWork[i].animIdx);
-                            }
-                        };
-                        std::vector<std::thread> threads;
-                        threads.reserve(threadCount - 1);
-                        for (std::uint32_t t = 1; t < threadCount; ++t)
-                            threads.emplace_back(worker);
-                        worker();
-                        for (auto& t : threads) t.join();
+                        phoenix::app::parallel_for_loading(*workerPool, workCount, [&](std::size_t i) {
+                            skinWork[i].pose->advance_pose(poseDt, skinWork[i].animIdx);
+                        });
                     }
     
                     poseVerticesDirty = true;
@@ -939,6 +917,12 @@ namespace phoenix::character
                 poseVertexCounts.reserve(slotCount);
             }
     
+            // Dirty ranges for the non-topology path: only the pose slots that
+            // were re-skinned this tick get re-uploaded (contiguous slots merge
+            // into one memcpy) instead of pushing the whole vertex buffer.
+            struct VertexRange { std::size_t first{}, count{}; };
+            std::vector<VertexRange> dirtyRanges;
+
             std::size_t poseSlot = 0;
             for (const auto& preset : visualPresets)
             {
@@ -964,7 +948,14 @@ namespace phoenix::character
                         const auto dstOffset = poseVertexOffsets[poseSlot];
                         const auto dstCount = std::min<std::size_t>(poseVertexCounts[poseSlot], verts.size());
                         if (dstOffset + dstCount <= poseVertices.size())
+                        {
                             std::memcpy(poseVertices.data() + dstOffset, tv, dstCount * sizeof(phoenix::renderer::TerrainVertex));
+                            if (!dirtyRanges.empty()
+                                && dirtyRanges.back().first + dirtyRanges.back().count == dstOffset)
+                                dirtyRanges.back().count += dstCount;
+                            else
+                                dirtyRanges.push_back({ dstOffset, dstCount });
+                        }
                     }
                     ++poseSlot;
                 }
@@ -979,7 +970,15 @@ namespace phoenix::character
                 return poseMeshUploaded;
             }
     
-            const auto updated = renderer.update_bot_character_vertices(poseVertices);
+            bool updated = true;
+            for (const auto& range : dirtyRanges)
+            {
+                if (!renderer.update_bot_character_vertices_range(
+                        poseVertices.data(),
+                        static_cast<std::uint32_t>(range.first),
+                        static_cast<std::uint32_t>(range.count)))
+                    updated = false;
+            }
             poseVerticesDirty = !updated;
             return updated;
         }
@@ -1016,7 +1015,7 @@ namespace phoenix::character
                 inst.position[0] = bot.x;
                 inst.position[1] = bot.y;
                 inst.position[2] = bot.z;
-                inst.position[3] = 1.0f;
+                inst.position[3] = 0.0f; // no GPU distance cull — bots are CPU-culled in update()
                 const auto batchIndex = static_cast<std::size_t>(std::min(bot.preset, presetMax)) * kPoseCount
                     + std::min<std::uint16_t>(bot.pose, kPoseCount - 1);
                 poseInstanceBuckets[batchIndex].push_back(inst);

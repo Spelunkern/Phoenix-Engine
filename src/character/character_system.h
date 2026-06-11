@@ -36,6 +36,33 @@ namespace phoenix::character
         ShieldDark  = 34,  // Shields (dark faction)
     };
 
+    // Weapon CSV files in Data/Weapons/ are named after the weapon type
+    // (sword1h.csv, bow.csv, ...) instead of the legacy numeric ids.
+    inline const char* weapon_type_csv_name(WeaponType type)
+    {
+        switch (type)
+        {
+        case WeaponType::Sword1H:     return "sword1h";
+        case WeaponType::Sword2H:     return "sword2h";
+        case WeaponType::Axe1H:       return "axe1h";
+        case WeaponType::Axe2H:       return "axe2h";
+        case WeaponType::DualSword:   return "dualsword";
+        case WeaponType::Spear:       return "spear";
+        case WeaponType::Mace1H:      return "mace1h";
+        case WeaponType::Hammer2H:    return "hammer2h";
+        case WeaponType::RevDagger:   return "revdagger";
+        case WeaponType::Dagger:      return "dagger";
+        case WeaponType::Javelin:     return "javelin";
+        case WeaponType::Staff:       return "staff";
+        case WeaponType::Bow:         return "bow";
+        case WeaponType::Crossbow:    return "crossbow";
+        case WeaponType::Claw:        return "claw";
+        case WeaponType::ShieldLight: return "shieldlight";
+        case WeaponType::ShieldDark:  return "shielddark";
+        default:                      return "";
+        }
+    }
+
     struct CharacterAppearance
     {
         std::string raceFolder{ "Human" };
@@ -365,12 +392,22 @@ namespace phoenix::character
         // Set collision callback (for world object collision).
         void set_collision_callback(CollisionFn fn, void* userData) { collisionFn_ = fn; collisionUserData_ = userData; }
 
+        // Climbable volumes (WLD "Object" section — ladders/ivy). Instead of
+        // colliding, walking close enough latches the character onto the
+        // ladder: action 18 plays while it climbs to the top, then it is
+        // nudged slightly forward off the ladder.
+        struct LadderVolume
+        {
+            float x{}, z{};       // ladder axis (world)
+            float baseY{};        // bottom of the climbable range
+            float topY{};         // top of the climbable range
+            float radius{};       // horizontal capture radius
+        };
+        void set_ladders(std::vector<LadderVolume> ladders) { ladders_ = std::move(ladders); }
+        bool climbing() const { return climbing_; }
+
         // Update playable mode: movement, physics, animation, vertex skinning.
         void update(float deltaSeconds, const PlayableInput& input);
-
-        // Lightweight update: movement + animation state only, NO skinning.
-        // For bots whose vertices are skinned on GPU.
-        void update_state_only(float deltaSeconds, const PlayableInput& input);
 
         // Advance animation and re-skin at the current position without any
         // physics, movement, or state-machine logic. Used for shared pose
@@ -394,17 +431,11 @@ namespace phoenix::character
         std::size_t active_animation() const { return activeAnimation_; }
         float animation_seconds() const { return animationSeconds_; }
         float world_yaw() const { return characterYaw_; }
-        const std::vector<std::filesystem::path>& cached_texture_paths() const { return cachedTexturePaths_; }
         bool ready() const { return data_.loaded; }
 
-        // BC3 texture cache — pre-converted during preload for instant appearance swaps.
-        bool bc3_cache_ready() const { return bc3CacheReady_; }
-        const renderer::DdsTexture* bc3_texture_for(const std::filesystem::path& path) const;
-        std::uint32_t bc3_target_width() const { return bc3TargetWidth_; }
-        std::uint32_t bc3_target_height() const { return bc3TargetHeight_; }
-        std::uint32_t bc3_target_mips() const { return bc3TargetMips_; }
-
         // Character world position.
+        bool grounded() const { return grounded_; }
+        bool swimming() const { return inWater_; }
         float world_x() const { return characterX_; }
         float world_y() const { return characterY_; }
         float world_z() const { return characterZ_; }
@@ -449,15 +480,6 @@ namespace phoenix::character
         std::filesystem::path cachedDataRoot_;
         std::unordered_map<std::string, world::CharacterModel> cachedModels_;
         std::unordered_map<std::string, std::vector<CharacterAnimationChoice>> cachedAnimations_;
-        std::unordered_map<std::string, std::uint32_t> cachedTextureSlotByPath_;
-        std::vector<std::filesystem::path> cachedTexturePaths_;
-
-        // Pre-converted BC3 textures keyed by normalized path.
-        std::unordered_map<std::string, renderer::DdsTexture> cachedBc3Textures_;
-        bool bc3CacheReady_{};
-        std::uint32_t bc3TargetWidth_{};
-        std::uint32_t bc3TargetHeight_{};
-        std::uint32_t bc3TargetMips_{};
 
         // Item (weapon/shield) cache.
         std::unordered_map<std::string, world::ItemModel> cachedItemModels_;
@@ -490,6 +512,18 @@ namespace phoenix::character
         bool grounded_{ true };
         bool jumpWasDown_{};
         bool groundInitialized_{};
+
+        // Ladder climbing state.
+        std::vector<LadderVolume> ladders_;
+        bool climbing_{};
+        std::size_t climbingLadder_{};
+        float climbYaw_{};        // facing toward the ladder while climbing
+        float climbCooldown_{};   // grace period after finishing a climb
+
+        // Occasional idle gesture (idle1/idle2 one-shots between breathing).
+        float idleGestureTimer_{};
+        std::size_t activeIdleGesture_{};
+        std::uint32_t idleGesturePick_{};
 
         // Sit state: 0=standing, 1=sitting down (one-shot), 2=seated (loop), 3=standing up (one-shot)
         int sitState_{};

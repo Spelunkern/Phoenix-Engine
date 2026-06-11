@@ -44,18 +44,23 @@ Phoenix Engine does not assume deep technical knowledge from final users. Everyo
 - Vulkan renderer with terrain, objects, water, fog, and procedural sky.
 - Runtime skinning for character animations with frame caching for high FPS (GPU compute path + CPU fallback).
 - WLD/DG map loading with free-camera viewer mode and playable character mode.
+- Field lightmaps with baked shadows and colour tones, alpha-mask terrain splatting ("tonality" maps), and full dungeon lightmap support (per-vertex page sampling).
+- VANI vertex-animated decor (distance-based animation LOD) and MANI GPU-driven rotating objects.
 - Character appearance loading with race, armor, face, hair, weapon, shield, and mantle selection.
 - Per-race/class weapon and shield attach-bone mapping, with a default starting loadout (one-hand sword + light shield + mantle).
-- Mounts/vehicles: ride seated on the mount's bone, mount animations, and faster-than-foot movement.
+- Mounts/vehicles: ride seated on a data-driven seat bone, mount animations, and faster-than-foot movement.
+- Ladder climbing: "Object"-section assets (ladders/ivy) latch the character into the climb animation up to the top instead of colliding.
+- Universal content-based transparency: cutout is decided by each texture's actual alpha channel, never by filename heuristics.
+- Canonical texture pipeline: all DDS data is pre-normalised to BC3 with full mip chains (`tools/dds_normalize`), so the renderer uploads GPU-native with zero load-time conversion.
 - Procedural weapon "aura" effects: fully shader-generated layered particles (no asset files) with birth-to-death colour gradients and element presets (fire, ice, holy, poison, shadow, arcane).
-- NPC and monster loading from server/map data with nameplates, scale, idle/walk animation, and distance culling.
-- CSV-based data formats replacing legacy binary formats for monster definitions, NPC data, server metadata, and spawn maps (see [Data Formats](#data-formats)).
-- Terrain-based footstep sounds: the engine reads walkSound from terrain layers and plays the matching sound effect when the character walks or runs.
-- Map ambience support for music and sound zones with distance-based fade behavior (OGG Vorbis via miniaudio).
+- Bot stress-test system: GPU-instanced characters with randomized equipment, shared pose skinning, and one-shot effects.
+- Terrain-based footstep sounds (ground-only), map music/sound zones with distance fade, and full audio stop on map change (OGG Vorbis via miniaudio).
 - Water surface rendering, underwater tinting, swimming, floating, and camera-driven movement.
-- Emote animations (one-shot, 10 slots) triggered from the editor panel.
-- ImGui runtime controls for map selection, fog, render distance, actor distance, overlays, character/loadout selection, weapon aura, and sky/weather styles, plus a CPU/RAM/VRAM performance HUD.
+- Emote animations (one-shot, 10 slots) and occasional idle gestures between breathing cycles.
+- Double-tap dodges with full world collision, jump, sit, and swim states.
+- ImGui runtime controls for map selection, fog, render distance, actor distance, overlays, character/loadout selection, mount seat bone, weapon aura, and sky/weather styles, plus a CPU/RAM/VRAM performance HUD.
 - Procedural sky styles: default, storm, snowstorm, sunset, and night with stars/moon/meteors.
+- Instant window close at any moment, including mid-load (the whole loading pipeline stays responsive).
 
 ## Repository Layout
 
@@ -64,14 +69,14 @@ src/
   app/       Application setup helpers.
   assets/    Data indexing and path resolution.
   audio/     Audio playback via miniaudio (OGG Vorbis).
-  character/ Playable character controller and character mesh assembly.
-  core/      Logging.
+  character/ Playable character controller, bots, and character mesh assembly.
   effects/   Particle effect placement.
   runtime/   Engine runtime state, map loading, terrain/object scene building.
   platform/  SDL2 window/input wrapper.
   renderer/  Vulkan renderer (split by subsystem), texture loading, GPU resources.
   ui/        ImGui editor panel, performance HUD, loading screen.
   world/     File format loaders.
+tools/       Data tools (dds_normalize: one-shot DDS canonicalisation).
 shaders/     HLSL source and compiled SPIR-V used by the runtime.
 res/         Windows icon/resource files.
 external/    Vendored third-party dependencies.
@@ -172,24 +177,33 @@ Pre-compiled SPIR-V is checked into the repository, so shader recompilation is o
 Phoenix Engine resolves runtime data from the first valid location in this order:
 
 1. `PHOENIX_ENGINE_DATA` environment variable.
-2. `Data/` next to the executable.
-3. `Data/` in the current working directory.
-4. `Data/` in parent directories above the executable, useful for source-tree development.
+2. `data/` next to the executable.
+3. `data/` in the current working directory.
+4. `data/` in parent directories above the executable, useful for source-tree development.
 
 Platform-specific fallback locations:
 
 | Platform | Paths |
 |----------|-------|
-| Windows | `%LOCALAPPDATA%/Phoenix Engine/Data`, `%PROGRAMDATA%/Phoenix Engine/Data` |
-| Linux | `~/.local/share/Phoenix Engine/Data` |
+| Windows | `%LOCALAPPDATA%/Phoenix Engine/data`, `%PROGRAMDATA%/Phoenix Engine/data` |
+| Linux | `~/.local/share/Phoenix Engine/data` |
 
-For quick local development, the recommended layout is:
+The data tree is all-lowercase (legacy capitalised layouts still resolve). Expected layout:
 
 ```text
-Phoenix Engine/Data/
+data/
+  world/          All maps as flat <id>.wld files.
+    field/<id>/   Field lightmaps (<id>_<sec>_l.dds) and alpha splat masks (<id>_<sec>_a0..7.dds).
+    dungeon/      Dungeon DG models plus per-dungeon lightmap pages (<name>/<name>_L<i>.dds).
+  entity/         Placeable world assets by section (building, tree, grass, object = climbables, ...).
+  character/      Per-race 3dc/dds/ani plus part and action CSV tables.
+  weapons/        Item meshes/textures plus per-type CSVs (sword1h.csv, bow.csv, ...).
+  vehicle/        Mount meshes/animations plus vehicle_<class>_01.csv.
+  mantles/        Cloak meshes, textures, and per-race CSVs.
+  sound/          Map/terrain-referenced OGG audio only.
 ```
 
-The code references formats such as `.wld`, `.dg`, `.smod`, `.3dc`, `.ani`, and `.dds`. These files are user-supplied and are intentionally excluded from the repository.
+The code references formats such as `.wld`, `.dg`, `.smod`, `.vani`, `.3dc`, `.3do`, `.ani`, and `.dds`. These files are user-supplied and are intentionally excluded from the repository.
 
 See [docs/ASSETS.md](docs/ASSETS.md) for more details.
 
@@ -209,24 +223,30 @@ See [docs/ASSETS.md](docs/ASSETS.md) for more details.
 - `P`: toggle playable mode.
 - ImGui panel: map loading, fog, distances, overlays, audio toggles, character/loadout selection, mount, weapon aura, and weather/sky style.
 
-## World CSV Format
+## Data Formats
 
-Each world directory (`Data/World/worldN/`) contains:
+Maps load directly from the native WLD/DG binary formats. Item and mount data
+use trimmed CSV tables that contain only the columns the engine consumes:
 
-| File | Content |
-|------|---------|
-| `map.csv` | Map properties: size, dungeon flag, DG file reference. |
-| `heightmap.raw` | Terrain height samples (16-bit, binary). |
-| `texturemap.raw` | Per-vertex terrain layer indices (8-bit, binary). |
-| `terrain_layers.csv` | Terrain texture layers with tile size and walk sound. |
-| `sky.csv` | Sky texture, cloud layers, fog color and distances. |
-| `objects.csv` | All placed objects (category, asset file, position, orientation). |
-| `portals.csv` | Map transition zones with destination coordinates. |
-| `audio.csv` | Music zones and ambient sound emitters. |
+| Table | Format |
+|-------|--------|
+| `weapons/<type>.csv` (e.g. `sword1h.csv`, `bow.csv`, `shieldlight.csv`) | `RecordIndex,MeshName,TextureName,AlphaBlendingMode` — deduplicated, one row per unique mesh+texture. |
+| `vehicle/vehicle_<class>_01.csv` | `RecordIndex,Name,Walk/Run/Jump/Breath/IdleAnimation,Objects,Bone,Bone2,AlternateAnimation` — `Bone` is the rider seat bone; `AlternateAnimation=1` switches the rider to the variant ride clips. |
+| `character/<race>/<prefix>_<part>.csv` | Body part tables (mesh, texture, alpha mode per record index). |
+| `character/<race>/<prefix>_action.csv` | Animation clips by action id. |
 
-Audio references (originally `.wav`) are resolved to `.ogg` (Vorbis) files on disk. Texture references (`.tga`, `.bmp`) are resolved to `.dds` when available.
+All textures are expected in the canonical format: **BC3 (DXT5) with a full mip
+chain** (256x256 for content textures, native dimensions for lightmaps). The
+`dds_normalize` tool (built alongside the engine, output in `bin/tools/`)
+converts any DDS tree to this format in one idempotent pass:
 
-The engine also loads the original WLD, DG, 3DC, SMOD, and ANI binary formats for world geometry, models, and animations.
+```powershell
+bin\tools\Release\dds_normalize.exe data\entity 256 256   # resize + convert
+bin\tools\Release\dds_normalize.exe data\world 0 0        # convert only, keep dimensions
+```
+
+Audio references (originally `.wav`) are resolved to `.ogg` (Vorbis) files on
+disk. Texture references (`.tga`, `.bmp`) are resolved to `.dds` when available.
 
 ## License
 

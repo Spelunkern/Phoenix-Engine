@@ -12,12 +12,15 @@ namespace phoenix::world
         float position[3]{};
         float normal[3]{};
         float uv[2]{};
+        float lightmapUv[2]{};
     };
 
     struct DgMesh
     {
         std::uint32_t textureIndex{};
         std::string textureName;
+        // Index into the dungeon's lightmap pages (<name>_L<i>.dds), -1 = none.
+        std::int32_t lightmapIndex{ -1 };
         std::vector<DgVertex> vertices;
         std::vector<std::uint32_t> indices;
     };
@@ -33,6 +36,7 @@ namespace phoenix::world
         float center[3]{};
         float extent[3]{};
         std::vector<std::string> textures;
+        std::uint32_t lightmapCount{};
         std::vector<DgMesh> meshes;
         bool hasCollision{};
         DgCollisionMesh collision;

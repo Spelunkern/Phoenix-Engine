@@ -112,9 +112,6 @@ namespace phoenix::renderer
         VkPipelineLayout skyPipelineLayout{};
         VkPipeline skyPipeline{};
 
-        VkPipeline depthPrepassTerrainPipeline{};
-        VkPipeline depthPrepassStaticPipeline{};
-        bool depthPrepassReady{};
 
         // Procedural weapon-effect particle resources (separate from terrain).
         VkDescriptorSetLayout particleSetLayout{};
@@ -240,6 +237,7 @@ namespace phoenix::renderer
         bool terrainTexturesReady{};
         bool samplerAnisotropySupported{};
         float maxSamplerAnisotropy{ 1.0f };
+        std::uint32_t maxImageArrayLayers{ 256 }; // spec minimum until queried
         VkBuffer terrainMapBuffer{};
         VkDeviceMemory terrainMapMemory{};
         bool terrainMapReady{};

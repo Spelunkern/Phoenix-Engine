@@ -69,7 +69,9 @@ namespace phoenix::audio
                 ma_engine_set_volume(&engine, masterVolume);
         }
 
-        void shutdown()
+        // Stop every playing voice and one-shot but keep the engine alive
+        // (used on map change so sounds from the old map don't bleed over).
+        void stop_all()
         {
             for (auto& [_, active] : voices)
             {
@@ -91,7 +93,11 @@ namespace phoenix::audio
                 }
             }
             oneShots.clear();
+        }
 
+        void shutdown()
+        {
+            stop_all();
             if (initialized)
             {
                 ma_engine_uninit(&engine);
@@ -237,6 +243,11 @@ namespace phoenix::audio
     void AudioSystem::play_once(const std::filesystem::path& path, float volume)
     {
         impl_->play_once(path, volume);
+    }
+
+    void AudioSystem::stop_all()
+    {
+        impl_->stop_all();
     }
 
     bool AudioSystem::available() const

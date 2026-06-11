@@ -122,7 +122,9 @@ namespace phoenix::world
         bool read_mesh(Reader& reader, std::uint32_t textureIndex, DgMesh& mesh)
         {
             const auto lightmapIndex = reader.u32();
-            (void)lightmapIndex;
+            mesh.lightmapIndex = lightmapIndex < 4096
+                ? static_cast<std::int32_t>(lightmapIndex)
+                : -1;
 
             const auto vertexCount = reader.u32();
             if (!valid_count(vertexCount, 250000))
@@ -138,7 +140,8 @@ namespace phoenix::world
                 reader.skip(4); // Bone id.
                 vertex.uv[0] = reader.f32();
                 vertex.uv[1] = reader.f32();
-                reader.skip(8); // Lightmap UV.
+                vertex.lightmapUv[0] = reader.f32();
+                vertex.lightmapUv[1] = reader.f32();
 
                 if (!finite_reasonable(vertex.position[0], 1000000.0f)
                     || !finite_reasonable(vertex.position[1], 1000000.0f)
@@ -277,7 +280,7 @@ namespace phoenix::world
             model.textures.push_back(reader.string256());
 
         const auto lightmapCount = reader.u32();
-        (void)lightmapCount;
+        model.lightmapCount = lightmapCount <= 4096 ? lightmapCount : 0;
         const auto hasRoot = reader.u32();
 
         if (hasRoot > 0)

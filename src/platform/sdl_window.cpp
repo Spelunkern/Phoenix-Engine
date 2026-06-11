@@ -121,6 +121,12 @@ namespace phoenix::platform
             SDL_SetWindowTitle(window_, title.c_str());
     }
 
+    void SdlWindow::hide()
+    {
+        if (window_)
+            SDL_HideWindow(window_);
+    }
+
     bool SdlWindow::is_key_down(int key) const
     {
         const auto scancode = SDL_GetScancodeFromKey(key);

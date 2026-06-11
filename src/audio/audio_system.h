@@ -26,6 +26,8 @@ namespace phoenix::audio
         void shutdown();
         void update(float deltaSeconds, const std::vector<AudibleTrack>& tracks);
         void play_once(const std::filesystem::path& path, float volume = 1.0f);
+        // Immediately stop everything that is playing (map changes).
+        void stop_all();
         bool available() const;
 
         // Master output volume in [0, 1] (applies to all music/sound voices).

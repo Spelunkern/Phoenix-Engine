@@ -24,7 +24,6 @@ set(ENGINE_SOURCES
     src/character/character_system.cpp
     src/character/weapon_bone_map.cpp
     src/character/weapon_effect.cpp
-    src/core/logging.cpp
     src/effects/effect_placement.cpp
     src/effects/effect_system.cpp
     src/platform/sdl_window.cpp
@@ -41,14 +40,9 @@ set(ENGINE_SOURCES
     src/ui/weather_overlay.cpp
     src/world/character_loader.cpp
     src/world/dg_loader.cpp
-    src/world/phoenix_world_loader.cpp
-    src/world/eft_loader.cpp
     src/world/mani_loader.cpp
-    src/world/mon_loader.cpp
     src/world/portal_runtime.cpp
-    src/world/sdata_loader.cpp
     src/world/smod_loader.cpp
-    src/world/svmap_loader.cpp
     src/world/vani_loader.cpp
     src/world/wld_loader.cpp
     external/volk/volk.c
@@ -65,6 +59,21 @@ if(WIN32)
 endif()
 
 add_executable(PhoenixEngine ${ENGINE_SOURCES})
+
+# Data tool: normalise every .dds to the engine's canonical BC3+mips format
+# using the engine's own codecs (same output the runtime conversion produced).
+add_executable(dds_normalize
+    tools/dds_normalize.cpp
+    src/renderer/dds_loader.cpp
+    src/assets/data_index.cpp
+)
+target_include_directories(dds_normalize PRIVATE src)
+set_target_properties(dds_normalize PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY "${CMAKE_SOURCE_DIR}/bin/tools"
+)
+if(MSVC)
+    target_compile_definitions(dds_normalize PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX)
+endif()
 
 target_include_directories(PhoenixEngine PRIVATE
     src

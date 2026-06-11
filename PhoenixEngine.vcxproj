@@ -1,4 +1,4 @@
-<?xml version="1.0" encoding="utf-8"?>
+﻿<?xml version="1.0" encoding="utf-8"?>
 <Project DefaultTargets="Build" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
   <ItemGroup Label="ProjectConfigurations">
     <ProjectConfiguration Include="Debug|x64">
@@ -88,7 +88,6 @@
     <ClCompile Include="src\character\bot_manager.cpp" />
     <ClCompile Include="src\character\character_options.cpp" />
     <ClCompile Include="src\assets\data_index.cpp" />
-    <ClCompile Include="src\core\logging.cpp" />
     <ClCompile Include="src\diagnostics\crash_reporter.cpp" />
     <ClCompile Include="src\diagnostics\performance_diagnostics.cpp" />
     <ClCompile Include="src\effects\effect_placement.cpp" />
@@ -100,16 +99,11 @@
     <ClCompile Include="src\renderer\vulkan_renderer_particles.cpp" />
     <ClCompile Include="src\runtime\playable_spawn.cpp" />
     <ClCompile Include="src\world\dg_loader.cpp" />
-    <ClCompile Include="src\world\phoenix_world_loader.cpp" />
     <ClCompile Include="src\world\smod_loader.cpp" />
     <ClCompile Include="src\world\vani_loader.cpp" />
     <ClCompile Include="src\world\mani_loader.cpp" />
-    <ClCompile Include="src\world\eft_loader.cpp" />
     <ClCompile Include="src\world\wld_loader.cpp" />
-    <ClCompile Include="src\world\mon_loader.cpp" />
     <ClCompile Include="src\world\portal_runtime.cpp" />
-    <ClCompile Include="src\world\sdata_loader.cpp" />
-    <ClCompile Include="src\world\svmap_loader.cpp" />
     <ClCompile Include="src\world\character_loader.cpp" />
     <ClCompile Include="src\character\character_system.cpp" />
     <ClCompile Include="src\character\weapon_bone_map.cpp" />
@@ -139,7 +133,6 @@
     <ClInclude Include="src\audio\audio_system.h" />
     <ClInclude Include="src\character\bot_manager.h" />
     <ClInclude Include="src\character\character_options.h" />
-    <ClInclude Include="src\core\logging.h" />
     <ClInclude Include="src\diagnostics\crash_reporter.h" />
     <ClInclude Include="src\diagnostics\performance_diagnostics.h" />
     <ClInclude Include="src\effects\effect_placement.h" />
@@ -151,17 +144,12 @@
     <ClInclude Include="src\renderer\vulkan_renderer.h" />
     <ClInclude Include="src\renderer\vulkan_renderer_internal.h" />
     <ClInclude Include="src\world\dg_loader.h" />
-    <ClInclude Include="src\world\phoenix_world_loader.h" />
     <ClInclude Include="src\world\smod_loader.h" />
     <ClInclude Include="src\world\vani_loader.h" />
     <ClInclude Include="src\world\water_constants.h" />
     <ClInclude Include="src\world\mani_loader.h" />
-    <ClInclude Include="src\world\eft_loader.h" />
     <ClInclude Include="src\world\wld_loader.h" />
-    <ClInclude Include="src\world\mon_loader.h" />
     <ClInclude Include="src\world\portal_runtime.h" />
-    <ClInclude Include="src\world\sdata_loader.h" />
-    <ClInclude Include="src\world\svmap_loader.h" />
     <ClInclude Include="src\world\character_loader.h" />
     <ClInclude Include="src\ui\editor_panel.h" />
     <ClInclude Include="src\ui\loading_screen.h" />

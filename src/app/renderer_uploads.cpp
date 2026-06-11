@@ -56,22 +56,8 @@ namespace phoenix::app
         if (textureSlots.size() < baseSlot + slotReserve)
             textureSlots.resize(baseSlot + slotReserve);
 
-        if (characterSystem.bc3_cache_ready())
-        {
-            for (std::size_t i = 0; i < texturePaths.size() && i < slotReserve; ++i)
-            {
-                const auto* cached = characterSystem.bc3_texture_for(texturePaths[i]);
-                if (cached)
-                    textureSlots[baseSlot + i] = *cached;
-                else
-                    textureSlots[baseSlot + i] = phoenix::renderer::load_dds(texturePaths[i]);
-            }
-        }
-        else
-        {
-            for (std::size_t i = 0; i < texturePaths.size() && i < slotReserve; ++i)
-                textureSlots[baseSlot + i] = phoenix::renderer::load_dds(texturePaths[i]);
-        }
+        for (std::size_t i = 0; i < texturePaths.size() && i < slotReserve; ++i)
+            textureSlots[baseSlot + i] = phoenix::renderer::load_dds(texturePaths[i]);
         characterSystem.set_texture_layer_base(static_cast<std::uint32_t>(baseSlot));
     }
 }

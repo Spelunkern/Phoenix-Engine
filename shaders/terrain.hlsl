@@ -1,4 +1,4 @@
-struct VSInput
+﻿struct VSInput
 {
     float3 position : POSITION;
     float3 color : COLOR;
@@ -123,14 +123,18 @@ float terrainTileSize(uint layer, uint mapSide)
     return max(1.0, tileSize);
 }
 
-float3 sampleTerrainLayer(uint layer, float3 worldPos, float mapSize, uint mapSide)
+// Explicit-gradient layer sample so it stays correct inside divergent
+// branches (gradients are derived from worldPos before any branching).
+float3 sampleTerrainLayerGrad(uint layer, float3 worldPos, float2 ddxWp, float2 ddyWp,
+                              float mapSize, uint mapSide)
 {
     float tileSize = terrainTileSize(layer, mapSide);
     float halfMap = mapSize * 0.5;
     float2 tileUv = float2(
         (worldPos.x + halfMap) / tileSize,
         (worldPos.z + halfMap) / tileSize);
-    return terrainTexture.Sample(terrainSampler, float3(tileUv, (float)layer)).rgb;
+    return terrainTexture.SampleGrad(terrainSampler, float3(tileUv, (float)layer),
+        ddxWp / tileSize, ddyWp / tileSize).rgb;
 }
 
 float3 blendedTerrainColor(float3 worldPos, float mapSize, uint mapSide)
@@ -151,16 +155,22 @@ float3 blendedTerrainColor(float3 worldPos, float mapSize, uint mapSide)
     uint l01 = terrainMapLoad(x0, z1, mapSide);
     uint l11 = terrainMapLoad(x1, z1, mapSide);
 
-    float3 c00 = sampleTerrainLayer(l00, worldPos, mapSize, mapSide);
-    float3 c10 = sampleTerrainLayer(l10, worldPos, mapSize, mapSide);
-    float3 c01 = sampleTerrainLayer(l01, worldPos, mapSize, mapSide);
-    float3 c11 = sampleTerrainLayer(l11, worldPos, mapSize, mapSide);
+    // Gradients computed in uniform control flow, valid inside the branch.
+    float2 ddxWp = ddx(worldPos.xz);
+    float2 ddyWp = ddy(worldPos.xz);
 
-    float2 t = frac_ * frac_ * (3.0 - 2.0 * frac_);
+    float3 c00 = sampleTerrainLayerGrad(l00, worldPos, ddxWp, ddyWp, mapSize, mapSide);
 
+    // Fast path: all four corners use the same layer (vast majority of
+    // terrain pixels) — one sample instead of four.
     if (l00 == l10 && l00 == l01 && l00 == l11)
         return c00;
 
+    float3 c10 = sampleTerrainLayerGrad(l10, worldPos, ddxWp, ddyWp, mapSize, mapSide);
+    float3 c01 = sampleTerrainLayerGrad(l01, worldPos, ddxWp, ddyWp, mapSize, mapSide);
+    float3 c11 = sampleTerrainLayerGrad(l11, worldPos, ddxWp, ddyWp, mapSize, mapSide);
+
+    float2 t = frac_ * frac_ * (3.0 - 2.0 * frac_);
     float3 top = lerp(c00, c10, t.x);
     float3 bot = lerp(c01, c11, t.x);
     return lerp(top, bot, t.y);
@@ -177,10 +187,59 @@ float4 PSMain(VSOutput input) : SV_TARGET
 
     float3 color;
     float alpha = 1.0;
+    bool applyLightmap = true;
 
     if (input.textureLayer == 0xFFFFFFFDu && mapSide > 1)
     {
-        color = blendedTerrainColor(input.worldPos, mapSize, mapSide);
+        // Splat metadata stored after the per-cell map + 16 tile sizes:
+        // [alphaMaskLayerFlags][splatLayerCount].
+        uint mapBytes = mapSide * mapSide;
+        uint mapBytesPadded = (mapBytes + 3u) & ~3u;
+        uint maskFlags = terrainMap.Load(mapBytesPadded + 64);
+        uint splatLayerCount = min(terrainMap.Load(mapBytesPadded + 68), 8u);
+
+        if (maskFlags != 0u && camera.fogDistances.w > 0.5)
+        {
+            // Alpha-mask splat ("tonality" maps): layer 0 is the base, each
+            // masked layer blends on top. The per-layer weights are packed
+            // four-per-texture into two RGBA layers per section at
+            // [sections^2 + s*2 + p] — 1-2 fetches yield all 7 weights.
+            float2 ddxWp = ddx(input.worldPos.xz);
+            float2 ddyWp = ddy(input.worldPos.xz);
+            const float halfMap = mapSize * 0.5;
+            const uint sections = (uint)camera.fogDistances.z;
+            float2 worldUv = float2(
+                (input.worldPos.x + halfMap) / mapSize,
+                (input.worldPos.z + halfMap) / mapSize);
+            uint secX = clamp((uint)(worldUv.x * sections), 0, sections - 1);
+            uint secZ = clamp((uint)(worldUv.y * sections), 0, sections - 1);
+            uint maskBase = sections * sections + (secZ * sections + secX) * 2u;
+            float2 secUv = float2(frac(worldUv.x * sections), frac(worldUv.y * sections));
+
+            float4 w0 = lightmapTexture.SampleLevel(lightmapSampler,
+                float3(secUv, (float)maskBase), 0);            // weights: layers 1..4
+            float4 w1 = (maskFlags & 0xE0u)
+                ? lightmapTexture.SampleLevel(lightmapSampler,
+                    float3(secUv, (float)(maskBase + 1u)), 0)  // weights: layers 5..7
+                : float4(0, 0, 0, 0);
+
+            color = sampleTerrainLayerGrad(0, input.worldPos, ddxWp, ddyWp, mapSize, mapSide);
+            [loop]
+            for (uint n = 1; n < splatLayerCount; ++n)
+            {
+                if ((maskFlags & (1u << n)) == 0u)
+                    continue;
+                uint idx = n - 1u;
+                float w = idx < 4u ? w0[idx] : w1[idx & 3u];
+                if (w > 0.004)
+                    color = lerp(color,
+                        sampleTerrainLayerGrad(n, input.worldPos, ddxWp, ddyWp, mapSize, mapSide), w);
+            }
+        }
+        else
+        {
+            color = blendedTerrainColor(input.worldPos, mapSize, mapSide);
+        }
 
         uint centerLayer = terrainMapLookup(input.worldPos, mapSize, mapSide);
         const uint waterLayer = (uint)camera.skyLayers.y;
@@ -236,6 +295,7 @@ float4 PSMain(VSOutput input) : SV_TARGET
                     color = saturate(lit + color * textureColor.a * 0.30);
                 else
                     color = lit;
+                applyLightmap = false; // characters keep their own lighting
             }
             else
             {
@@ -250,7 +310,7 @@ float4 PSMain(VSOutput input) : SV_TARGET
         color = input.color;
     }
 
-    if (camera.fogDistances.w > 0.5)
+    if (applyLightmap && camera.fogDistances.w > 0.5)
     {
         const float halfMap = mapSize * 0.5;
         const uint sections = (uint)camera.fogDistances.z;

@@ -31,6 +31,7 @@
 #include <chrono>
 #include <cmath>
 #include <cstdio>
+#include <cstdlib>
 #include <filesystem>
 #include <iomanip>
 #include <fstream>
@@ -125,8 +126,21 @@ int main(int, char**)
     perfHud.renderer = &renderer;
     perfHud.load_settings(executableDir);
 
+    // Closing the window must work even mid-load: skip all teardown and let
+    // the OS reclaim the process — waiting on loaders/GPU only delays the user.
+    auto pumpQuitCheck = [&]() {
+        if (!window.pump_messages())
+        {
+            // Hide first so the close FEELS instant — the OS then reclaims the
+            // process (potentially gigabytes) with no window on screen.
+            window.hide();
+            perfHud.save_settings(executableDir);
+            std::_Exit(0);
+        }
+    };
+
     auto showLoading = [&](float /*progress*/, std::string_view /*stage*/) {
-        window.pump_messages();
+        pumpQuitCheck();
         window.set_title(kAppTitle);
         const auto [sw, sh] = window.client_size();
         if (window.is_minimized() || sw <= 0 || sh <= 0)
@@ -339,21 +353,43 @@ int main(int, char**)
             }
         }
 
-        // Compute mip count: down to 4Ã—4 blocks (same as renderer logic).
+        // Compute mip count: down to 4x4 blocks (same as renderer logic).
         const auto maxDim = std::max(targetW, targetH);
         const auto fullMips = static_cast<std::uint32_t>(std::floor(std::log2(static_cast<float>(maxDim)))) + 1u;
         const auto targetMips = std::min(fullMips,
             static_cast<std::uint32_t>(std::max(1.0, std::log2(static_cast<double>(maxDim)) - 1.0)));
 
-        const auto workerCount = std::min(textures.size(), cpuLoader.worker_count());
+        // The data tree is pre-normalised to canonical BC3 + full mip chain
+        // (tools/dds_normalize), so conversion is the exception: collect only
+        // the non-canonical entries (foreign data, broken files, empty
+        // reserved slots that need a fallback fill) and convert just those.
+        std::vector<std::size_t> pending;
+        for (std::size_t idx = 0; idx < textures.size(); ++idx)
+        {
+            const auto& t = textures[idx];
+            // Invalid entries (empty reserved slots, missing files) are left
+            // as-is: the BC-native upload substitutes cheap fallback mips.
+            if (!t.valid)
+                continue;
+            const bool canonical = t.compressed
+                && t.vkFormat == static_cast<std::uint32_t>(VK_FORMAT_BC3_UNORM_BLOCK)
+                && t.width == targetW && t.height == targetH
+                && t.mipData.size() >= targetMips;
+            if (!canonical)
+                pending.push_back(idx);
+        }
+        if (pending.empty())
+            return;
+
+        const auto workerCount = std::min(pending.size(), cpuLoader.worker_count());
         if (workerCount <= 1)
         {
-            for (std::size_t idx = 0; idx < textures.size(); ++idx)
+            for (std::size_t i = 0; i < pending.size(); ++i)
             {
-                phoenix::renderer::convert_texture_to_bc3(textures[idx], targetW, targetH, targetMips);
-                if (!loadingStage.empty() && (idx % 4u == 0u || idx + 1u == textures.size()))
+                phoenix::renderer::convert_texture_to_bc3(textures[pending[i]], targetW, targetH, targetMips);
+                if (!loadingStage.empty() && (i % 4u == 0u || i + 1u == pending.size()))
                 {
-                    const float t = static_cast<float>(idx + 1u) / static_cast<float>(textures.size());
+                    const float t = static_cast<float>(i + 1u) / static_cast<float>(pending.size());
                     showLoading(progressStart + (progressEnd - progressStart) * t, loadingStage);
                 }
             }
@@ -370,20 +406,19 @@ int main(int, char**)
                 for (;;)
                 {
                     const auto idx = nextTex.fetch_add(1, std::memory_order_relaxed);
-                    if (idx >= textures.size())
+                    if (idx >= pending.size())
                         break;
-                    phoenix::renderer::convert_texture_to_bc3(textures[idx], targetW, targetH, targetMips);
+                    phoenix::renderer::convert_texture_to_bc3(textures[pending[idx]], targetW, targetH, targetMips);
                     completedTex.fetch_add(1, std::memory_order_relaxed);
-                    std::this_thread::sleep_for(std::chrono::milliseconds(2));
                 }
             }));
         }
 
-        while (completedTex.load(std::memory_order_relaxed) < textures.size())
+        while (completedTex.load(std::memory_order_relaxed) < pending.size())
         {
             if (!loadingStage.empty())
             {
-                const float t = static_cast<float>(completedTex.load(std::memory_order_relaxed)) / static_cast<float>(textures.size());
+                const float t = static_cast<float>(completedTex.load(std::memory_order_relaxed)) / static_cast<float>(pending.size());
                 showLoading(progressStart + (progressEnd - progressStart) * t, loadingStage);
             }
             std::this_thread::sleep_for(std::chrono::milliseconds(33));
@@ -409,40 +444,13 @@ int main(int, char**)
         const auto& charTexPaths = characterSystem.texture_paths();
         characterSystem.set_texture_layer_base(static_cast<std::uint32_t>(characterTextureBaseSlot));
 
-        // Fast path: lookup pre-cached BC3 textures (no disk I/O, no conversion).
-        if (characterSystem.bc3_cache_ready() && charTexPaths.size() <= kCharacterTextureSlotReserve)
-        {
-            std::vector<phoenix::renderer::DdsTexture> characterTextures(charTexPaths.size());
-            bool allCached = true;
-            for (std::size_t i = 0; i < charTexPaths.size(); ++i)
-            {
-                const auto* cached = characterSystem.bc3_texture_for(charTexPaths[i]);
-                if (cached)
-                    characterTextures[i] = *cached; // copy BC3 mip data from RAM cache
-                else
-                {
-                    allCached = false;
-                    break;
-                }
-            }
-            if (!allCached)
-            {
-                // Fallback: load from disk + convert (should be rare).
-                for (std::size_t i = 0; i < charTexPaths.size(); ++i)
-                    characterTextures[i] = phoenix::renderer::load_dds(charTexPaths[i]);
-                normalizeTexturesForBcUpload(characterTextures);
-            }
-            renderer.upload_terrain_texture_layers(static_cast<std::uint32_t>(characterTextureBaseSlot), characterTextures);
-        }
-        else
-        {
-            // Fallback: load from disk + convert.
-            std::vector<phoenix::renderer::DdsTexture> characterTextures(charTexPaths.size());
-            for (std::size_t i = 0; i < charTexPaths.size(); ++i)
-                characterTextures[i] = phoenix::renderer::load_dds(charTexPaths[i]);
-            normalizeTexturesForBcUpload(characterTextures);
-            renderer.upload_terrain_texture_layers(static_cast<std::uint32_t>(characterTextureBaseSlot), characterTextures);
-        }
+        // Load the handful of swap textures from disk; with the canonical BC3
+        // data tree the normalisation below is a pure pass-through.
+        std::vector<phoenix::renderer::DdsTexture> characterTextures(charTexPaths.size());
+        for (std::size_t i = 0; i < charTexPaths.size(); ++i)
+            characterTextures[i] = phoenix::renderer::load_dds(charTexPaths[i]);
+        normalizeTexturesForBcUpload(characterTextures);
+        renderer.upload_terrain_texture_layers(static_cast<std::uint32_t>(characterTextureBaseSlot), characterTextures);
 
         // Fast mesh update: reuses existing GPU buffers, no vkDeviceWaitIdle.
         phoenix::app::update_character_mesh(renderer, characterSystem, playableMode);
@@ -518,9 +526,25 @@ int main(int, char**)
 
 
         {
+            // Harmless workaround for broken terrain layers: a missing/corrupt
+            // layer DDS used to render as a solid error colour. Clone the first
+            // valid terrain layer instead so the section still looks like ground.
+            std::size_t firstValidLayer = texturePaths.size();
             for (std::size_t i = 0; i < texturePaths.size(); ++i)
             {
-                const auto& tex = terrainTextures[i];
+                if (terrainTextures[i].valid)
+                {
+                    firstValidLayer = i;
+                    break;
+                }
+            }
+            if (firstValidLayer < texturePaths.size())
+            {
+                for (std::size_t i = 0; i < texturePaths.size(); ++i)
+                {
+                    if (!terrainTextures[i].valid)
+                        terrainTextures[i] = terrainTextures[firstValidLayer];
+                }
             }
 
             std::size_t loadedAssetTextures = 0;
@@ -617,17 +641,25 @@ int main(int, char**)
             normalizeTexturesForBcUpload(terrainTextures, "Normalising textures to BC3", 0.70f, 0.735f);
 
             showLoading(0.74f, "Uploading BC3 textures");
-            terrainTexturesUploaded = renderer.upload_terrain_textures(terrainTextures);
+            terrainTexturesUploaded = renderer.upload_terrain_textures(terrainTextures, pumpQuitCheck);
             if (terrainTexturesUploaded)
             {
                 releaseDecodedTextureRam(terrainTextures);
-                // Also release mip data â€” GPU has it now.
+                // Also release mip data — GPU has it now.
                 for (auto& t : terrainTextures)
                     std::vector<std::vector<std::uint8_t>>().swap(t.mipData);
             }
         }
 
         const auto& world = runtime.state().world;
+
+        // Field alpha splat masks ("tonality" maps) — scanned before the
+        // terrain-map upload so the shader knows which layers carry masks.
+        std::uint32_t alphaMaskFlags = 0;
+        std::vector<std::filesystem::path> alphaMaskPaths;
+        if (!world.isDungeon)
+            alphaMaskPaths = runtime.field_alpha_mask_paths(alphaMaskFlags);
+
         if (!world.terrainTextureMap.empty() && world.heightMapSide > 1)
         {
             std::vector<float> tileSizes;
@@ -639,25 +671,144 @@ int main(int, char**)
                 world.heightMapSide,
                 static_cast<float>(world.mapSize),
                 tileSizes.data(),
+                static_cast<std::uint32_t>(tileSizes.size()),
+                alphaMaskFlags & ~1u, // bit 0 = base layer, never blended
                 static_cast<std::uint32_t>(tileSizes.size()));
         }
 
-        // Load and upload field lightmaps (baked terrain shadows).
+        // Load and upload lightmaps:
+        //  - field maps: <stem>_<sec>_l.dds (baked shadows + colour tones for
+        //    the terrain) plus alpha splat masks appended as extra layers.
+        //  - dungeons: <dgName>_L<i>.dds pages applied per-vertex through the
+        //    static_object lightmap path (shadows + colour tones).
         {
+            renderer.disable_field_lightmaps(); // reset before (re)upload per map
             std::uint32_t lmSectionCount = 0;
-            const auto lmPaths = runtime.field_lightmap_paths(lmSectionCount);
+            auto lmPaths = runtime.field_lightmap_paths(lmSectionCount);
+            bool dungeonLightmaps = false;
+            if (lmPaths.empty())
+            {
+                lmPaths = runtime.dungeon_lightmap_paths();
+                dungeonLightmaps = !lmPaths.empty();
+                if (dungeonLightmaps)
+                    lmSectionCount = 1;
+            }
             if (!lmPaths.empty() && lmSectionCount > 0)
             {
                 std::vector<phoenix::renderer::DdsTexture> lightmaps;
+                lightmaps.reserve(lmPaths.size() + alphaMaskPaths.size());
                 for (const auto& p : lmPaths)
                 {
                     if (!p.empty() && std::filesystem::exists(p))
                         lightmaps.push_back(phoenix::renderer::load_dds(p));
                     else
-                        lightmaps.push_back({}); // invalid placeholder
+                        lightmaps.push_back({}); // invalid placeholder (layer skipped)
                 }
-                if (renderer.upload_field_lightmaps(lightmaps, lmSectionCount))
+
+                // Texture arrays need uniform size/format; pages on disk vary
+                // (DXT1/DXT3, mixed sizes). Normalise valid layers to BC3 at
+                // the first valid page's dimensions.
+                std::uint32_t lmW = 0, lmH = 0;
+                for (const auto& t : lightmaps)
                 {
+                    if (t.valid && t.width > 0 && t.height > 0)
+                    {
+                        lmW = t.width;
+                        lmH = t.height;
+                        break;
+                    }
+                }
+                if (lmW > 0 && lmH > 0)
+                {
+                    const bool packMasks = !dungeonLightmaps
+                        && (alphaMaskFlags & ~1u) != 0 && !alphaMaskPaths.empty();
+                    constexpr auto kMasksPerSection = phoenix::runtime::PhoenixRuntime::kFieldAlphaMaskLayers;
+                    const auto sectionTotal = lmSectionCount * lmSectionCount;
+                    const auto pixelCount = static_cast<std::size_t>(lmW) * lmH;
+
+                    // Reserve the packed-mask slots up front so workers can
+                    // write into stable indices: [pages][section0 p0/p1][...].
+                    const auto maskBase = lightmaps.size();
+                    if (packMasks)
+                        lightmaps.resize(maskBase + static_cast<std::size_t>(sectionTotal) * 2);
+
+                    // Page conversion (decode+resize+encode 1024^2 BC3) and
+                    // mask packing are seconds of CPU — run them across all
+                    // cores while the main thread keeps pumping the window.
+                    const auto pageCount = maskBase;
+                    const auto jobCount = pageCount + (packMasks ? static_cast<std::size_t>(sectionTotal) : 0);
+                    std::atomic<std::size_t> nextJob{ 0 };
+                    std::atomic<std::size_t> doneJobs{ 0 };
+                    const auto workerCount = std::min(jobCount, cpuLoader.worker_count());
+                    std::vector<std::future<void>> lmFutures;
+                    lmFutures.reserve(workerCount);
+                    for (std::size_t w = 0; w < workerCount; ++w)
+                    {
+                        lmFutures.push_back(cpuLoader.submit([&]() {
+                            for (;;)
+                            {
+                                const auto job = nextJob.fetch_add(1, std::memory_order_relaxed);
+                                if (job >= jobCount)
+                                    break;
+                                if (job < pageCount)
+                                {
+                                    if (lightmaps[job].valid)
+                                        phoenix::renderer::convert_texture_to_bc3(lightmaps[job], lmW, lmH, 1);
+                                }
+                                else
+                                {
+                                    // Pack section s: masks for terrain layers
+                                    // 1..7 into two RGBA weight textures.
+                                    const auto s = static_cast<std::uint32_t>(job - pageCount);
+                                    std::vector<std::uint8_t> packed[2];
+                                    packed[0].assign(pixelCount * 4, 0);
+                                    packed[1].assign(pixelCount * 4, 0);
+                                    for (std::uint32_t n = 1; n < kMasksPerSection; ++n)
+                                    {
+                                        const auto& p = alphaMaskPaths[s * kMasksPerSection + n];
+                                        if (p.empty())
+                                            continue;
+                                        const auto mask = phoenix::renderer::load_dds(p);
+                                        if (!mask.valid)
+                                            continue;
+                                        auto rgba = phoenix::renderer::decode_texture_rgba(mask);
+                                        if (rgba.empty())
+                                            continue;
+                                        if (mask.width != lmW || mask.height != lmH)
+                                            rgba = phoenix::renderer::resize_rgba(rgba.data(), mask.width, mask.height, lmW, lmH);
+                                        if (rgba.size() < pixelCount * 4)
+                                            continue;
+                                        const auto channel = (n - 1u) & 3u;
+                                        auto& dst = packed[(n - 1u) >> 2u];
+                                        for (std::size_t px = 0; px < pixelCount; ++px)
+                                            dst[px * 4 + channel] = rgba[px * 4 + 3]; // weight lives in alpha
+                                    }
+                                    for (std::uint32_t part = 0; part < 2; ++part)
+                                    {
+                                        auto& tex = lightmaps[maskBase + static_cast<std::size_t>(s) * 2 + part];
+                                        tex = {};
+                                        tex.valid = true;
+                                        tex.compressed = true;
+                                        tex.vkFormat = VK_FORMAT_BC3_UNORM_BLOCK;
+                                        tex.blockBytes = 16;
+                                        tex.width = lmW;
+                                        tex.height = lmH;
+                                        tex.mipData.assign(1, phoenix::renderer::encode_rgba_to_bc3(packed[part].data(), lmW, lmH));
+                                    }
+                                }
+                                doneJobs.fetch_add(1, std::memory_order_relaxed);
+                            }
+                        }));
+                    }
+                    while (doneJobs.load(std::memory_order_relaxed) < jobCount)
+                    {
+                        pumpQuitCheck();
+                        std::this_thread::sleep_for(std::chrono::milliseconds(8));
+                    }
+                    for (auto& future : lmFutures)
+                        future.get();
+
+                    renderer.upload_field_lightmaps(lightmaps, lmSectionCount);
                 }
             }
         }
@@ -687,7 +838,7 @@ int main(int, char**)
         }
         renderer.set_water_mesh(waterVertices, waterIndices);
 
-        // Free terrain mesh CPU data â€” now in GPU buffers.
+        // Free terrain mesh CPU data — now in GPU buffers.
         { std::vector<phoenix::renderer::TerrainVertex>().swap(terrainVertices);
           std::vector<std::uint32_t>().swap(terrainIndices);
           std::vector<phoenix::renderer::TerrainVertex>().swap(waterVertices);
@@ -703,29 +854,41 @@ int main(int, char**)
         objectBatchCount = static_cast<std::uint32_t>(staticObjectScene.batches.size());
         {
         }
-        if (!renderer.set_static_object_mesh(
+        const bool staticObjectsReady = renderer.set_static_object_mesh(
             staticObjectScene.vertices,
             staticObjectScene.indices,
             staticObjectScene.instances,
-            staticObjectScene.batches))
+            staticObjectScene.batches);
 
         // Upload indirect draw data for GPU frustum culling.
-        if (renderer.upload_indirect_draw_data(staticObjectScene.batches, extract_gpu_bounds(staticObjectScene)))
+        if (staticObjectsReady)
+            renderer.upload_indirect_draw_data(staticObjectScene.batches, extract_gpu_bounds(staticObjectScene));
 
         // Upload animated object mesh to GPU.
         if (!animatedObjectScene.vertices.empty())
         {
-            renderer.set_animated_object_mesh(
+            const bool animatedObjectsReady = renderer.set_animated_object_mesh(
                 animatedObjectScene.vertices,
                 animatedObjectScene.indices,
                 animatedObjectScene.instances,
                 animatedObjectScene.batches);
+            (void)animatedObjectsReady;
         }
 
         showLoading(0.90f, "Finalizing scene");
         uploadDebugGizmos();
 
         worldCollisionMesh = runAsync([&]() { return runtime.build_collision_mesh(); }, 0.92f, "Building collision");
+
+        // Climbable ladder volumes (WLD "Object" section) for the playable character.
+        {
+            const auto runtimeLadders = runtime.ladder_volumes();
+            std::vector<phoenix::character::CharacterSystem::LadderVolume> ladders;
+            ladders.reserve(runtimeLadders.size());
+            for (const auto& ladder : runtimeLadders)
+                ladders.push_back({ ladder.x, ladder.z, ladder.baseY, ladder.topY, ladder.radius });
+            characterSystem.set_ladders(std::move(ladders));
+        }
 
         // ---- Release CPU-side data already uploaded to GPU ----
         // Vertices and indices are now in GPU buffers; free CPU copies.
@@ -810,7 +973,7 @@ int main(int, char**)
             // While minimized the surface is 0x0 and the swapchain becomes
             // out-of-date. Force lastClientSize to an impossible value so that on
             // restore (which keeps the same size) the size-change check below fires
-            // and recreates the swapchain â€” otherwise the window stays frozen.
+            // and recreates the swapchain — otherwise the window stays frozen.
             lastClientSize = { 0, 0 };
             lastFrame = clock::now();
             std::this_thread::sleep_for(std::chrono::milliseconds(100));
@@ -840,7 +1003,6 @@ int main(int, char**)
         totalTime += deltaSeconds;
         perfHud.push_frametime(deltaSeconds);
         renderer.update_water_time(totalTime);
-
 
         // Toggle playable mode with P key.
         const auto playToggleDown = window.is_key_down(SDLK_p);
@@ -954,7 +1116,7 @@ int main(int, char**)
             }
 
             botManager.update(deltaSeconds, cameraX, cameraZ, fogCullDistance,
-                character_height_sampler, &heightSamplerCtx);
+                character_height_sampler, &heightSamplerCtx, &cpuLoader);
 
             // Spawn one-shot effects queued by bots.
             if (!botManager.pendingEffects.empty())
@@ -1095,11 +1257,33 @@ int main(int, char**)
                 visibleAnimatedBatches.clear();
                 build_visible_animated_batches(animatedObjectScene, currentView, visibleAnimatedBatches);
                 renderer.set_animated_object_batches(visibleAnimatedBatches);
+                for (auto& animation : animatedObjectScene.vertexAnimations)
+                {
+                    animation.visible = std::ranges::any_of(visibleAnimatedBatches, [&](const auto& batch) {
+                        return batch.firstIndex == animation.firstIndex && batch.indexCount == animation.indexCount;
+                    });
+                }
             }
 
             lastCullView = currentView;
             forceVisibilityUpdate = false;
         }
+
+        if (!animatedObjectScene.vertexAnimations.empty())
+        {
+            runtime.update_animated_object_scene(animatedObjectScene, totalTime,
+                renderCameraX, renderCameraY, renderCameraZ);
+            animatedObjectScene.merge_dirty_ranges();
+            for (const auto& range : animatedObjectScene.dirtyVertexRanges)
+            {
+                renderer.update_animated_object_vertices_range(
+                    animatedObjectScene.vertices.data(),
+                    range.firstVertex,
+                    range.vertexCount);
+            }
+            animatedObjectScene.clear_dirty();
+        }
+
 
         if (imguiAvailable)
         {
@@ -1228,7 +1412,13 @@ int main(int, char**)
                 const bool moving = distSq > 0.001f;
                 const bool fast = distSq > 1.0f;
 
-                if (moving)
+                // Footsteps only while actually on the ground — never while
+                // jumping/falling, swimming or climbing a ladder.
+                const bool onGround = characterSystem.grounded()
+                    && !characterSystem.swimming()
+                    && !characterSystem.climbing();
+
+                if (moving && onGround)
                 {
                     footstepTimer += deltaSeconds;
                     const float interval = fast ? 0.30f : 0.45f;
@@ -1305,6 +1495,9 @@ int main(int, char**)
             }
 
             renderer.enter_loading_mode();
+            // Kill every sound from the previous map immediately — music,
+            // ambient emitters and in-flight one-shots must not bleed over.
+            audioSystem.stop_all();
             showLoading(0.05f, "Changing map");
             if (runAsync([&]() { return runtime.load_world_map(mapIdx); }, 0.10f, "Loading world"))
             {
@@ -1339,12 +1532,12 @@ int main(int, char**)
 
     }
 
-    // Join the background asset preload before tearing down (it captures
-    // characterSystem/runtime by reference).
-    if (backgroundAssetThread.joinable())
-        backgroundAssetThread.join();
-
-    renderer.shutdown();
+    // Immediate exit: hide the window so the close feels instant, stop audio
+    // cleanly (avoids an output pop), persist the HUD settings, and let the OS
+    // reclaim everything else. Tearing down gigabytes of caches, joining the
+    // preload thread and waiting on the GPU only delays the close.
+    window.hide();
     audioSystem.shutdown();
-    return 0;
+    perfHud.save_settings(executableDir);
+    std::_Exit(0);
 }
