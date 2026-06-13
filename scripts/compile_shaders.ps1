@@ -12,7 +12,7 @@ if (-not (Test-Path $dxc)) {
 New-Item -ItemType Directory -Force -Path $outDir | Out-Null
 
 # Graphics shaders: VSMain + PSMain in a single .hlsl, emitted as <name>.vert.spv / <name>.frag.spv.
-$graphics = @('sky', 'terrain', 'static_object', 'particle')
+$graphics = @('sky', 'terrain', 'static_object', 'particle', 'skinned_character')
 foreach ($name in $graphics) {
     $src = Join-Path $shaderDir "$name.hlsl"
     if (-not (Test-Path $src)) { throw "Shader source missing: $src" }
