@@ -109,6 +109,13 @@ namespace phoenix::renderer
         VkPipeline terrainPipelineZEqual{};
         VkPipeline staticObjectPipeline{};
         VkPipeline staticObjectPipelineZEqual{};
+
+        // GPU-skinned character pipeline (mobs/NPCs). Uses set 0 = terrain
+        // textures (shared layout) + set 1 = bone-palette storage buffer.
+        VkPipeline skinnedCharacterPipeline{};
+        VkPipelineLayout skinnedCharacterPipelineLayout{};
+        VkDescriptorSetLayout paletteSetLayout{};
+        VkDescriptorPool paletteDescriptorPool{};
         VkPipelineLayout skyPipelineLayout{};
         VkPipeline skyPipeline{};
 
@@ -235,6 +242,34 @@ namespace phoenix::renderer
         std::vector<ObjectBatch> monsterCharacterBatches;
         bool monsterCharacterReady{};
         bool monsterCharacterVisible{};
+        bool monsterCharacterSkinned{};   // mesh uploaded as SkinnedVertex (GPU skin path)
+        // Bone-palette storage buffer for the GPU-skinned monster path. Flat
+        // float array, 16 floats (4 rows) per bone, all entities concatenated.
+        VkBuffer monsterPaletteBuffer{};
+        VkDeviceMemory monsterPaletteMemory{};
+        void* monsterPaletteMapped{};
+        std::size_t monsterPaletteCapacity{};
+        VkDescriptorSet monsterPaletteDescriptorSet{};
+
+        // GPU-skinned NPC path — dedicated buffers (NPCs share the render slot
+        // with bots in gameplay, but use their own skinned geometry here).
+        VkBuffer npcCharacterVertexBuffer{};
+        VkDeviceMemory npcCharacterVertexMemory{};
+        VkBuffer npcCharacterIndexBuffer{};
+        VkDeviceMemory npcCharacterIndexMemory{};
+        VkBuffer npcCharacterInstanceBuffer{};
+        VkDeviceMemory npcCharacterInstanceMemory{};
+        void* npcCharacterInstanceMapped{};
+        std::size_t npcCharacterVertexCapacity{};
+        std::size_t npcCharacterInstanceCapacity{};
+        std::vector<ObjectBatch> npcCharacterBatches;
+        bool npcCharacterReady{};
+        bool npcCharacterVisible{};
+        VkBuffer npcPaletteBuffer{};
+        VkDeviceMemory npcPaletteMemory{};
+        void* npcPaletteMapped{};
+        std::size_t npcPaletteCapacity{};
+        VkDescriptorSet npcPaletteDescriptorSet{};
 
         VkDescriptorPool descriptorPool{};
         VkDescriptorSetLayout descriptorSetLayout{};

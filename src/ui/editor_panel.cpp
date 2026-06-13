@@ -763,6 +763,11 @@ namespace phoenix::ui
                 if (ImGui::Button("Spawn 10", ImVec2(95.0f, 0.0f))) spawnNpc(10);
                 ImGui::SameLine();
                 if (ImGui::Button("Spawn 50", ImVec2(95.0f, 0.0f))) spawnNpc(50);
+                if (ImGui::Button("Spawn 50 random", ImVec2(195.0f, 0.0f)))
+                {
+                    result.npcSpawnRandom = true;
+                    result.npcSpawnCount = 50;
+                }
                 ImGui::SetNextItemWidth(180.0f);
                 ImGui::SliderFloat("Cull dist", &npcViewDistance, 20.0f, 300.0f, "%.0f m");
             }
@@ -803,6 +808,11 @@ namespace phoenix::ui
                 if (ImGui::Button("Spawn 10", ImVec2(95.0f, 0.0f))) spawnMonster(10);
                 ImGui::SameLine();
                 if (ImGui::Button("Spawn 50", ImVec2(95.0f, 0.0f))) spawnMonster(50);
+                if (ImGui::Button("Spawn 50 random", ImVec2(195.0f, 0.0f)))
+                {
+                    result.monsterSpawnRandom = true;
+                    result.monsterSpawnCount = 50;
+                }
                 ImGui::SetNextItemWidth(180.0f);
                 ImGui::SliderFloat("Cull dist", &monsterViewDistance, 20.0f, 300.0f, "%.0f m");
             }

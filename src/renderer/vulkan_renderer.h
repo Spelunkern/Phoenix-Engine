@@ -31,6 +31,20 @@ namespace phoenix::renderer
         float position[4]{};
     };
 
+    // Bind-pose vertex for GPU skinning (mobs/NPCs). Matches the skinned_character
+    // shader's VSInput: TerrainVertex fields + per-vertex bone influences. bones
+    // are GLOBAL mesh-bone indices (into the entity's palette); 3 used + pad.
+    struct SkinnedVertex
+    {
+        float position[3]{};
+        float color[3]{};
+        float normal[3]{};
+        float uv[2]{};
+        std::uint32_t textureLayer{ 0xFFFFFFFFu };
+        std::uint32_t bones[4]{};
+        float weights[4]{};
+    };
+
     struct ObjectBatch
     {
         std::uint32_t firstIndex{};
@@ -150,6 +164,24 @@ namespace phoenix::renderer
             const std::vector<ObjectInstance>& instances,
             const std::vector<ObjectBatch>& batches);
         void set_monster_character_visible(bool visible);
+
+        // GPU-skinned mob path. The bind mesh (SkinnedVertex) is uploaded once
+        // per (re)build; each frame only the bone palette + instances change.
+        // The palette is a flat float array, 16 floats (4 rows) per bone, all
+        // entities' palettes concatenated; per-instance palette base bone index
+        // is bit-packed into ObjectInstance.right[3].
+        bool set_monster_skinned_mesh(const std::vector<SkinnedVertex>& vertices,
+            const std::vector<std::uint32_t>& indices);
+        void update_monster_bone_palette(const float* rows16PerBone, std::size_t floatCount);
+
+        // GPU-skinned NPC path (dedicated buffers, same skinned pipeline).
+        bool set_npc_skinned_mesh(const std::vector<SkinnedVertex>& vertices,
+            const std::vector<std::uint32_t>& indices);
+        void update_npc_bone_palette(const float* rows16PerBone, std::size_t floatCount);
+        bool update_npc_skinned_instances(
+            const std::vector<ObjectInstance>& instances,
+            const std::vector<ObjectBatch>& batches);
+        void set_npc_skinned_visible(bool visible);
         // `pump` (optional) is invoked periodically during the CPU staging
         // phase so the caller can keep processing window messages — the
         // upload takes seconds and the app must stay closable throughout.
@@ -216,6 +248,7 @@ namespace phoenix::renderer
         bool create_depth_resources();
         bool create_terrain_pipeline();
         bool create_static_object_pipeline();
+        bool create_skinned_character_pipeline();
         bool create_cull_compute_pipeline();
         bool create_sky_pipeline();
         bool create_particle_pipeline();

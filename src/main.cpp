@@ -41,6 +41,7 @@
 #include <limits>
 #include <map>
 #include <optional>
+#include <random>
 #include <string>
 #include <string_view>
 #include <thread>
@@ -1158,6 +1159,12 @@ int main(int, char**)
                     renderer.set_bot_character_visible(true);
                 }
             }
+            else
+            {
+                // NPCs active: they render on their own GPU-skinned path now
+                // (not the shared bot-character buffers), so hide any stale bots.
+                renderer.set_bot_character_visible(false);
+            }
         }
         else
         {
@@ -1392,27 +1399,34 @@ int main(int, char**)
                 reloadCharacterIntoRenderer();
                 phoenix::app::release_memory_to_os();
             }
-            if (panelResult.npcSpawnCatalogIndex >= 0)
+            // Random scatter around the player for bulk mob/NPC spawns. Disk
+            // around the character (uniform area), each entity facing a random
+            // way — like the bots' spread, but a smaller radius.
+            static std::mt19937 spawnRng{ 0xC0FFEEu };
+            const auto spawnPoint = [&](float maxRadius, float& sx, float& sy, float& sz, float& yaw) {
+                std::uniform_real_distribution<float> u01(0.0f, 1.0f);
+                const float angle = u01(spawnRng) * 6.2831853f;
+                const float radius = 2.0f + (maxRadius - 2.0f) * std::sqrt(u01(spawnRng));
+                sx = characterSystem.world_x() + std::sin(angle) * radius;
+                sz = characterSystem.world_z() + std::cos(angle) * radius;
+                sy = character_height_sampler(sx, sz, &heightSamplerCtx);
+                yaw = u01(spawnRng) * 6.2831853f;
+            };
+
+            if (panelResult.npcSpawnCatalogIndex >= 0 || panelResult.npcSpawnRandom)
             {
                 botManager.clear_bots();
                 const int spawnCount = std::max(1, panelResult.npcSpawnCount);
-                for (int n = 0; n < spawnCount; ++n)
+                const auto& npcCat = npcManager.catalog();
+                for (int n = 0; n < spawnCount && !npcCat.empty(); ++n)
                 {
-                    // Lay them out in receding rows of 5 so bulk spawns spread
-                    // out in front of the camera instead of stacking.
-                    const auto idx = npcManager.active_count();
-                    const float spawnDistance = 3.0f + static_cast<float>(idx / 5u) * 1.6f;
-                    const float sideOffset = (static_cast<float>(idx % 5u) - 2.0f) * 1.25f;
-                    const float sx = cameraX + std::sin(cameraYaw) * spawnDistance + std::cos(cameraYaw) * sideOffset;
-                    const float sz = cameraZ + std::cos(cameraYaw) * spawnDistance - std::sin(cameraYaw) * sideOffset;
-                    const float sy = character_height_sampler(sx, sz, &heightSamplerCtx);
+                    float sx, sy, sz, yaw;
+                    spawnPoint(12.0f, sx, sy, sz, yaw);
+                    const std::size_t cat = panelResult.npcSpawnRandom
+                        ? static_cast<std::size_t>(spawnRng() % npcCat.size())
+                        : static_cast<std::size_t>(panelResult.npcSpawnCatalogIndex);
                     npcManager.spawn(
-                        runtime.state().assets.root,
-                        static_cast<std::size_t>(panelResult.npcSpawnCatalogIndex),
-                        sx,
-                        sy,
-                        sz,
-                        cameraYaw + 3.14159265f,
+                        runtime.state().assets.root, cat, sx, sy, sz, yaw,
                         static_cast<std::uint32_t>(npcTextureBaseSlot),
                         static_cast<std::uint32_t>(kNpcTextureSlotReserve),
                         renderer);
@@ -1420,24 +1434,19 @@ int main(int, char**)
             }
             if (panelResult.clearNpcs)
                 npcManager.clear(renderer);
-            if (panelResult.monsterSpawnCatalogIndex >= 0)
+            if (panelResult.monsterSpawnCatalogIndex >= 0 || panelResult.monsterSpawnRandom)
             {
                 const int spawnCount = std::max(1, panelResult.monsterSpawnCount);
-                for (int n = 0; n < spawnCount; ++n)
+                const auto& monCat = monsterManager.catalog();
+                for (int n = 0; n < spawnCount && !monCat.empty(); ++n)
                 {
-                    const auto idx = monsterManager.active_count();
-                    const float spawnDistance = 4.5f + static_cast<float>(idx / 5u) * 2.0f;
-                    const float sideOffset = (static_cast<float>(idx % 5u) - 2.0f) * 1.6f;
-                    const float sx = cameraX + std::sin(cameraYaw) * spawnDistance + std::cos(cameraYaw) * sideOffset;
-                    const float sz = cameraZ + std::cos(cameraYaw) * spawnDistance - std::sin(cameraYaw) * sideOffset;
-                    const float sy = character_height_sampler(sx, sz, &heightSamplerCtx);
+                    float sx, sy, sz, yaw;
+                    spawnPoint(14.0f, sx, sy, sz, yaw);
+                    const std::size_t cat = panelResult.monsterSpawnRandom
+                        ? static_cast<std::size_t>(spawnRng() % monCat.size())
+                        : static_cast<std::size_t>(panelResult.monsterSpawnCatalogIndex);
                     monsterManager.spawn(
-                        runtime.state().assets.root,
-                        static_cast<std::size_t>(panelResult.monsterSpawnCatalogIndex),
-                        sx,
-                        sy,
-                        sz,
-                        cameraYaw + 3.14159265f,
+                        runtime.state().assets.root, cat, sx, sy, sz, yaw,
                         static_cast<std::uint32_t>(monsterTextureBaseSlot),
                         static_cast<std::uint32_t>(kMonsterTextureSlotReserve),
                         renderer);
