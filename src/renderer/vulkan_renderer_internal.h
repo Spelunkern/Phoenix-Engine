@@ -374,7 +374,10 @@ namespace phoenix::renderer
         //   [8]     weather scale; rest reserved
         float assetShading[16]{
             1.0f, 1.0f, 1.0f, 1.0f,
-            0.50f, 0.50f, 2.0f, 1.0f,
+            // [6] dungeon lightmap boost: 1.7 (was 2.0) — dungeons read a bit
+            // too bright. Only affects the dungeon lightmap path in
+            // static_object.hlsl; open-world terrain lightmaps are separate.
+            0.50f, 0.50f, 1.7f, 1.0f,
             0.0f, 0.0f, 0.0f, 0.0f,
             0.0f, 0.0f, 0.0f, 0.0f,
         };
