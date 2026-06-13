@@ -50,6 +50,12 @@ namespace phoenix::character
         // endKeyframe — there are no per-animation or per-state rate factors.
         constexpr float kAniFramesPerSecond = 30.0f;
         constexpr float kAnimationBlendDuration = 0.12f;
+        // Cross-fade out of finished one-shots (idle gestures, emotes, sit) —
+        // longer than the gameplay blend because nothing waits on it.
+        constexpr float kOneShotBlendDuration = 0.25f;
+        // Airborne jumps hold the clip at this fraction; the remainder is the
+        // landing tail, played by the touch-down recovery.
+        constexpr float kJumpHoldFrameFraction = 0.80f;
         constexpr float kTerrainFollowResponse = 10.0f;
         constexpr float kPi = 3.1415926535f;
 
@@ -337,7 +343,6 @@ namespace phoenix::character
             const float frameCount = std::max(1.0f, endFrame - startFrame);
             if (holdAirborneJump)
             {
-                constexpr float kJumpHoldFrameFraction = 0.80f;
                 const float holdFrame = frameCount * kJumpHoldFrameFraction;
                 return startFrame + std::min(seconds * kAniFramesPerSecond, holdFrame);
             }
@@ -934,7 +939,11 @@ namespace phoenix::character
         data_ = {};
         worldVertices_.clear();
         animationSeconds_ = 0.0f;
+        pendingHoldPreviousAtEnd_ = false;
+        previousAnimationHoldEnd_ = false;
+        jumpLandRecover_ = false;
         activeAnimation_ = 0;
+        activeDebugAnimation_ = 0;
         previousAnimation_ = 0;
         previousAnimationSeconds_ = 0.0f;
         animationBlendSeconds_ = 0.0f;
@@ -948,7 +957,7 @@ namespace phoenix::character
         // Apply per-character default attach bones (ranged weapons on archer/hunter
         // classes use a different bone). Still overridable live from the UI.
         apply_default_attach_bones(appearance.prefix, appearance.weaponType,
-                                   weaponBoneIndex, shieldBoneIndex);
+                                   weaponBoneIndex, shieldBoneIndex, dualWeaponBoneIndex);
 
         struct Part
         {
@@ -1278,6 +1287,30 @@ namespace phoenix::character
             data_.hasWeapon = loadItemPart(appearance.weaponType, appearance.weaponIndex, data_.weapon);
             data_.hasShield = loadItemPart(appearance.shieldType, appearance.shieldIndex, data_.shield);
             data_.equippedWeaponType = data_.hasWeapon ? appearance.weaponType : WeaponType::None;
+            // Dual-wield types get a second copy of the same mesh, rendered on
+            // the same bone with the dual offset applied at skin time.
+            if (data_.hasWeapon && weapon_type_dual_wield(appearance.weaponType))
+                data_.hasDualWeapon = loadItemPart(appearance.weaponType, appearance.weaponIndex, data_.weaponDual);
+        }
+
+        // Measure the weapon's extent along the blade axis (model-space Y) so
+        // the weapon aura can stay inside the actual mesh bounds.
+        weaponBladeStart_ = 0.0f;
+        weaponBladeEnd_ = 0.9f;
+        if (data_.hasWeapon && !data_.weapon.vertices.empty())
+        {
+            float minY = std::numeric_limits<float>::max();
+            float maxY = std::numeric_limits<float>::lowest();
+            for (const auto& v : data_.weapon.vertices)
+            {
+                minY = std::min(minY, v.position[1]);
+                maxY = std::max(maxY, v.position[1]);
+            }
+            if (maxY - minY > 0.05f)
+            {
+                weaponBladeStart_ = minY;
+                weaponBladeEnd_ = maxY;
+            }
         }
 
         // ---- Cloak ----
@@ -1456,7 +1489,14 @@ namespace phoenix::character
                             selectedTextureSlotByPath.emplace(textureKey, textureIndex);
                             data_.texturePaths.push_back(shoulderTexPath);
                         }
+                        // Record the shoulder's vertex range: the cloth body's
+                        // top row anchors to these vertices so both pieces of
+                        // the garment move as one unit.
+                        const auto shoulderVertStart = static_cast<std::uint32_t>(data_.bindVertices.size());
                         append_loaded_part(data_, shoulderModel, textureIndex, false);
+                        data_.cloakShoulder.vertexOffset = shoulderVertStart;
+                        data_.cloakShoulder.vertexCount =
+                            static_cast<std::uint32_t>(data_.bindVertices.size()) - shoulderVertStart;
                     }
                 }
             }
@@ -1917,6 +1957,13 @@ namespace phoenix::character
             {
                 verticalVelocity_ = kJumpImpulse;
                 grounded_ = false;
+                if (jumpLandRecover_)
+                {
+                    // Re-jump during landing recovery: restart the clip so the
+                    // new take-off plays from its first frame.
+                    jumpLandRecover_ = false;
+                    animationSeconds_ = 0.0f;
+                }
             }
 
             if (!grounded_)
@@ -1928,6 +1975,22 @@ namespace phoenix::character
                     characterY_ = groundY;
                     verticalVelocity_ = 0.0f;
                     grounded_ = true;
+                    // Touch-down: play the jump clip's landing tail (the frames
+                    // past the mid-air hold point) instead of snapping to idle.
+                    if (!inWater_ && !data_.hasMount
+                        && activeAnimation_ == data_.jumpAnimation
+                        && data_.jumpAnimation < data_.animations.size()
+                        && data_.animations[data_.jumpAnimation].animation.parsed)
+                    {
+                        const auto& jumpAnim = data_.animations[data_.jumpAnimation].animation;
+                        const float frameCount = std::max(1.0f,
+                            static_cast<float>(jumpAnim.endKeyframe - jumpAnim.startKeyframe));
+                        const float holdSeconds = frameCount * kJumpHoldFrameFraction / kAniFramesPerSecond;
+                        // Resume from the held pose (long falls advance the
+                        // clock past it; never rewind a take-off still playing).
+                        animationSeconds_ = std::min(animationSeconds_, holdSeconds);
+                        jumpLandRecover_ = true;
+                    }
                 }
             }
             else
@@ -1997,6 +2060,11 @@ namespace phoenix::character
                 if (sitState_ == 0)      { sitState_ = 1; }
                 else if (sitState_ == 2) { sitState_ = 3; }
             }
+            // Movement orders while seated start standing up, same as pressing
+            // sit again (the C toggle keeps working). Movement stays blocked
+            // until the stand-up animation finishes.
+            if (sitState_ == 2 && (input.forward || input.backward || input.left || input.right))
+                sitState_ = 3;
             // Advance one-shot sit transitions.
             if (sitState_ == 1 || sitState_ == 3)
             {
@@ -2010,7 +2078,7 @@ namespace phoenix::character
                     {
                         if (sitState_ == 1) sitState_ = 2;      // seated
                         else { sitState_ = 0; }                   // back to standing
-                        animationSeconds_ = 0.0f;
+                        pendingHoldPreviousAtEnd_ = true;
                     }
                 }
                 else
@@ -2024,6 +2092,37 @@ namespace phoenix::character
         }
 
         // ---- Emote (one-shot from ImGui, 1–10) ----
+        if (input.debugAnimation > 0
+            && input.debugAnimation < data_.animations.size()
+            && data_.animations[input.debugAnimation].animation.parsed)
+        {
+            activeDebugAnimation_ = input.debugAnimation;
+            activeEmote_ = 0;
+            activeIdleGesture_ = 0;
+            animationSeconds_ = 0.0f;
+            animationBlendSeconds_ = 0.0f;
+            animationBlendDuration_ = 0.0f;
+            previousAnimation_ = activeAnimation_;
+            previousAnimationSeconds_ = 0.0f;
+        }
+        if (activeDebugAnimation_ > 0 && activeDebugAnimation_ < data_.animations.size())
+        {
+            const auto& anim = data_.animations[activeDebugAnimation_].animation;
+            if (anim.parsed)
+            {
+                const float duration = static_cast<float>(anim.endKeyframe - anim.startKeyframe) / 30.0f;
+                if (animationSeconds_ >= duration)
+                {
+                    activeDebugAnimation_ = 0;
+                    pendingHoldPreviousAtEnd_ = true;
+                }
+            }
+            else
+            {
+                activeDebugAnimation_ = 0;
+            }
+        }
+
         if (input.emote > 0 && input.emote <= 10 && grounded_ && !moving && !inWater_ && sitState_ == 0 && dodgePlayTimer_ <= 0.0f)
         {
             activeEmote_ = input.emote;
@@ -2051,7 +2150,7 @@ namespace phoenix::character
                     if (animationSeconds_ >= duration)
                     {
                         activeEmote_ = 0;
-                        animationSeconds_ = 0.0f;
+                        pendingHoldPreviousAtEnd_ = true;
                     }
                 }
             }
@@ -2063,7 +2162,7 @@ namespace phoenix::character
         {
             const bool standingIdle = grounded_ && !moving && !inWater_ && !climbing_
                 && !data_.hasMount && sitState_ == 0 && dodgePlayTimer_ <= 0.0f
-                && activeEmote_ == 0;
+                && activeEmote_ == 0 && activeDebugAnimation_ == 0;
             if (!standingIdle)
             {
                 idleGestureTimer_ = 0.0f;
@@ -2094,7 +2193,7 @@ namespace phoenix::character
                 {
                     activeIdleGesture_ = 0;
                     idleGestureTimer_ = 0.0f;
-                    animationSeconds_ = 0.0f;
+                    pendingHoldPreviousAtEnd_ = true;
                 }
             }
         }
@@ -2213,9 +2312,33 @@ namespace phoenix::character
             return data_.runAnimation;  // fallback to generic run
         };
 
+        // Landing recovery ends when the jump clip finishes (cosmetic blend
+        // back to idle from its final pose) or is cancelled by any gameplay
+        // state — movement, a new jump, water, sitting.
+        if (jumpLandRecover_)
+        {
+            bool finished = false;
+            if (activeAnimation_ == data_.jumpAnimation
+                && data_.jumpAnimation < data_.animations.size())
+            {
+                const auto& jumpAnim = data_.animations[data_.jumpAnimation].animation;
+                const float duration = static_cast<float>(jumpAnim.endKeyframe - jumpAnim.startKeyframe) / 30.0f;
+                finished = animationSeconds_ >= duration;
+            }
+            if (finished)
+                pendingHoldPreviousAtEnd_ = true;
+            if (finished || moving || !grounded_ || inWater_ || sitState_ != 0
+                || activeAnimation_ != data_.jumpAnimation)
+                jumpLandRecover_ = false;
+        }
+
         // ---- Animation selection ----
         std::size_t desiredAnimation = data_.idleAnimation;
-        if (data_.hasMount)
+        if (activeDebugAnimation_ > 0)
+        {
+            desiredAnimation = activeDebugAnimation_;
+        }
+        else if (data_.hasMount)
         {
             if (moving)
                 desiredAnimation = data_.vehicleRun1Animation;
@@ -2265,6 +2388,12 @@ namespace phoenix::character
             else
                 desiredAnimation = input.fast ? weaponRunAnim() : data_.walkAnimation;
         }
+        else if (jumpLandRecover_)
+        {
+            // Landing recovery: keep the jump clip so its final frames (the
+            // touch-down crouch and straighten-up) actually play out.
+            desiredAnimation = data_.jumpAnimation;
+        }
         else if (activeIdleGesture_ > 0)
         {
             desiredAnimation = activeIdleGesture_;
@@ -2278,10 +2407,17 @@ namespace phoenix::character
             previousAnimation_ = activeAnimation_;
             previousAnimationSeconds_ = animationSeconds_;
             animationBlendSeconds_ = 0.0f;
-            animationBlendDuration_ = canBlend ? kAnimationBlendDuration : 0.0f;
+            // One-shots that just finished hand off from their final pose with
+            // a longer, purely cosmetic cross-fade; gameplay transitions keep
+            // the short blend so controls stay responsive.
+            previousAnimationHoldEnd_ = pendingHoldPreviousAtEnd_;
+            animationBlendDuration_ = canBlend
+                ? (previousAnimationHoldEnd_ ? kOneShotBlendDuration : kAnimationBlendDuration)
+                : 0.0f;
             activeAnimation_ = desiredAnimation;
             animationSeconds_ = 0.0f;
         }
+        pendingHoldPreviousAtEnd_ = false;
         // Native playback is a single fixed rate (30 fps) for all states — the retail
         // client applies no per-state speedups. Foot cadence is kept in lock-step with
         // ground travel by deriving the rate from the real movement speed: the rate is
@@ -2400,6 +2536,7 @@ namespace phoenix::character
     void CharacterSystem::skin_and_transform()
     {
         weaponAttachment_.valid = false;
+        dualWeaponAttachment_.valid = false;
 
         const auto& anim = data_.animations[activeAnimation_].animation;
         if (!anim.parsed || anim.endKeyframe <= anim.startKeyframe)
@@ -2425,7 +2562,11 @@ namespace phoenix::character
             {
                 const bool previousAirborneJump = !grounded_ && !inWater_ && !data_.hasMount
                     && previousAnimation_ == data_.jumpAnimation;
-                const float previousFrame = sample_animation_frame(previousAnim, previousAnimationSeconds_, previousAirborneJump);
+                // Finished one-shots hold their final pose during the blend-out;
+                // the looping sampler would wrap them back to frame 0 (pop).
+                const float previousFrame = previousAnimationHoldEnd_
+                    ? static_cast<float>(previousAnim.endKeyframe)
+                    : sample_animation_frame(previousAnim, previousAnimationSeconds_, previousAirborneJump);
                 const auto previousFinals = compute_client_finals(previousAnim, previousFrame);
                 const float rawT = std::clamp(animationBlendSeconds_ / animationBlendDuration_, 0.0f, 1.0f);
                 const float t = rawT * rawT * (3.0f - 2.0f * rawT);
@@ -2492,17 +2633,46 @@ namespace phoenix::character
         }
 
         // ---- Transform weapon/shield vertices by hand bone ----
-        auto transformItemPart = [&](const CharacterData::WeaponPart& part, std::size_t boneIndex) {
+        // localRotDeg/localPos (both or neither): pre-transform in weapon-model
+        // space (rotate Euler XYZ degrees, then translate) applied before the
+        // bone matrix — used to place the dual-wield off-hand copy relative to
+        // the main weapon on the same bone.
+        auto transformItemPart = [&](const CharacterData::WeaponPart& part, std::size_t boneIndex,
+                                     const float* localRotDeg = nullptr, const float* localPos = nullptr) {
             if (part.vertexCount == 0 || boneIndex >= clientFinals.size())
                 return;
             const auto boneMatrix = clientFinals[boneIndex];
+            const bool hasLocal = localRotDeg != nullptr && localPos != nullptr;
+            float rot[9] = { 1.0f, 0.0f, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f, 0.0f, 1.0f };
+            if (hasLocal)
+            {
+                constexpr float kDegToRad = 3.14159265f / 180.0f;
+                const float cx = std::cos(localRotDeg[0] * kDegToRad), sx = std::sin(localRotDeg[0] * kDegToRad);
+                const float cy = std::cos(localRotDeg[1] * kDegToRad), sy = std::sin(localRotDeg[1] * kDegToRad);
+                const float cz = std::cos(localRotDeg[2] * kDegToRad), sz = std::sin(localRotDeg[2] * kDegToRad);
+                // Row-major R = Rz * Ry * Rx (p' = R * p).
+                rot[0] = cz * cy; rot[1] = cz * sy * sx - sz * cx; rot[2] = cz * sy * cx + sz * sx;
+                rot[3] = sz * cy; rot[4] = sz * sy * sx + cz * cx; rot[5] = sz * sy * cx - cz * sx;
+                rot[6] = -sy;     rot[7] = cy * sx;               rot[8] = cy * cx;
+            }
             for (std::uint32_t i = 0; i < part.vertexCount; ++i)
             {
                 const auto vi = static_cast<std::size_t>(part.vertexOffset) + i;
                 if (vi >= animated.size()) break;
                 const auto& sv = part.vertices[i];
-                const Vec3 srcPos{ sv.position[0], sv.position[1], sv.position[2] };
-                const Vec3 srcNrm{ sv.normal[0], sv.normal[1], sv.normal[2] };
+                Vec3 srcPos{ sv.position[0], sv.position[1], sv.position[2] };
+                Vec3 srcNrm{ sv.normal[0], sv.normal[1], sv.normal[2] };
+                if (hasLocal)
+                {
+                    srcPos = {
+                        rot[0] * sv.position[0] + rot[1] * sv.position[1] + rot[2] * sv.position[2] + localPos[0],
+                        rot[3] * sv.position[0] + rot[4] * sv.position[1] + rot[5] * sv.position[2] + localPos[1],
+                        rot[6] * sv.position[0] + rot[7] * sv.position[1] + rot[8] * sv.position[2] + localPos[2] };
+                    srcNrm = {
+                        rot[0] * sv.normal[0] + rot[1] * sv.normal[1] + rot[2] * sv.normal[2],
+                        rot[3] * sv.normal[0] + rot[4] * sv.normal[1] + rot[5] * sv.normal[2],
+                        rot[6] * sv.normal[0] + rot[7] * sv.normal[1] + rot[8] * sv.normal[2] };
+                }
                 const auto p = transform_point(boneMatrix, srcPos);
                 const auto n = normalize_vec3(transform_normal(boneMatrix, srcNrm));
                 animated[vi].position[0] = p.x * kCharacterScale;
@@ -2515,6 +2685,9 @@ namespace phoenix::character
         };
         if (data_.hasWeapon && weaponBoneIndex >= 0)
             transformItemPart(data_.weapon, static_cast<std::size_t>(weaponBoneIndex));
+        if (data_.hasDualWeapon && dualWeaponBoneIndex >= 0)
+            transformItemPart(data_.weaponDual, static_cast<std::size_t>(dualWeaponBoneIndex),
+                              dualOffsetRotDeg, dualOffsetPos);
         if (data_.hasShield && shieldBoneIndex >= 0)
             transformItemPart(data_.shield, static_cast<std::size_t>(shieldBoneIndex));
         // Mantle vertices are in character-local space (not bone-local), so they
@@ -2550,7 +2723,6 @@ namespace phoenix::character
                     && mountActiveAnimation_ == data_.mount.jumpAnimation;
                 if (mountAirborneJump)
                 {
-                    constexpr float kJumpHoldFrameFraction = 0.80f;
                     const float holdFrame = mfc * kJumpHoldFrameFraction;
                     mFrame = ms + std::min(mountAnimationSeconds_ * kAniFramesPerSecond, holdFrame);
                 }
@@ -2658,6 +2830,24 @@ namespace phoenix::character
             animated[i].textureLayer = (baseLayer + textureLayerBase_) + (isCutout ? 2048u : 0u);
         }
 
+        // Cloak pieces get flat lighting in the shader (color.b sentinel): the
+        // simulated cloth re-derives its normals from the sim geometry every
+        // frame, so normal-based lighting makes it shimmer as it sways/turns.
+        // The shoulder is marked too so the whole garment shades as one.
+        if (data_.hasCloak)
+        {
+            auto markFlatLit = [&](const CharacterData::WeaponPart& part) {
+                for (std::uint32_t i = 0; i < part.vertexCount; ++i)
+                {
+                    const auto vi = static_cast<std::size_t>(part.vertexOffset) + i;
+                    if (vi < animated.size())
+                        animated[vi].color[2] = 0.02f;
+                }
+            };
+            markFlatLit(data_.cloakBody);
+            markFlatLit(data_.cloakShoulder);
+        }
+
         // ---- Weapon attach-bone world transform (for weapon aura effects) ----
         // Mirrors the item-vertex path: bone matrix -> *kCharacterScale -> (+saddle
         // if mounted) -> yaw rotate + ground offset + world translate. Computed from
@@ -2684,7 +2874,52 @@ namespace phoenix::character
                 weaponAttachment_.basis[a * 3 + 1] = v.y;
                 weaponAttachment_.basis[a * 3 + 2] = -v.x * sinYaw + v.z * cosYaw;
             }
+            weaponAttachment_.bladeStart = weaponBladeStart_;
+            weaponAttachment_.bladeEnd = weaponBladeEnd_;
             weaponAttachment_.valid = true;
+        }
+
+        // Off-hand attachment for dual-wield: same construction on the dual
+        // bone, with the dual local offset (rotate Euler XYZ, then translate)
+        // applied before the bone matrix — mirrors transformItemPart exactly.
+        if (data_.hasDualWeapon && dualWeaponBoneIndex >= 0
+            && static_cast<std::size_t>(dualWeaponBoneIndex) < clientFinals.size())
+        {
+            const auto& boneMatrix = clientFinals[static_cast<std::size_t>(dualWeaponBoneIndex)];
+
+            constexpr float kDegToRad = 3.14159265f / 180.0f;
+            const float cx = std::cos(dualOffsetRotDeg[0] * kDegToRad), sx = std::sin(dualOffsetRotDeg[0] * kDegToRad);
+            const float cy = std::cos(dualOffsetRotDeg[1] * kDegToRad), sy = std::sin(dualOffsetRotDeg[1] * kDegToRad);
+            const float cz = std::cos(dualOffsetRotDeg[2] * kDegToRad), sz = std::sin(dualOffsetRotDeg[2] * kDegToRad);
+            // Row-major R = Rz * Ry * Rx (p' = R * p).
+            const float rot[9] = {
+                cz * cy, cz * sy * sx - sz * cx, cz * sy * cx + sz * sx,
+                sz * cy, sz * sy * sx + cz * cx, sz * sy * cx - cz * sx,
+                -sy,     cy * sx,                cy * cx };
+
+            const Vec3 originLocal{ dualOffsetPos[0], dualOffsetPos[1], dualOffsetPos[2] };
+            const Vec3 boneT = transform_point(boneMatrix, originLocal);
+            const float lx = boneT.x * kCharacterScale + riderSaddleOffset.x;
+            const float ly = boneT.y * kCharacterScale + riderSaddleOffset.y;
+            const float lz = boneT.z * kCharacterScale + riderSaddleOffset.z;
+
+            dualWeaponAttachment_.position[0] = lx * cosYaw + lz * sinYaw + smoothX_;
+            dualWeaponAttachment_.position[1] = ly - localGroundY + smoothY_ + kGroundClearance;
+            dualWeaponAttachment_.position[2] = -lx * sinYaw + lz * cosYaw + smoothZ_;
+
+            for (int a = 0; a < 3; ++a)
+            {
+                // Weapon-model axis a in dual-local space = column a of R.
+                const Vec3 localAxis{ rot[a], rot[3 + a], rot[6 + a] };
+                Vec3 v = transform_normal(boneMatrix, localAxis);
+                v.x *= kCharacterScale; v.y *= kCharacterScale; v.z *= kCharacterScale;
+                dualWeaponAttachment_.basis[a * 3 + 0] = v.x * cosYaw + v.z * sinYaw;
+                dualWeaponAttachment_.basis[a * 3 + 1] = v.y;
+                dualWeaponAttachment_.basis[a * 3 + 2] = -v.x * sinYaw + v.z * cosYaw;
+            }
+            dualWeaponAttachment_.bladeStart = weaponBladeStart_;
+            dualWeaponAttachment_.bladeEnd = weaponBladeEnd_;
+            dualWeaponAttachment_.valid = true;
         }
 
         // ---- Cloak cloth simulation (Verlet, world space) ----
@@ -2748,6 +2983,13 @@ namespace phoenix::character
                 // vertex's bind position; re-added (yaw-rotated) every frame.
                 clothPinBody_.assign(cols, UINT32_MAX);
                 clothPinOffset_.assign(static_cast<std::size_t>(cols) * 3u, 0.0f);
+                // Prefer anchoring to the shoulder piece: both cloak parts are
+                // authored as one garment, so hanging the cloth off the collar
+                // keeps them welded — anchoring to arbitrary body vertices lets
+                // the two pieces drift apart as the skeleton animates. Without
+                // a shoulder piece, fall back to any skinned body vertex.
+                const std::uint32_t shoulderOff = data_.cloakShoulder.vertexOffset;
+                const std::uint32_t shoulderCount = data_.cloakShoulder.vertexCount;
                 for (std::uint32_t c = 0; c < cols; ++c)
                 {
                     const std::uint32_t ci = off + idx(0, c);
@@ -2762,6 +3004,9 @@ namespace phoenix::character
                         if (slot >= data_.bindVertices.size()) continue;
                         // Skip the cloak body's own vertices.
                         if (slot >= off && slot < off + n) continue;
+                        // Restrict to the shoulder piece when it exists.
+                        if (shoulderCount > 0 && (slot < shoulderOff || slot >= shoulderOff + shoulderCount))
+                            continue;
                         const float dx = data_.bindVertices[slot].position[0] - cx;
                         const float dy = data_.bindVertices[slot].position[1] - cy;
                         const float dz = data_.bindVertices[slot].position[2] - cz;
@@ -2812,10 +3057,17 @@ namespace phoenix::character
 
             // Fixed-timestep Verlet so cloth behaves identically at any FPS.
             constexpr float kFixedDt = 1.0f / 60.0f;
-            constexpr float kDamping = 0.985f;
+            constexpr float kDamping = 0.990f;
             constexpr float kClothGravity = -2.4f;
             constexpr float kGStep = kClothGravity * kFixedDt * kFixedDt;
             constexpr int kMaxSteps = 4;
+            // Velocity cap per fixed step: locomotion (up to ~7.4 u/s = 0.12/step)
+            // passes untouched; anchor teleports and mount snaps get clipped
+            // instead of whipping the cloth across the screen.
+            constexpr float kMaxVelStep = 0.25f;
+            // The cloth may come at most this far forward of the pin row before
+            // the back-plane clamps it (keeps it out of the torso).
+            constexpr float kForwardSlack = 0.12f;
 
             clothAccum_ += std::clamp(lastDeltaSeconds_, 0.0f, 0.1f);
             int steps = static_cast<int>(clothAccum_ / kFixedDt);
@@ -2845,22 +3097,39 @@ namespace phoenix::character
                 clothWorld_[ib * 3 + 2] -= dz * diff * wb;
             };
 
+            // Back-plane setup: character facing direction in world, and the
+            // pin row's average forward coordinate. The cloth must stay behind
+            // (pinFwd + slack) so it can never swing into the torso — most
+            // visible on mounts and abrupt stops/turns.
+            const float fwdX = std::sin(characterYaw_);
+            const float fwdZ = std::cos(characterYaw_);
+            float pinFwd = 0.0f;
+            for (std::uint32_t c = 0; c < cols; ++c)
+                pinFwd += clothWorld_[idx(0, c) * 3 + 0] * fwdX + clothWorld_[idx(0, c) * 3 + 2] * fwdZ;
+            pinFwd /= static_cast<float>(cols);
+            const float maxFwd = pinFwd + kForwardSlack;
+
             for (int step = 0; step < steps; ++step)
             {
                 for (std::uint32_t i = cols; i < n; ++i)
                 {
-                    for (int a = 0; a < 3; ++a)
+                    float vx = (clothWorld_[i * 3 + 0] - clothPrev_[i * 3 + 0]) * kDamping;
+                    float vy = (clothWorld_[i * 3 + 1] - clothPrev_[i * 3 + 1]) * kDamping;
+                    float vz = (clothWorld_[i * 3 + 2] - clothPrev_[i * 3 + 2]) * kDamping;
+                    const float v2 = vx * vx + vy * vy + vz * vz;
+                    if (v2 > kMaxVelStep * kMaxVelStep)
                     {
-                        const float cur  = clothWorld_[i * 3 + a];
-                        const float prev = clothPrev_[i * 3 + a];
-                        float next = cur + (cur - prev) * kDamping;
-                        if (a == 1) next += kGStep;
-                        clothPrev_[i * 3 + a] = cur;
-                        clothWorld_[i * 3 + a] = next;
+                        const float s = kMaxVelStep / std::sqrt(v2);
+                        vx *= s; vy *= s; vz *= s;
                     }
+                    for (int a = 0; a < 3; ++a)
+                        clothPrev_[i * 3 + a] = clothWorld_[i * 3 + a];
+                    clothWorld_[i * 3 + 0] += vx;
+                    clothWorld_[i * 3 + 1] += vy + kGStep;
+                    clothWorld_[i * 3 + 2] += vz;
                 }
 
-                constexpr int kIterations = 6;
+                constexpr int kIterations = 8;
                 for (int it = 0; it < kIterations; ++it)
                 {
                     for (std::uint32_t r = 1; r < rows; ++r)
@@ -2871,6 +3140,26 @@ namespace phoenix::character
                             if (c > 0)
                                 satisfy(i, idx(r, c - 1), clothRestLeft_[i]);
                         }
+                }
+
+                // Back-plane clamp: project offenders back and remove their
+                // forward velocity so they settle instead of re-penetrating.
+                for (std::uint32_t i = cols; i < n; ++i)
+                {
+                    const float d = clothWorld_[i * 3 + 0] * fwdX + clothWorld_[i * 3 + 2] * fwdZ;
+                    if (d > maxFwd)
+                    {
+                        const float push = d - maxFwd;
+                        clothWorld_[i * 3 + 0] -= push * fwdX;
+                        clothWorld_[i * 3 + 2] -= push * fwdZ;
+                        const float pd = clothPrev_[i * 3 + 0] * fwdX + clothPrev_[i * 3 + 2] * fwdZ;
+                        if (pd > maxFwd)
+                        {
+                            const float prevPush = pd - maxFwd;
+                            clothPrev_[i * 3 + 0] -= prevPush * fwdX;
+                            clothPrev_[i * 3 + 2] -= prevPush * fwdZ;
+                        }
+                    }
                 }
             }
 
@@ -2943,6 +3232,11 @@ namespace phoenix::character
         worldVertices_ = std::move(animated);
     }
 
+    float CharacterSystem::render_ground_y() const
+    {
+        return smoothY_ + kGroundClearance;
+    }
+
     void CharacterSystem::clone_from(const CharacterSystem& source)
     {
         data_ = source.data_;
@@ -2950,6 +3244,14 @@ namespace phoenix::character
         textureLayerBase_ = source.textureLayerBase_;
         weaponBoneIndex = source.weaponBoneIndex;
         shieldBoneIndex = source.shieldBoneIndex;
+        dualWeaponBoneIndex = source.dualWeaponBoneIndex;
+        weaponBladeStart_ = source.weaponBladeStart_;
+        weaponBladeEnd_ = source.weaponBladeEnd_;
+        for (int i = 0; i < 3; ++i)
+        {
+            dualOffsetPos[i] = source.dualOffsetPos[i];
+            dualOffsetRotDeg[i] = source.dualOffsetRotDeg[i];
+        }
         cloakBodyBoneIndex = source.cloakBodyBoneIndex;
         cloakShoulderBoneIndex = source.cloakShoulderBoneIndex;
         mountBoneIndex = source.mountBoneIndex;
@@ -2974,6 +3276,7 @@ namespace phoenix::character
         inWater_ = false;
         sitState_ = 0;
         activeEmote_ = 0;
+        activeDebugAnimation_ = 0;
         dodgePlayTimer_ = 0.0f;
         clothInitialized_ = false;
         lastDeltaSeconds_ = 0.0f;
@@ -3001,6 +3304,7 @@ namespace phoenix::character
         animationBlendSeconds_ = 0.0f;
         animationBlendDuration_ = 0.0f;
         jumpWasDown_ = false;
+        activeDebugAnimation_ = 0;
         reset_cloth();
         if (data_.loaded)
         {

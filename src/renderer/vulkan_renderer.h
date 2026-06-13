@@ -142,6 +142,14 @@ namespace phoenix::renderer
             const std::vector<ObjectInstance>& instances,
             const std::vector<ObjectBatch>& batches);
         void set_bot_character_visible(bool visible);
+        bool set_monster_character_mesh(const std::vector<TerrainVertex>& vertices, const std::vector<std::uint32_t>& indices);
+        bool update_monster_character_vertices(const std::vector<TerrainVertex>& vertices);
+        bool update_monster_character_vertices_range(
+            const TerrainVertex* vertices, std::uint32_t firstVertex, std::uint32_t vertexCount);
+        bool update_monster_character_instances(
+            const std::vector<ObjectInstance>& instances,
+            const std::vector<ObjectBatch>& batches);
+        void set_monster_character_visible(bool visible);
         // `pump` (optional) is invoked periodically during the CPU staging
         // phase so the caller can keep processing window messages — the
         // upload takes seconds and the app must stay closable throughout.

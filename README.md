@@ -90,8 +90,9 @@ docs/        Public documentation and release notes.
 |----------|--------|-------------|
 | Windows 10/11 | Primary | Visual Studio 2022 / MSBuild |
 | Linux (X11/Wayland) | Supported | CMake + GCC/Clang |
+| macOS (MoltenVK) | Experimental, structure ready — see [BUILD_MAC.md](BUILD_MAC.md) | CMake + AppleClang |
 
-Both platforms share the same codebase. The platform layer uses SDL2, the renderer uses Vulkan through volk, and the audio system uses miniaudio with stb_vorbis.
+All platforms share the same codebase. The platform layer uses SDL2, the renderer uses Vulkan through volk (MoltenVK on macOS), and the audio system uses miniaudio with stb_vorbis.
 
 ## Requirements
 

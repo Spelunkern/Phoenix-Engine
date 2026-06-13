@@ -1,4 +1,4 @@
-﻿#include "renderer/vulkan_renderer.h"
+#include "renderer/vulkan_renderer.h"
 #include "renderer/vulkan_renderer_internal.h"
 #include "renderer/dds_loader.h"
 #include "platform/sdl_window.h"
@@ -340,6 +340,26 @@ namespace phoenix::renderer
             return false;
         }
 
+        // Portability enumeration (MoltenVK/macOS): with loaders >= 1.3.216 the
+        // MoltenVK device is only listed when this extension + flag are set.
+        // Detected at runtime, so this is inert on Windows/Linux drivers.
+        VkInstanceCreateFlags instanceFlags = 0;
+        {
+            std::uint32_t availableCount = 0;
+            vkEnumerateInstanceExtensionProperties(nullptr, &availableCount, nullptr);
+            std::vector<VkExtensionProperties> available(availableCount);
+            vkEnumerateInstanceExtensionProperties(nullptr, &availableCount, available.data());
+            for (const auto& ext : available)
+            {
+                if (std::strcmp(ext.extensionName, "VK_KHR_portability_enumeration") == 0)
+                {
+                    extensions.push_back("VK_KHR_portability_enumeration");
+                    instanceFlags |= 0x00000001; // VK_INSTANCE_CREATE_ENUMERATE_PORTABILITY_BIT_KHR
+                    break;
+                }
+            }
+        }
+
         VkApplicationInfo appInfo{ VK_STRUCTURE_TYPE_APPLICATION_INFO };
         appInfo.pApplicationName = "Phoenix Engine";
         appInfo.applicationVersion = VK_MAKE_VERSION(0, 1, 0);
@@ -348,6 +368,7 @@ namespace phoenix::renderer
         appInfo.apiVersion = VK_API_VERSION_1_2;
 
         VkInstanceCreateInfo createInfo{ VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO };
+        createInfo.flags = instanceFlags;
         createInfo.pApplicationInfo = &appInfo;
         createInfo.enabledExtensionCount = static_cast<std::uint32_t>(extensions.size());
         createInfo.ppEnabledExtensionNames = extensions.data();
@@ -444,9 +465,10 @@ namespace phoenix::renderer
         log_line((std::string("Vulkan: selected adapter ") + bestProperties.deviceName).c_str());
 
         // Hard requirement check with a clear log instead of a silent pipeline
-        // failure: the camera push-constant block needs 176 bytes (spec minimum
-        // is 128 — older Intel iGPUs and old Mesa drivers report exactly that).
-        constexpr std::uint32_t kRequiredPushConstantBytes = sizeof(float) * 44;
+        // failure: the camera push-constant block needs 240 bytes (spec minimum
+        // is 128 — older Intel iGPUs and old Mesa drivers report exactly that;
+        // desktop NVIDIA/AMD/Intel report 256).
+        constexpr std::uint32_t kRequiredPushConstantBytes = sizeof(float) * 60;
         if (bestProperties.limits.maxPushConstantsSize < kRequiredPushConstantBytes)
         {
             log_line((std::string("Vulkan: maxPushConstantsSize ")
@@ -478,12 +500,30 @@ namespace phoenix::renderer
         impl_->samplerAnisotropySupported = supportedFeatures.samplerAnisotropy == VK_TRUE;
         impl_->multiDrawIndirectSupported = supportedFeatures.multiDrawIndirect == VK_TRUE;
 
-        const char* extensions[] = { VK_KHR_SWAPCHAIN_EXTENSION_NAME };
+        std::vector<const char*> extensions{ VK_KHR_SWAPCHAIN_EXTENSION_NAME };
+        // Portability subset (MoltenVK/macOS): the spec REQUIRES enabling this
+        // extension when the physical device advertises it. Runtime-detected,
+        // inert on conformant Windows/Linux drivers.
+        {
+            std::uint32_t availableCount = 0;
+            vkEnumerateDeviceExtensionProperties(impl_->physicalDevice, nullptr, &availableCount, nullptr);
+            std::vector<VkExtensionProperties> available(availableCount);
+            vkEnumerateDeviceExtensionProperties(impl_->physicalDevice, nullptr, &availableCount, available.data());
+            for (const auto& ext : available)
+            {
+                if (std::strcmp(ext.extensionName, "VK_KHR_portability_subset") == 0)
+                {
+                    extensions.push_back("VK_KHR_portability_subset");
+                    break;
+                }
+            }
+        }
+
         VkDeviceCreateInfo createInfo{ VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO };
         createInfo.queueCreateInfoCount = 1;
         createInfo.pQueueCreateInfos = &queueInfo;
-        createInfo.enabledExtensionCount = static_cast<std::uint32_t>(std::size(extensions));
-        createInfo.ppEnabledExtensionNames = extensions;
+        createInfo.enabledExtensionCount = static_cast<std::uint32_t>(extensions.size());
+        createInfo.ppEnabledExtensionNames = extensions.data();
         createInfo.pEnabledFeatures = &features;
 
         if (vkCreateDevice(impl_->physicalDevice, &createInfo, nullptr, &impl_->device) != VK_SUCCESS)
@@ -1101,7 +1141,7 @@ namespace phoenix::renderer
         VkPushConstantRange pushRange{};
         pushRange.stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
         pushRange.offset = 0;
-        pushRange.size = sizeof(float) * 44;
+        pushRange.size = sizeof(float) * 60;
 
         VkPipelineLayoutCreateInfo layoutInfo{ VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO };
         layoutInfo.setLayoutCount = 1;
@@ -1453,7 +1493,7 @@ namespace phoenix::renderer
         VkPushConstantRange pushRange{};
         pushRange.stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
         pushRange.offset = 0;
-        pushRange.size = sizeof(float) * 44;
+        pushRange.size = sizeof(float) * 60;
 
         VkPipelineLayoutCreateInfo layoutInfo{ VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO };
         layoutInfo.setLayoutCount = 1;
@@ -2892,6 +2932,7 @@ rgba_texture_fallback:
         impl_->debugReady = false;
         impl_->characterReady = false;
         impl_->botCharacterReady = false;
+        impl_->monsterCharacterReady = false;
     }
 
     bool VulkanRenderer::create_host_buffer(
@@ -3906,6 +3947,185 @@ rgba_texture_fallback:
             impl_->botCharacterVisible = visible;
     }
 
+    bool VulkanRenderer::set_monster_character_mesh(
+        const std::vector<TerrainVertex>& vertices,
+        const std::vector<std::uint32_t>& indices)
+    {
+        if (!impl_ || vertices.empty() || indices.empty())
+            return false;
+
+        // Wait for the GPU to finish before destroying the existing buffers —
+        // a respawn/rebuild while the previous mesh is still in-flight (e.g. a
+        // second bulk spawn on top of already-rendered monsters) otherwise frees
+        // a buffer the GPU is reading. Mirrors set_bot_character_mesh.
+        vkDeviceWaitIdle(impl_->device);
+
+        if (impl_->monsterCharacterVertexBuffer)
+            vkDestroyBuffer(impl_->device, impl_->monsterCharacterVertexBuffer, nullptr);
+        if (impl_->monsterCharacterVertexMemory)
+            vkFreeMemory(impl_->device, impl_->monsterCharacterVertexMemory, nullptr);
+        if (impl_->monsterCharacterIndexBuffer)
+            vkDestroyBuffer(impl_->device, impl_->monsterCharacterIndexBuffer, nullptr);
+        if (impl_->monsterCharacterIndexMemory)
+            vkFreeMemory(impl_->device, impl_->monsterCharacterIndexMemory, nullptr);
+        if (impl_->monsterCharacterInstanceBuffer)
+            vkDestroyBuffer(impl_->device, impl_->monsterCharacterInstanceBuffer, nullptr);
+        if (impl_->monsterCharacterInstanceMemory)
+            vkFreeMemory(impl_->device, impl_->monsterCharacterInstanceMemory, nullptr);
+
+        impl_->monsterCharacterVertexBuffer = {};
+        impl_->monsterCharacterVertexMemory = {};
+        impl_->monsterCharacterVertexMapped = nullptr;
+        impl_->monsterCharacterIndexBuffer = {};
+        impl_->monsterCharacterIndexMemory = {};
+        impl_->monsterCharacterInstanceBuffer = {};
+        impl_->monsterCharacterInstanceMemory = {};
+        impl_->monsterCharacterInstanceMapped = nullptr;
+        impl_->monsterCharacterVertexBytes = 0;
+        impl_->monsterCharacterVertexCapacity = 0;
+        impl_->monsterCharacterInstanceBytes = 0;
+        impl_->monsterCharacterInstanceCapacity = 0;
+        impl_->monsterCharacterBatches.clear();
+        impl_->monsterCharacterReady = false;
+
+        const auto vertexBytes = vertices.size() * sizeof(TerrainVertex);
+        const auto indexBytes = indices.size() * sizeof(std::uint32_t);
+        const auto vertexCapacity = vertexBytes + vertexBytes / 2;
+
+        if (!create_host_buffer(nullptr, vertexCapacity, VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
+                impl_->monsterCharacterVertexBuffer, impl_->monsterCharacterVertexMemory,
+                &impl_->monsterCharacterVertexMapped)
+            || !create_device_local_buffer(indices.data(), indexBytes, VK_BUFFER_USAGE_INDEX_BUFFER_BIT,
+                impl_->monsterCharacterIndexBuffer, impl_->monsterCharacterIndexMemory))
+        {
+            log_line("Vulkan: monster character mesh upload failed");
+            return false;
+        }
+
+        impl_->monsterCharacterVertexCapacity = vertexCapacity;
+        if (!update_monster_character_vertices(vertices))
+            return false;
+
+        impl_->monsterCharacterReady = true;
+        impl_->monsterCharacterVisible = true;
+        return true;
+    }
+
+    bool VulkanRenderer::update_monster_character_vertices(const std::vector<TerrainVertex>& vertices)
+    {
+        if (!impl_ || !impl_->monsterCharacterVertexBuffer || vertices.empty())
+            return false;
+
+        const auto byteSize = vertices.size() * sizeof(TerrainVertex);
+        if (byteSize > impl_->monsterCharacterVertexCapacity)
+            return false;
+
+        if (impl_->monsterCharacterVertexMapped)
+        {
+            std::memcpy(impl_->monsterCharacterVertexMapped, vertices.data(), byteSize);
+        }
+        else
+        {
+            void* mapped{};
+            if (vkMapMemory(impl_->device, impl_->monsterCharacterVertexMemory, 0, byteSize, 0, &mapped) != VK_SUCCESS)
+                return false;
+            std::memcpy(mapped, vertices.data(), byteSize);
+            vkUnmapMemory(impl_->device, impl_->monsterCharacterVertexMemory);
+        }
+
+        impl_->monsterCharacterVertexBytes = byteSize;
+        return true;
+    }
+
+    bool VulkanRenderer::update_monster_character_vertices_range(
+        const TerrainVertex* vertices, std::uint32_t firstVertex, std::uint32_t vertexCount)
+    {
+        if (!impl_ || !impl_->monsterCharacterVertexBuffer || !vertices || vertexCount == 0)
+            return false;
+
+        const auto offsetBytes = static_cast<std::size_t>(firstVertex) * sizeof(TerrainVertex);
+        const auto rangeBytes = static_cast<std::size_t>(vertexCount) * sizeof(TerrainVertex);
+        if (offsetBytes + rangeBytes > impl_->monsterCharacterVertexCapacity)
+            return false;
+
+        if (impl_->monsterCharacterVertexMapped)
+        {
+            std::memcpy(static_cast<char*>(impl_->monsterCharacterVertexMapped) + offsetBytes,
+                vertices + firstVertex, rangeBytes);
+            return true;
+        }
+
+        void* mapped{};
+        if (vkMapMemory(impl_->device, impl_->monsterCharacterVertexMemory,
+                offsetBytes, rangeBytes, 0, &mapped) != VK_SUCCESS)
+            return false;
+        std::memcpy(mapped, vertices + firstVertex, rangeBytes);
+        vkUnmapMemory(impl_->device, impl_->monsterCharacterVertexMemory);
+        return true;
+    }
+
+    bool VulkanRenderer::update_monster_character_instances(
+        const std::vector<ObjectInstance>& instances,
+        const std::vector<ObjectBatch>& batches)
+    {
+        if (!impl_ || !impl_->monsterCharacterReady)
+            return false;
+
+        if (instances.empty() || batches.empty())
+        {
+            impl_->monsterCharacterBatches.clear();
+            impl_->monsterCharacterInstanceBytes = 0;
+            return true;
+        }
+
+        const auto instanceBytes = instances.size() * sizeof(ObjectInstance);
+        if (!impl_->monsterCharacterInstanceBuffer || instanceBytes > impl_->monsterCharacterInstanceCapacity)
+        {
+            if (impl_->monsterCharacterInstanceBuffer || impl_->monsterCharacterInstanceMemory)
+                vkDeviceWaitIdle(impl_->device);
+            if (impl_->monsterCharacterInstanceBuffer)
+                vkDestroyBuffer(impl_->device, impl_->monsterCharacterInstanceBuffer, nullptr);
+            if (impl_->monsterCharacterInstanceMemory)
+                vkFreeMemory(impl_->device, impl_->monsterCharacterInstanceMemory, nullptr);
+            impl_->monsterCharacterInstanceBuffer = {};
+            impl_->monsterCharacterInstanceMemory = {};
+            impl_->monsterCharacterInstanceMapped = nullptr;
+
+            const auto capacity = instanceBytes + instanceBytes / 2 + sizeof(ObjectInstance) * 64;
+            if (!create_host_buffer(nullptr, capacity, VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
+                    impl_->monsterCharacterInstanceBuffer, impl_->monsterCharacterInstanceMemory,
+                    &impl_->monsterCharacterInstanceMapped))
+            {
+                log_line("Vulkan: monster character instance buffer creation failed");
+                return false;
+            }
+            impl_->monsterCharacterInstanceCapacity = capacity;
+        }
+
+        if (impl_->monsterCharacterInstanceMapped)
+        {
+            std::memcpy(impl_->monsterCharacterInstanceMapped, instances.data(), instanceBytes);
+        }
+        else
+        {
+            void* mapped{};
+            if (vkMapMemory(impl_->device, impl_->monsterCharacterInstanceMemory, 0, instanceBytes, 0, &mapped) != VK_SUCCESS)
+                return false;
+            std::memcpy(mapped, instances.data(), instanceBytes);
+            vkUnmapMemory(impl_->device, impl_->monsterCharacterInstanceMemory);
+        }
+
+        impl_->monsterCharacterInstanceBytes = instanceBytes;
+        impl_->monsterCharacterBatches = batches;
+        return true;
+    }
+
+    void VulkanRenderer::set_monster_character_visible(bool visible)
+    {
+        if (impl_)
+            impl_->monsterCharacterVisible = visible;
+    }
+
     void VulkanRenderer::set_camera(float x, float y, float z, float yaw, float pitch, float aspect, float farPlane)
     {
         if (!impl_)
@@ -4409,19 +4629,27 @@ rgba_texture_fallback:
             vkCmdSetViewport(commandBuffer, 0, 1, &viewport);
             vkCmdSetScissor(commandBuffer, 0, 1, &scissor);
 
-            float constants[44]{};
+            float constants[60]{};
             std::memcpy(constants, impl_->cameraConstants, sizeof(impl_->cameraConstants));
             std::memcpy(constants + 12, impl_->skyConstants, sizeof(impl_->skyConstants));
             std::memcpy(constants + 28, impl_->skyTuning, sizeof(impl_->skyTuning));
             std::memcpy(constants + 40, impl_->waterStyle, sizeof(impl_->waterStyle));
+            std::memcpy(constants + 44, impl_->characterShading, sizeof(impl_->characterShading));
+            // The static-object pipeline overloads the [44..59] tail with the
+            // map-asset tunables (assetTuning0..3) instead of charTuning0..3.
+            float assetConstants[60]{};
+            std::memcpy(assetConstants, constants, sizeof(float) * 44);
+            std::memcpy(assetConstants + 44, impl_->assetShading, sizeof(impl_->assetShading));
             constexpr auto kPushStages = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
             VkPipeline lastBoundPipeline{};
             auto bindPipeline = [&](VkPipeline pipeline) {
                 if (pipeline != lastBoundPipeline)
                 {
                     vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
+                    const float* push = (pipeline == impl_->staticObjectPipeline)
+                        ? assetConstants : constants;
                     vkCmdPushConstants(commandBuffer, impl_->terrainPipelineLayout,
-                        kPushStages, 0, sizeof(constants), constants);
+                        kPushStages, 0, sizeof(constants), push);
                     lastBoundPipeline = pipeline;
                 }
             };
@@ -4524,6 +4752,18 @@ rgba_texture_fallback:
                 vkCmdBindVertexBuffers(commandBuffer, 0, 2, buffers, offsets);
                 vkCmdBindIndexBuffer(commandBuffer, impl_->botCharacterIndexBuffer, 0, VK_INDEX_TYPE_UINT32);
                 for (const auto& batch : impl_->botCharacterBatches)
+                    vkCmdDrawIndexed(commandBuffer, batch.indexCount, batch.instanceCount, batch.firstIndex, 0, batch.firstInstance);
+            }
+            if (impl_->monsterCharacterVisible && impl_->monsterCharacterReady
+                && impl_->monsterCharacterInstanceBuffer && !impl_->monsterCharacterBatches.empty()
+                && impl_->staticObjectPipeline)
+            {
+                VkBuffer buffers[2]{ impl_->monsterCharacterVertexBuffer, impl_->monsterCharacterInstanceBuffer };
+                VkDeviceSize offsets[2]{ 0, 0 };
+                bindPipeline(impl_->staticObjectPipeline);
+                vkCmdBindVertexBuffers(commandBuffer, 0, 2, buffers, offsets);
+                vkCmdBindIndexBuffer(commandBuffer, impl_->monsterCharacterIndexBuffer, 0, VK_INDEX_TYPE_UINT32);
+                for (const auto& batch : impl_->monsterCharacterBatches)
                     vkCmdDrawIndexed(commandBuffer, batch.indexCount, batch.instanceCount, batch.firstIndex, 0, batch.firstInstance);
             }
             if (impl_->waterReady && impl_->waterIndexCount > 0)
@@ -4870,6 +5110,18 @@ rgba_texture_fallback:
             vkDestroyBuffer(impl_->device, impl_->botCharacterInstanceBuffer, nullptr);
         if (impl_->botCharacterInstanceMemory)
             vkFreeMemory(impl_->device, impl_->botCharacterInstanceMemory, nullptr);
+        if (impl_->monsterCharacterVertexBuffer)
+            vkDestroyBuffer(impl_->device, impl_->monsterCharacterVertexBuffer, nullptr);
+        if (impl_->monsterCharacterVertexMemory)
+            vkFreeMemory(impl_->device, impl_->monsterCharacterVertexMemory, nullptr);
+        if (impl_->monsterCharacterIndexBuffer)
+            vkDestroyBuffer(impl_->device, impl_->monsterCharacterIndexBuffer, nullptr);
+        if (impl_->monsterCharacterIndexMemory)
+            vkFreeMemory(impl_->device, impl_->monsterCharacterIndexMemory, nullptr);
+        if (impl_->monsterCharacterInstanceBuffer)
+            vkDestroyBuffer(impl_->device, impl_->monsterCharacterInstanceBuffer, nullptr);
+        if (impl_->monsterCharacterInstanceMemory)
+            vkFreeMemory(impl_->device, impl_->monsterCharacterInstanceMemory, nullptr);
         if (impl_->terrainTextureArrayView)
             vkDestroyImageView(impl_->device, impl_->terrainTextureArrayView, nullptr);
         if (impl_->terrainTextureArray)

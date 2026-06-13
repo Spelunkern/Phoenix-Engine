@@ -32,6 +32,10 @@ struct CameraConstants
     float4 skyTuning1;
     float4 skyTuning2;
     float4 waterStyle;
+    float4 charTuning0; // key light rgb, albedo saturation
+    float4 charTuning1; // ambient ground rgb, diffuse strength
+    float4 charTuning2; // ambient sky rgb, wrap amount
+    float4 charTuning3; // spec intensity, rim intensity, weather base, weather scale
 };
 
 [[vk::push_constant]]
@@ -176,6 +180,22 @@ float3 blendedTerrainColor(float3 worldPos, float mapSize, uint mapSide)
     return lerp(top, bot, t.y);
 }
 
+float3 applyUnderwaterView(float3 color, float3 worldPos)
+{
+    if (camera.positionYaw.y >= 0.0)
+        return color;
+
+    const float3 waterTint = saturate(camera.waterStyle.rgb * 1.25 + float3(0.02, 0.05, 0.08));
+    const float viewDistance = length(worldPos - camera.positionYaw.xyz);
+    const float cameraDepth = saturate(-camera.positionYaw.y * 0.10);
+    const float pixelDepth = saturate(-worldPos.y * 0.05);
+    const float absorption = 1.0 - exp(-viewDistance * (0.045 + cameraDepth * 0.030));
+    const float underwaterAmount = saturate(absorption * (0.45 + pixelDepth * 0.35) + cameraDepth * 0.18);
+
+    float3 cooled = color * float3(0.62, 0.82, 1.02);
+    return lerp(cooled, waterTint, underwaterAmount);
+}
+
 float4 PSMain(VSOutput input) : SV_TARGET
 {
     if (input.fogFactor >= 0.995)
@@ -253,6 +273,10 @@ float4 PSMain(VSOutput input) : SV_TARGET
         if (input.textureLayer == 0xFFFFFFFEu)
             return float4(input.color, 0.85);
 
+        // Character blob shadow: flat black, vertex alpha carried in color.r.
+        if (input.textureLayer == 0xFFFFFFFCu)
+            return float4(0.0, 0.0, 0.0, input.color.r);
+
         uint sampleLayer = input.textureLayer;
         bool alphaCutout = false;
         if (sampleLayer >= 2048)
@@ -274,6 +298,12 @@ float4 PSMain(VSOutput input) : SV_TARGET
             float highlight = saturate(ripple * 0.4 + 0.5);
             float3 c = lerp(base * 0.85, base * 1.15, highlight);
             c += float3(0.04, 0.06, 0.08) * highlight * highlight;
+            if (camera.positionYaw.y < 0.0)
+            {
+                const float depth = saturate(-camera.positionYaw.y * 0.10);
+                c = lerp(c * float3(0.70, 0.92, 1.18), base * 1.45 + float3(0.02, 0.05, 0.08), 0.45 + depth * 0.25);
+                return float4(saturate(c), saturate(camera.waterStyle.a + 0.18 + depth * 0.16));
+            }
             return float4(c, camera.waterStyle.a);
         }
         else
@@ -281,20 +311,68 @@ float4 PSMain(VSOutput input) : SV_TARGET
             float4 textureColor = terrainTexture.Sample(terrainSampler,
                 float3(input.uv, (float)sampleLayer));
 
-            bool isCharacter = (input.color.r < 0.01 && input.color.g < 0.01 && input.color.b < 0.01);
+            // Character vertices carry color = 0; cloak cloth/collar vertices
+            // carry color.b ~0.02 (flat-lit: the simulated cloth re-derives
+            // normals every frame, normal-based lighting makes it shimmer).
+            bool isCharacter = (input.color.r < 0.01 && input.color.g < 0.01 && input.color.b < 0.05);
             if (isCharacter)
             {
+                bool flatLit = input.color.b > 0.01;
                 if (alphaCutout)
                     clip(textureColor.a - 0.08);
                 color = textureColor.rgb;
-                float3 n = normalize(input.normal);
+                // Revive the albedo: the source textures read washed-out, so
+                // push saturation before lighting (luma-preserving).
+                float luma = dot(color, float3(0.299, 0.587, 0.114));
+                color = saturate(lerp(luma.xxx, color, camera.charTuning0.w));
+
                 const float3 charLightDir = float3(-0.33, 0.80, -0.26);
-                float diffuse = saturate(dot(n, charLightDir));
-                float3 lit = color * (0.56 + diffuse * 0.72);
+                // Warm key light vs cool sky ambient — the warm/cool split is
+                // what keeps skin and leather lively instead of grey-on-grey.
+                // All tunables arrive via charTuning0..3 (live ImGui module).
+                const float3 keyColor = camera.charTuning0.rgb;
+                const float3 ambientGround = camera.charTuning1.rgb;
+                const float3 ambientSky = camera.charTuning2.rgb;
+                const float3 weatherTint = camera.charTuning3.z + camera.charTuning3.w * skyColor;
+                float3 lit;
+                if (flatLit)
+                {
+                    // Fixed shading, independent of normals and view: matches
+                    // the average body response, still tinted by the weather.
+                    float3 ambient = lerp(ambientGround, ambientSky, 0.65) * weatherTint;
+                    lit = color * (ambient + 0.68 * camera.charTuning1.w * keyColor);
+                }
+                else
+                {
+                    float3 n = normalize(input.normal);
+                    float nDotL = dot(n, charLightDir);
+                    float diffuse = saturate(nDotL);
+                    // Soft wrap fills the shaded side so it rolls off instead of
+                    // clipping flat; blended with plain Lambert to keep shape.
+                    float wrap = saturate((nDotL + 0.4) / 1.4);
+                    float shade = lerp(diffuse, wrap, camera.charTuning2.w);
+
+                    // Hemisphere ambient: blue-ish sky from above, warm ground
+                    // bounce from below, tinted by the weather sky color so the
+                    // character sits in the scene (night/storm darkens it subtly).
+                    float hemi = n.y * 0.5 + 0.5;
+                    float3 ambient = lerp(ambientGround, ambientSky, hemi) * weatherTint;
+
+                    lit = color * (ambient + shade * camera.charTuning1.w * keyColor);
+
+                    // Subtle Blinn-Phong sheen (armour/metal pop) gated by the
+                    // diffuse term, plus a faint sky-tinted rim on the silhouette.
+                    float3 viewDir = normalize(camera.positionYaw.xyz - input.worldPos);
+                    float3 halfVec = normalize(charLightDir + viewDir);
+                    float spec = pow(saturate(dot(n, halfVec)), 24.0) * camera.charTuning3.x * (0.25 + 0.75 * diffuse);
+                    float rim = pow(1.0 - saturate(dot(n, viewDir)), 3.0) * camera.charTuning3.y * (0.4 + 0.6 * hemi);
+                    lit += spec + rim * (0.5 + 0.5 * skyColor);
+                }
+
                 if (!alphaCutout)
                     color = saturate(lit + color * textureColor.a * 0.30);
                 else
-                    color = lit;
+                    color = saturate(lit);
                 applyLightmap = false; // characters keep their own lighting
             }
             else
@@ -327,6 +405,7 @@ float4 PSMain(VSOutput input) : SV_TARGET
         color *= lm;
     }
 
+    color = applyUnderwaterView(color, input.worldPos);
     color = lerp(color, skyColor, input.fogFactor);
     return float4(color, alpha);
 }

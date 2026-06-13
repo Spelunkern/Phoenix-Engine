@@ -187,7 +187,7 @@ namespace phoenix::character
         std::uint16_t preset{};
         std::uint8_t fastMove{};
         std::uint8_t visible{};   // set during update, reused for instance building
-        std::uint8_t auraPreset{};
+        std::uint8_t auraPreset{};   // WeaponEffect::Element (fire/wind/earth/water)
     };
     
     // Pose IDs shared across all presets. Each preset may have a subset loaded.
@@ -236,6 +236,10 @@ namespace phoenix::character
         bool presetsBuilt{};
         bool effectsEnabled{ true };
         bool weaponAurasEnabled{ true };
+        // Bot visibility range (world units ~ metres): bots farther than this
+        // from the camera are fully culled (no AI, skinning, draw or aura),
+        // independently of the fog distance. Adjustable from the UI.
+        float viewDistance{ 100.0f };
         std::size_t lastBotCount{};
         std::uint32_t frameCounter{};
     
@@ -660,12 +664,12 @@ namespace phoenix::character
                 bot.pose = 1;
                 bot.preset = random_preset_index(randomInt(1, 10) == 1);
                 bot.fastMove = randomInt(0, 2) == 0 ? 1 : 0;
-                bot.auraPreset = static_cast<std::uint8_t>(randomInt(0, 5));
+                bot.auraPreset = static_cast<std::uint8_t>(randomInt(0, 3));
                 bots.push_back(bot);
 
                 phoenix::character::WeaponEffect aura;
                 aura.enabled() = true;
-                aura.apply_preset(0, static_cast<phoenix::character::WeaponEffect::Preset>(bot.auraPreset));
+                aura.set_element(static_cast<phoenix::character::WeaponEffect::Element>(bot.auraPreset));
                 botAuras.push_back(std::move(aura));
             }
         }
@@ -705,7 +709,7 @@ namespace phoenix::character
             poseVerticesDirty = true;
         }
     
-        void update(float dt, float camX, float camZ, float cullDist,
+        void update(float dt, float camX, float camZ, float camYaw, float cullDist,
             phoenix::character::HeightSampleFn heightFn, void* heightUserData,
             phoenix::app::LoadingScheduler* workerPool = nullptr)
         {
@@ -717,12 +721,25 @@ namespace phoenix::character
                 clear_bots();
                 return;
             }
-    
+
             ++frameCounter;
-            const float cullDistSq = cullDist * cullDist;
+            // Bots cull at their own view distance, never past the fog.
+            const float effectiveCull = std::min(cullDist, std::max(10.0f, viewDistance));
+            const float cullDistSq = effectiveCull * effectiveCull;
             cacheOneShotEffects();
             activePoseMask.assign(visualPresets.size() * kPoseCount, 0);
-    
+
+            // View-cone culling: bots clearly behind the camera consume nothing
+            // (no AI, no pose skinning contribution, no instance, no aura). The
+            // threshold is generous — only past ~100 degrees off the view axis —
+            // and a no-cull radius keeps nearby bots alive so fast camera spins
+            // don't reveal frozen poses.
+            const float viewFwdX = std::sin(camYaw);
+            const float viewFwdZ = std::cos(camYaw);
+            constexpr float kNoCullRadiusSq = 20.0f * 20.0f;
+            constexpr float kBehindCos = 0.0872f;             // cos(95 deg), magnitude
+            constexpr float kBehindCosSq = kBehindCos * kBehindCos;
+
             const auto botCount = bots.size();
             auto* botData = bots.data();
             for (std::size_t bi = 0; bi < botCount; ++bi)
@@ -731,7 +748,14 @@ namespace phoenix::character
                 const float dx = bot.x - camX;
                 const float dz = bot.z - camZ;
                 const float distSq = dx * dx + dz * dz;
-                bot.visible = distSq <= cullDistSq ? 1 : 0;
+                bool inView = distSq <= cullDistSq;
+                if (inView && distSq > kNoCullRadiusSq)
+                {
+                    const float fwdDot = dx * viewFwdX + dz * viewFwdZ;
+                    if (fwdDot < 0.0f && fwdDot * fwdDot > kBehindCosSq * distSq)
+                        inView = false;
+                }
+                bot.visible = inView ? 1 : 0;
                 if (!bot.visible) continue;
     
                 bot.actionTimer -= dt;
@@ -1104,9 +1128,16 @@ namespace phoenix::character
                     continue;
 
                 auto worldAttach = transform_bot_attachment(localAttach, bot);
+
+                // Dual-wield bots emit the aura on both weapons.
+                const auto& localDual = preset.poses[poseIndex].dual_weapon_attachment();
+                phoenix::character::CharacterSystem::WeaponAttachment worldDual{};
+                if (localDual.valid)
+                    worldDual = transform_bot_attachment(localDual, bot);
+
                 auto& aura = botAuras[bi];
                 aura.enabled() = true;
-                aura.update(dt, worldAttach, batch);
+                aura.update(dt, worldAttach, batch, localDual.valid ? &worldDual : nullptr);
             }
         }
     };

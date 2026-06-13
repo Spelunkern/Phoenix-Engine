@@ -7,7 +7,7 @@
 namespace phoenix::character
 {
     void apply_default_attach_bones(const std::string& prefix, WeaponType weapon,
-                                    int& weaponBone, int& shieldBone)
+                                    int& weaponBone, int& shieldBone, int& dualWeaponBone)
     {
         struct Bones { int weapon; int shield; };
         static const std::unordered_map<std::string, Bones> table = {
@@ -32,6 +32,8 @@ namespace phoenix::character
 
         weaponBone = it->second.weapon;
         shieldBone = it->second.shield;
+        // The off-hand dual weapon rides the left-wrist bone, same as shields.
+        dualWeaponBone = it->second.shield;
 
         // Ranged weapons use a dedicated bone on the ranged classes.
         const bool isBow = (weapon == WeaponType::Bow);

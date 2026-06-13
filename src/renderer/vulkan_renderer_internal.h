@@ -220,6 +220,21 @@ namespace phoenix::renderer
         std::vector<ObjectBatch> botCharacterBatches;
         bool botCharacterReady{};
         bool botCharacterVisible{};
+        VkBuffer monsterCharacterVertexBuffer{};
+        VkDeviceMemory monsterCharacterVertexMemory{};
+        void* monsterCharacterVertexMapped{};
+        VkBuffer monsterCharacterIndexBuffer{};
+        VkDeviceMemory monsterCharacterIndexMemory{};
+        VkBuffer monsterCharacterInstanceBuffer{};
+        VkDeviceMemory monsterCharacterInstanceMemory{};
+        void* monsterCharacterInstanceMapped{};
+        std::size_t monsterCharacterVertexBytes{};
+        std::size_t monsterCharacterVertexCapacity{};
+        std::size_t monsterCharacterInstanceBytes{};
+        std::size_t monsterCharacterInstanceCapacity{};
+        std::vector<ObjectBatch> monsterCharacterBatches;
+        bool monsterCharacterReady{};
+        bool monsterCharacterVisible{};
 
         VkDescriptorPool descriptorPool{};
         VkDescriptorSetLayout descriptorSetLayout{};
@@ -303,5 +318,30 @@ namespace phoenix::renderer
             0.82f, 1.10f, 0.22f, 0.06f,
         };
         float waterStyle[4]{ 0.04f, 0.30f, 0.50f, 0.62f };
+        // Character shading defaults (4x float4, charTuning0..3 in terrain.hlsl).
+        // Layout:
+        //   [0..3]   key light rgb, albedo saturation
+        //   [4..7]   ambient ground rgb, diffuse strength
+        //   [8..11]  ambient sky rgb, wrap amount
+        //   [12..15] spec intensity, rim intensity, weather base, weather scale
+        // Neutral defaults (plain Lambert, no stylization).
+        float characterShading[16]{
+            1.0f, 1.0f, 1.0f, 1.0f,
+            0.56f, 0.56f, 0.56f, 0.72f,
+            0.56f, 0.56f, 0.56f, 0.0f,
+            0.0f, 0.0f, 1.0f, 0.0f,
+        };
+        // Map-asset shading tunables (assetTuning0..3 in static_object.hlsl),
+        // pushed in place of characterShading when the static-object pipeline
+        // is bound. Neutral defaults.
+        //   [0..3]  tint rgb, albedo saturation
+        //   [4..7]  ambient floor, diffuse scale, lightmap boost, weather base
+        //   [8]     weather scale; rest reserved
+        float assetShading[16]{
+            1.0f, 1.0f, 1.0f, 1.0f,
+            0.50f, 0.50f, 2.0f, 1.0f,
+            0.0f, 0.0f, 0.0f, 0.0f,
+            0.0f, 0.0f, 0.0f, 0.0f,
+        };
     };
 }

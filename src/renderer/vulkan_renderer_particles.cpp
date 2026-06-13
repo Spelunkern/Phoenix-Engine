@@ -67,7 +67,9 @@ namespace phoenix::renderer
         VkPushConstantRange pushRange{};
         pushRange.stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
         pushRange.offset = 0;
-        pushRange.size = sizeof(float) * 40;
+        // Full camera push block (the frame loop pushes the same constants to
+        // every graphics layout); the particle shaders read a prefix of it.
+        pushRange.size = sizeof(float) * 60;
 
         VkPipelineLayoutCreateInfo pipeLayoutInfo{ VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO };
         pipeLayoutInfo.setLayoutCount = 1;

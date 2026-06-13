@@ -63,6 +63,14 @@ namespace phoenix::character
         }
     }
 
+    // Dual-wield types render a second copy of the same mesh on its own attach
+    // bone (off-hand wrist), with a tunable local rotation/translation applied
+    // before the bone transform.
+    inline bool weapon_type_dual_wield(WeaponType type)
+    {
+        return type == WeaponType::DualSword || type == WeaponType::Claw;
+    }
+
     struct CharacterAppearance
     {
         std::string raceFolder{ "Human" };
@@ -136,6 +144,7 @@ namespace phoenix::character
         float mouseWheel{};
         bool sit{};             // C key (toggle)
         int emote{};            // 0=none, 1-10=emote number (one-shot from ImGui)
+        std::size_t debugAnimation{}; // 0=none, otherwise direct animation index (one-shot from ImGui)
     };
 
     // Holds all data for a loaded character (mesh, bones, animations).
@@ -177,8 +186,12 @@ namespace phoenix::character
         };
         WeaponPart weapon;
         WeaponPart shield;
+        // Off-hand copy for dual-wield types (DualSword/Claw): same mesh on its
+        // own bone, fine-tuned via the dual offset applied at skin time.
+        WeaponPart weaponDual;
         bool hasWeapon{};
         bool hasShield{};
+        bool hasDualWeapon{};
         WeaponType equippedWeaponType{ WeaponType::None };
 
         // Cloak — static meshes (3DC with boneCount=0), bone-attached.
@@ -439,6 +452,9 @@ namespace phoenix::character
         float world_x() const { return characterX_; }
         float world_y() const { return characterY_; }
         float world_z() const { return characterZ_; }
+        // World Y where the rendered feet touch ground (smoothed position +
+        // ground clearance) — anchor for the cheap blob shadow.
+        float render_ground_y() const;
         void set_world_position(float x, float y, float z, float yaw = 0.0f);
 
         // Water tuning — adjustable at runtime via ImGui (absolute world Y; the
@@ -454,6 +470,15 @@ namespace phoenix::character
         int cloakBodyBoneIndex{ 4 };    // default: upper spine/chest
         int cloakShoulderBoneIndex{ 4 }; // default: upper spine/chest
         int mountBoneIndex{ 25 };       // mount bone the rider is seated on
+        int dualWeaponBoneIndex{ 21 };  // off-hand dual weapon: default left wrist
+
+        // Dual-wield off-hand fine adjustment — adjustable at runtime via ImGui.
+        // Applied in the off-hand bone's local space before the bone transform:
+        // rotate (Euler XYZ, degrees) then translate. Persisted across reloads
+        // (not reset by load()) so values can be tuned live against retail.
+        float dualOffsetPos[3]{ 0.0f, 0.0f, 0.0f };
+        float dualOffsetRotDeg[3]{ 0.0f, 0.0f, 0.0f };
+
         int animation_bone_count() const;
         int mount_bone_count() const;
 
@@ -466,13 +491,23 @@ namespace phoenix::character
             bool valid{};
             float position[3]{};
             float basis[9]{};   // [0..2]=Xcol, [3..5]=Ycol, [6..8]=Zcol
+            // Weapon mesh extent along the blade (model-space Y, the basis maps
+            // it to world) so auras can stay inside the actual weapon bounds.
+            float bladeStart{ 0.0f };
+            float bladeEnd{ 0.9f };
         };
         const WeaponAttachment& weapon_attachment() const { return weaponAttachment_; }
+        // Off-hand copy for dual-wield types — invalid when not dual-wielding.
+        const WeaponAttachment& dual_weapon_attachment() const { return dualWeaponAttachment_; }
 
     private:
         void skin_and_transform();
 
         WeaponAttachment weaponAttachment_{};
+        WeaponAttachment dualWeaponAttachment_{};
+        // Y extent of the equipped weapon mesh (model space), measured at load.
+        float weaponBladeStart_{ 0.0f };
+        float weaponBladeEnd_{ 0.9f };
         CharacterData data_;
         std::vector<CharacterGpuVertex> worldVertices_;
         std::uint32_t textureLayerBase_{};
@@ -506,6 +541,14 @@ namespace phoenix::character
         float previousAnimationSeconds_{};
         float animationBlendSeconds_{};
         float animationBlendDuration_{};
+        // One-shot clips (idle gestures, emotes, sit transitions) blend out
+        // from their FINAL pose: when they finish, the next transition holds
+        // the outgoing clip at its last frame instead of letting the looping
+        // sampler wrap back to frame 0 (which made the hand-off snap).
+        bool pendingHoldPreviousAtEnd_{};
+        bool previousAnimationHoldEnd_{};
+        // Grounded after a jump: keep the jump clip to play its landing tail.
+        bool jumpLandRecover_{};
         std::size_t mountActiveAnimation_{};
         float mountAnimationSeconds_{};
         float mountIdleTimer_{};   // time stationary, for breathing/idle variation
@@ -531,6 +574,7 @@ namespace phoenix::character
 
         // Emote: when >0, plays the one-shot emote animation then returns to idle.
         int activeEmote_{};
+        std::size_t activeDebugAnimation_{};
 
         // Dodge double-tap detection.
         float dodgeBackTimer_{};   // time since last backward release

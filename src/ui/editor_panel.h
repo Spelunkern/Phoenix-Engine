@@ -1,11 +1,14 @@
 #pragma once
 
 #include "character/character_system.h"
+#include "character/monster_manager.h"
+#include "character/npc_manager.h"
 #include "character/weapon_effect.h"
 #include "effects/effect_system.h"
 #include "renderer/vulkan_renderer.h"
 #include "runtime/phoenix_runtime.h"
 
+#include <filesystem>
 #include <string>
 #include <vector>
 
@@ -63,8 +66,15 @@ namespace phoenix::ui
         bool weatherChanged{};
         bool waterChanged{};
         int emoteTriggered{};   // 0=none, 1-10=emote number (one-shot)
+        std::size_t animationTriggered{}; // 0=none, otherwise direct animation index (one-shot)
         int botSpawnCount{};
         bool clearBots{};
+        int npcSpawnCatalogIndex{ -1 };
+        int npcSpawnCount{ 1 };
+        bool clearNpcs{};
+        int monsterSpawnCatalogIndex{ -1 };
+        int monsterSpawnCount{ 1 };
+        bool clearMonsters{};
     };
 
     // Nearest existing index in a sorted/unsorted list (keeps part selections valid
@@ -85,12 +95,22 @@ namespace phoenix::ui
         phoenix::renderer::VulkanRenderer& renderer,
         WaterMode waterMode);
 
+    // Display options persisted to display.ini next to the executable
+    // (same pattern as perf_hud.ini): loaded at startup, saved on exit.
+    struct DisplaySettings
+    {
+        bool characterShadow{ true };
+    };
+    DisplaySettings load_display_settings(const std::filesystem::path& executableDir);
+    void save_display_settings(const std::filesystem::path& executableDir, const DisplaySettings& settings);
+
     // The main ImGui control panel (world map, weather, character, weapon aura).
     UnifiedPanelResult draw_editor_panel(
         const phoenix::runtime::PhoenixRuntime& runtime,
         phoenix::renderer::VulkanRenderer& renderer,
         bool& fogEnabled,
         bool& showCollisionDebug,
+        bool& showCharacterShadow,
         bool& playMapSounds,
         bool& playMapMusic,
         float& masterVolume,
@@ -108,6 +128,15 @@ namespace phoenix::ui
         std::size_t botCount,
         bool& botEffectsEnabled,
         bool& botWeaponAurasEnabled,
+        float& botViewDistance,
+        const std::vector<phoenix::character::NpcCatalogEntry>& npcCatalog,
+        std::size_t npcActiveCount,
+        const std::string& npcStatus,
+        float& npcViewDistance,
+        const std::vector<phoenix::character::MonsterCatalogEntry>& monsterCatalog,
+        std::size_t monsterActiveCount,
+        const std::string& monsterStatus,
+        float& monsterViewDistance,
         bool assetsReady,
         float cameraX,
         float cameraY,

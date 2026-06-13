@@ -11,5 +11,5 @@ namespace phoenix::character
     // weapons (bow/crossbow/javelin) to a dedicated bone. Values are overridable
     // live from the UI and re-applied on every (re)load.
     void apply_default_attach_bones(const std::string& prefix, WeaponType weapon,
-                                    int& weaponBone, int& shieldBone);
+                                    int& weaponBone, int& shieldBone, int& dualWeaponBone);
 }

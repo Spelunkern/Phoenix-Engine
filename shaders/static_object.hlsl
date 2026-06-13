@@ -20,6 +20,7 @@ struct VSOutput
     nointerpolation uint textureLayer : TEXCOORD1;
     float fogFactor : TEXCOORD2;
     float lighting : TEXCOORD3;
+    float3 worldPos : TEXCOORD4;
 };
 
 struct CameraConstants
@@ -34,6 +35,14 @@ struct CameraConstants
     float4 skyTuning0;
     float4 skyTuning1;
     float4 skyTuning2;
+    float4 waterStyle;   // unused here; keeps offsets aligned with terrain.hlsl
+    // Map-asset shading tunables (live ImGui module). These occupy the same
+    // push-constant region terrain.hlsl uses for charTuning0..3 — the frame
+    // loop pushes a different tail to each pipeline.
+    float4 assetTuning0; // tint rgb, albedo saturation
+    float4 assetTuning1; // ambient floor, diffuse scale, lightmap boost, weather base
+    float4 assetTuning2; // weather scale, unused, unused, unused
+    float4 assetTuning3; // unused (reserved)
 };
 
 [[vk::push_constant]]
@@ -131,7 +140,7 @@ VSOutput VSMain(VSInput input)
 
     const float3 lightDir = float3(-0.30, 0.68, -0.67);
     float nDotL = dot(worldNormal, lightDir);
-    float lit = saturate(nDotL) * 0.50 + 0.50;
+    float lit = saturate(nDotL) * camera.assetTuning1.y + camera.assetTuning1.x;
 
     float fogStart = camera.fogDistances.x;
     float fogEnd = max(fogStart + 1.0, camera.fogDistances.y);
@@ -150,7 +159,24 @@ VSOutput VSMain(VSInput input)
     output.textureLayer = input.textureLayer;
     output.fogFactor = fogFactor;
     output.lighting = lit;
+    output.worldPos = worldPosition;
     return output;
+}
+
+float3 applyUnderwaterView(float3 color, float3 worldPos)
+{
+    if (camera.positionYaw.y >= 0.0)
+        return color;
+
+    const float3 waterTint = saturate(camera.waterStyle.rgb * 1.25 + float3(0.02, 0.05, 0.08));
+    const float viewDistance = length(worldPos - camera.positionYaw.xyz);
+    const float cameraDepth = saturate(-camera.positionYaw.y * 0.10);
+    const float pixelDepth = saturate(-worldPos.y * 0.05);
+    const float absorption = 1.0 - exp(-viewDistance * (0.045 + cameraDepth * 0.030));
+    const float underwaterAmount = saturate(absorption * (0.45 + pixelDepth * 0.35) + cameraDepth * 0.18);
+
+    float3 cooled = color * float3(0.62, 0.82, 1.02);
+    return lerp(cooled, waterTint, underwaterAmount);
 }
 
 float4 PSMain(VSOutput input) : SV_TARGET
@@ -161,6 +187,7 @@ float4 PSMain(VSOutput input) : SV_TARGET
     const float3 skyColor = saturate(camera.fogColorHasSky.rgb);
 
     float3 color;
+    bool assetGrade = true;   // map assets get the live colour grade; bots don't
     if (input.textureLayer != 0xFFFFFFFFu)
     {
         uint sampleLayer = input.textureLayer;
@@ -176,6 +203,7 @@ float4 PSMain(VSOutput input) : SV_TARGET
         bool isCharacter = (input.color.r < 0.01 && input.color.g < 0.01 && input.color.b < 0.01);
         if (isCharacter)
         {
+            assetGrade = false;
             if (alphaCutout)
                 clip(textureColor.a - 0.08);
             color = textureColor.rgb;
@@ -204,7 +232,7 @@ float4 PSMain(VSOutput input) : SV_TARGET
                 float lmLayer = input.color.b - 2.0;
                 float3 lm = lightmapTexture.Sample(lightmapSampler,
                     float3(lmUV, lmLayer)).rgb;
-                color = textureColor.rgb * lm * 2.0;
+                color = textureColor.rgb * lm * camera.assetTuning1.z;
             }
             else
                 color = textureColor.rgb * input.lighting;
@@ -215,6 +243,17 @@ float4 PSMain(VSOutput input) : SV_TARGET
         color = input.color * input.lighting;
     }
 
+    // Live colour grade for map assets: luma-preserving saturation, tint,
+    // and weather coupling. Neutral defaults leave the image untouched.
+    if (assetGrade)
+    {
+        float luma = dot(color, float3(0.299, 0.587, 0.114));
+        color = saturate(lerp(luma.xxx, color, camera.assetTuning0.w));
+        color = saturate(color * camera.assetTuning0.rgb
+            * (camera.assetTuning1.w + camera.assetTuning2.x * skyColor));
+    }
+
+    color = applyUnderwaterView(color, input.worldPos);
     color = lerp(color, skyColor, input.fogFactor);
     return float4(color, 1.0);
 }

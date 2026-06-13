@@ -9,7 +9,9 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
+#include <fstream>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace phoenix::ui
@@ -183,11 +185,33 @@ namespace phoenix::ui
         renderer.set_water_style(rgba);
     }
 
+    namespace
+    {
+        constexpr const char* kDisplaySettingsFile = "display.ini";
+    }
+
+    DisplaySettings load_display_settings(const std::filesystem::path& executableDir)
+    {
+        DisplaySettings settings{};
+        std::ifstream f(executableDir / kDisplaySettingsFile);
+        int characterShadow = settings.characterShadow ? 1 : 0;
+        if (f) f >> characterShadow;
+        settings.characterShadow = characterShadow != 0;
+        return settings;
+    }
+
+    void save_display_settings(const std::filesystem::path& executableDir, const DisplaySettings& settings)
+    {
+        std::ofstream f(executableDir / kDisplaySettingsFile);
+        if (f) f << (settings.characterShadow ? 1 : 0);
+    }
+
     UnifiedPanelResult draw_editor_panel(
         const phoenix::runtime::PhoenixRuntime& runtime,
         phoenix::renderer::VulkanRenderer& renderer,
         bool& fogEnabled,
         bool& showCollisionDebug,
+        bool& showCharacterShadow,
         bool& playMapSounds,
         bool& playMapMusic,
         float& masterVolume,
@@ -205,6 +229,15 @@ namespace phoenix::ui
         std::size_t botCount,
         bool& botEffectsEnabled,
         bool& botWeaponAurasEnabled,
+        float& botViewDistance,
+        const std::vector<phoenix::character::NpcCatalogEntry>& npcCatalog,
+        std::size_t npcActiveCount,
+        const std::string& npcStatus,
+        float& npcViewDistance,
+        const std::vector<phoenix::character::MonsterCatalogEntry>& monsterCatalog,
+        std::size_t monsterActiveCount,
+        const std::string& monsterStatus,
+        float& monsterViewDistance,
         bool assetsReady,
         float cameraX,
         float cameraY,
@@ -224,7 +257,10 @@ namespace phoenix::ui
             Character,
             Vehicle,
             Bots,
+            NPCs,
+            Monsters,
             Emotes,
+            Animations,
         };
         static Section activeSection = Section::Map;
 
@@ -253,7 +289,10 @@ namespace phoenix::ui
         sectionButton(Section::Character, "Character##nav"); ImGui::SameLine();
         sectionButton(Section::Vehicle, "Vehicle##nav"); ImGui::SameLine();
         sectionButton(Section::Bots, "Bots##nav"); ImGui::SameLine();
-        sectionButton(Section::Emotes, "Emotes##nav");
+        sectionButton(Section::NPCs, "NPCs##nav"); ImGui::SameLine();
+        sectionButton(Section::Monsters, "Monsters##nav");
+        sectionButton(Section::Emotes, "Emotes##nav"); ImGui::SameLine();
+        sectionButton(Section::Animations, "Animations##nav");
         ImGui::Separator();
 
         if (activeSection == Section::Map)
@@ -310,6 +349,7 @@ namespace phoenix::ui
             const bool prevCollision = showCollisionDebug;
             ImGui::Checkbox("Collision", &showCollisionDebug);
             result.debugGizmosChanged = prevCollision != showCollisionDebug;
+            ImGui::Checkbox("Character shadow", &showCharacterShadow);
         }
         else if (activeSection == Section::Sound)
         {
@@ -426,64 +466,12 @@ namespace phoenix::ui
             using WE = phoenix::character::WeaponEffect;
             ImGui::Checkbox("Enabled", &weaponEffect.enabled());
 
-            static int presetIdx = 0;
-            static int targetLayer = 0;
-            const char* presetNames[WE::kPresetCount] = {
-                "Fire", "Ice", "Holy", "Poison", "Shadow", "Arcane" };
+            int elementIdx = static_cast<int>(weaponEffect.element());
+            const char* elementNames[WE::kElementCount] = { "Fire", "Wind", "Earth", "Water" };
             ImGui::SetNextItemWidth(120.0f);
-            ImGui::Combo("Preset", &presetIdx, presetNames, WE::kPresetCount);
-            ImGui::SameLine();
-            ImGui::SetNextItemWidth(60.0f);
-            ImGui::Combo("Layer", &targetLayer, "L0\0L1\0L2\0");
-            ImGui::SameLine();
-            if (ImGui::Button("Apply"))
-                weaponEffect.apply_preset(targetLayer, static_cast<WE::Preset>(presetIdx));
+            if (ImGui::Combo("Element", &elementIdx, elementNames, WE::kElementCount))
+                weaponEffect.set_element(static_cast<WE::Element>(elementIdx));
 
-            static const char* axisNames[] = { "X", "Y", "Z" };
-            for (int i = 0; i < WE::kMaxLayers; ++i)
-            {
-                ImGui::PushID(i);
-                auto& layer = weaponEffect.layer(i);
-                ImGui::Separator();
-                char label[32];
-                std::snprintf(label, sizeof(label), "Layer %d##weaponAuraLayer", i);
-                if (ImGui::TreeNodeEx(label, ImGuiTreeNodeFlags_None))
-                {
-                    ImGui::Checkbox("Enabled", &layer.enabled);
-                    ImGui::ColorEdit3("Birth", layer.colorStart);
-                    ImGui::ColorEdit3("Death", layer.colorEnd);
-                    ImGui::SetNextItemWidth(210.0f);
-                    ImGui::SliderFloat("Intensity", &layer.intensity, 0.0f, 3.0f, "%.2f");
-                    ImGui::SetNextItemWidth(210.0f);
-                    ImGui::SliderFloat("Spawn/s", &layer.spawnRate, 0.0f, 400.0f, "%.0f");
-                    ImGui::SetNextItemWidth(210.0f);
-                    ImGui::SliderFloat("Flow", &layer.flowSpeed, -2.0f, 2.0f, "%.2f");
-                    ImGui::SetNextItemWidth(210.0f);
-                    ImGui::SliderFloat("Lifetime", &layer.lifetime, 0.1f, 3.0f, "%.2f");
-                    ImGui::SetNextItemWidth(210.0f);
-                    ImGui::SliderFloat("Size", &layer.size, 0.01f, 0.25f, "%.3f");
-                    ImGui::SetNextItemWidth(210.0f);
-                    ImGui::SliderFloat("Blade length", &layer.bladeLength, 0.0f, 2.0f, "%.2f");
-                    ImGui::SetNextItemWidth(210.0f);
-                    ImGui::SliderFloat("Swirl radius", &layer.radius, 0.0f, 0.4f, "%.3f");
-                    ImGui::SetNextItemWidth(210.0f);
-                    ImGui::SliderFloat("Swirl speed", &layer.swirl, -8.0f, 8.0f, "%.2f");
-                    layer.axis = std::clamp(layer.axis, 0, 2);
-                    ImGui::SetNextItemWidth(70.0f);
-                    if (ImGui::BeginCombo("Blade axis", axisNames[layer.axis]))
-                    {
-                        for (int a = 0; a < 3; ++a)
-                        {
-                            const bool selected = a == layer.axis;
-                            if (ImGui::Selectable(axisNames[a], selected)) layer.axis = a;
-                            if (selected) ImGui::SetItemDefaultFocus();
-                        }
-                        ImGui::EndCombo();
-                    }
-                    ImGui::TreePop();
-                }
-                ImGui::PopID();
-            }
             if (!characterSystem.weapon_attachment().valid)
                 ImGui::TextDisabled("Equip a weapon to anchor the aura.");
         }
@@ -652,6 +640,18 @@ namespace phoenix::ui
                         ImGui::SetNextItemWidth(80.0f);
                         ImGui::InputInt("Wpn bone", &characterSystem.weaponBoneIndex);
                         characterSystem.weaponBoneIndex = std::clamp(characterSystem.weaponBoneIndex, 0, maxBone);
+                        if (phoenix::character::weapon_type_dual_wield(appearance.weaponType))
+                        {
+                            ImGui::SetNextItemWidth(80.0f);
+                            ImGui::InputInt("Dual bone", &characterSystem.dualWeaponBoneIndex);
+                            characterSystem.dualWeaponBoneIndex = std::clamp(characterSystem.dualWeaponBoneIndex, 0, maxBone);
+                            // Fine adjustment of the off-hand copy in its bone's
+                            // local space (rotate, then translate).
+                            ImGui::SetNextItemWidth(200.0f);
+                            ImGui::DragFloat3("Dual offset", characterSystem.dualOffsetPos, 0.005f);
+                            ImGui::SetNextItemWidth(200.0f);
+                            ImGui::DragFloat3("Dual rot", characterSystem.dualOffsetRotDeg, 0.5f, -180.0f, 180.0f);
+                        }
                     }
                     if (appearance.shieldType != WT::None)
                     {
@@ -719,10 +719,92 @@ namespace phoenix::ui
                     result.clearBots = true;
                 ImGui::Checkbox("Bot Effects", &botEffectsEnabled);
                 ImGui::Checkbox("Weapon Auras", &botWeaponAurasEnabled);
+                ImGui::SetNextItemWidth(180.0f);
+                ImGui::SliderFloat("View dist", &botViewDistance, 20.0f, 300.0f, "%.0f m");
             }
             else
             {
                 ImGui::TextDisabled("Playable character required.");
+            }
+        }
+        else if (activeSection == Section::NPCs)
+        {
+            static int selectedNpc = 0;
+            ImGui::Text("Active: %d", static_cast<int>(npcActiveCount));
+            if (!npcStatus.empty())
+                ImGui::TextDisabled("%s", npcStatus.c_str());
+            if (npcCatalog.empty())
+            {
+                ImGui::TextDisabled("No NPC catalog loaded.");
+            }
+            else
+            {
+                selectedNpc = std::clamp(selectedNpc, 0, static_cast<int>(npcCatalog.size()) - 1);
+                ImGui::SetNextItemWidth(240.0f);
+                if (ImGui::BeginCombo("NPC", npcCatalog[static_cast<std::size_t>(selectedNpc)].label.c_str()))
+                {
+                    for (int i = 0; i < static_cast<int>(npcCatalog.size()); ++i)
+                    {
+                        const bool selected = selectedNpc == i;
+                        if (ImGui::Selectable(npcCatalog[static_cast<std::size_t>(i)].label.c_str(), selected))
+                            selectedNpc = i;
+                        if (selected)
+                            ImGui::SetItemDefaultFocus();
+                    }
+                    ImGui::EndCombo();
+                }
+                const auto spawnNpc = [&](int count) {
+                    result.npcSpawnCatalogIndex = selectedNpc;
+                    result.npcSpawnCount = count;
+                };
+                if (ImGui::Button("Spawn", ImVec2(95.0f, 0.0f)))    spawnNpc(1);
+                ImGui::SameLine();
+                if (ImGui::Button("Clear", ImVec2(95.0f, 0.0f)))    result.clearNpcs = true;
+                if (ImGui::Button("Spawn 10", ImVec2(95.0f, 0.0f))) spawnNpc(10);
+                ImGui::SameLine();
+                if (ImGui::Button("Spawn 50", ImVec2(95.0f, 0.0f))) spawnNpc(50);
+                ImGui::SetNextItemWidth(180.0f);
+                ImGui::SliderFloat("Cull dist", &npcViewDistance, 20.0f, 300.0f, "%.0f m");
+            }
+        }
+        else if (activeSection == Section::Monsters)
+        {
+            static int selectedMonster = 0;
+            ImGui::Text("Active: %d", static_cast<int>(monsterActiveCount));
+            if (!monsterStatus.empty())
+                ImGui::TextDisabled("%s", monsterStatus.c_str());
+            if (monsterCatalog.empty())
+            {
+                ImGui::TextDisabled("No monster catalog loaded.");
+            }
+            else
+            {
+                selectedMonster = std::clamp(selectedMonster, 0, static_cast<int>(monsterCatalog.size()) - 1);
+                ImGui::SetNextItemWidth(240.0f);
+                if (ImGui::BeginCombo("Monster", monsterCatalog[static_cast<std::size_t>(selectedMonster)].label.c_str()))
+                {
+                    for (int i = 0; i < static_cast<int>(monsterCatalog.size()); ++i)
+                    {
+                        const bool selected = selectedMonster == i;
+                        if (ImGui::Selectable(monsterCatalog[static_cast<std::size_t>(i)].label.c_str(), selected))
+                            selectedMonster = i;
+                        if (selected)
+                            ImGui::SetItemDefaultFocus();
+                    }
+                    ImGui::EndCombo();
+                }
+                const auto spawnMonster = [&](int count) {
+                    result.monsterSpawnCatalogIndex = selectedMonster;
+                    result.monsterSpawnCount = count;
+                };
+                if (ImGui::Button("Spawn", ImVec2(95.0f, 0.0f)))    spawnMonster(1);
+                ImGui::SameLine();
+                if (ImGui::Button("Clear", ImVec2(95.0f, 0.0f)))    result.clearMonsters = true;
+                if (ImGui::Button("Spawn 10", ImVec2(95.0f, 0.0f))) spawnMonster(10);
+                ImGui::SameLine();
+                if (ImGui::Button("Spawn 50", ImVec2(95.0f, 0.0f))) spawnMonster(50);
+                ImGui::SetNextItemWidth(180.0f);
+                ImGui::SliderFloat("Cull dist", &monsterViewDistance, 20.0f, 300.0f, "%.0f m");
             }
         }
         else if (activeSection == Section::Emotes)
@@ -736,7 +818,182 @@ namespace phoenix::ui
                 if (i % 5 != 0) ImGui::SameLine();
             }
         }
+        else if (activeSection == Section::Animations)
+        {
+            struct AnimationChoice
+            {
+                std::string label;
+                std::size_t index{};
+            };
 
+            std::vector<AnimationChoice> choices;
+            const auto& data = characterSystem.character_data();
+            const auto addChoice = [&](const char* label, std::size_t animationIndex, bool allowZero = false) {
+                if ((!allowZero && animationIndex == 0) || animationIndex >= data.animations.size())
+                    return;
+                const auto& choice = data.animations[animationIndex];
+                if (!choice.animation.parsed)
+                    return;
+                std::string text = label;
+                if (!choice.name.empty())
+                {
+                    text += "  [";
+                    text += choice.name;
+                    text += "]";
+                }
+                choices.push_back({ std::move(text), animationIndex });
+            };
+
+            addChoice("Idle", data.idleAnimation, true);
+            addChoice("Walk", data.walkAnimation);
+            addChoice("Run", data.runAnimation);
+            addChoice("Backstep", data.backAnimation);
+            addChoice("Left step", data.leftAnimation);
+            addChoice("Right step", data.rightAnimation);
+            addChoice("Swim idle", data.swimIdleAnimation);
+            addChoice("Swim", data.swimAnimation);
+            addChoice("Jump", data.jumpAnimation);
+            addChoice("Die", data.dieAnimation);
+            addChoice("Sit down", data.sitDownAnimation);
+            addChoice("Sit up", data.sitUpAnimation);
+            addChoice("Sit", data.sitAnimation);
+            addChoice("Dodge back", data.dodgeBackAnimation);
+            addChoice("Dodge left", data.dodgeLeftAnimation);
+            addChoice("Dodge right", data.dodgeRightAnimation);
+            addChoice("Idle gesture 1", data.idle1Animation);
+            addChoice("Idle gesture 2", data.idle2Animation);
+            addChoice("Ladder", data.ladderAnimation);
+            addChoice("Select", data.selectAnimation);
+            addChoice("Vehicle run 1", data.vehicleRun1Animation);
+            addChoice("Vehicle idle", data.vehicleIdleAnimation);
+            addChoice("Vehicle run 2", data.vehicleRun2Animation);
+
+            addChoice("2H ready", data.twoHandReadyAnimation);
+            addChoice("2H attack 1", data.twoHandAttack1Animation);
+            addChoice("2H attack 2", data.twoHandAttack2Animation);
+            addChoice("2H attack 3", data.twoHandAttack3Animation);
+            addChoice("2H attack 4", data.twoHandAttack4Animation);
+            addChoice("2H damage", data.twoHandDamageAnimation);
+            addChoice("2H run", data.twoHandRunAnimation);
+            addChoice("Bow ready", data.bowReadyAnimation);
+            addChoice("Bow attack", data.bowAttackAnimation);
+            addChoice("Bow damage", data.bowDamageAnimation);
+            addChoice("Bow run", data.bowRunAnimation);
+            addChoice("1H ready", data.oneHandReadyAnimation);
+            addChoice("1H attack 1", data.oneHandAttack1Animation);
+            addChoice("1H attack 2", data.oneHandAttack2Animation);
+            addChoice("1H attack 3", data.oneHandAttack3Animation);
+            addChoice("1H attack 4", data.oneHandAttack4Animation);
+            addChoice("1H damage", data.oneHandDamageAnimation);
+            addChoice("1H run", data.oneHandRunAnimation);
+            addChoice("Dual ready", data.dualReadyAnimation);
+            addChoice("Dual attack 1", data.dualAttack1Animation);
+            addChoice("Dual attack 2", data.dualAttack2Animation);
+            addChoice("Dual attack 3", data.dualAttack3Animation);
+            addChoice("Dual attack 4", data.dualAttack4Animation);
+            addChoice("Dual damage", data.dualDamageAnimation);
+            addChoice("Dual run", data.dualRunAnimation);
+            addChoice("Spear ready", data.spearReadyAnimation);
+            addChoice("Spear attack 1", data.spearAttack1Animation);
+            addChoice("Spear attack 2", data.spearAttack2Animation);
+            addChoice("Spear attack 3", data.spearAttack3Animation);
+            addChoice("Spear attack 4", data.spearAttack4Animation);
+            addChoice("Spear damage", data.spearDamageAnimation);
+            addChoice("Spear run", data.spearRunAnimation);
+            addChoice("Crossbow ready", data.crossbowReadyAnimation);
+            addChoice("Crossbow attack", data.crossbowAttackAnimation);
+            addChoice("Crossbow damage", data.crossbowDamageAnimation);
+            addChoice("Crossbow run", data.crossbowRunAnimation);
+            addChoice("Staff ready", data.staffReadyAnimation);
+            addChoice("Staff attack 1", data.staffAttack1Animation);
+            addChoice("Staff attack 2", data.staffAttack2Animation);
+            addChoice("Staff damage", data.staffDamageAnimation);
+            addChoice("Staff run", data.staffRunAnimation);
+            addChoice("Rev dagger ready", data.revDaggerReadyAnimation);
+            addChoice("Rev dagger attack 1", data.revDaggerAttack1Animation);
+            addChoice("Rev dagger attack 2", data.revDaggerAttack2Animation);
+            addChoice("Rev dagger attack 3", data.revDaggerAttack3Animation);
+            addChoice("Rev dagger attack 4", data.revDaggerAttack4Animation);
+            addChoice("Rev dagger damage", data.revDaggerDamageAnimation);
+            addChoice("Rev dagger run", data.revDaggerRunAnimation);
+            addChoice("Knuckle ready", data.knuckleReadyAnimation);
+            addChoice("Knuckle attack 1", data.knuckleAttack1Animation);
+            addChoice("Knuckle attack 2", data.knuckleAttack2Animation);
+            addChoice("Knuckle attack 3", data.knuckleAttack3Animation);
+            addChoice("Knuckle attack 4", data.knuckleAttack4Animation);
+            addChoice("Knuckle damage", data.knuckleDamageAnimation);
+            addChoice("Knuckle run", data.knuckleRunAnimation);
+            addChoice("Dagger ready", data.daggerReadyAnimation);
+            addChoice("Dagger attack 1", data.daggerAttack1Animation);
+            addChoice("Dagger attack 2", data.daggerAttack2Animation);
+            addChoice("Dagger attack 3", data.daggerAttack3Animation);
+            addChoice("Dagger attack 4", data.daggerAttack4Animation);
+            addChoice("Dagger damage", data.daggerDamageAnimation);
+            addChoice("Dagger run", data.daggerRunAnimation);
+
+            addChoice("Magic ready 1", data.magicReady1Animation);
+            addChoice("Magic cast 1", data.magicCast1Animation);
+            addChoice("Magic attack 1", data.magicAttack1Animation);
+            addChoice("Magic ready 2", data.magicReady2Animation);
+            addChoice("Magic cast 2", data.magicCast2Animation);
+            addChoice("Magic attack 2", data.magicAttack2Animation);
+            addChoice("Buff ready 1", data.buffReady1Animation);
+            addChoice("Buff cast 1", data.buffCast1Animation);
+            addChoice("Buff attack 1", data.buffAttack1Animation);
+            addChoice("Buff ready 2", data.buffReady2Animation);
+            addChoice("Buff cast 2", data.buffCast2Animation);
+            addChoice("Buff attack 2", data.buffAttack2Animation);
+            addChoice("Buff ready 3", data.buffReady3Animation);
+            addChoice("Buff cast 3", data.buffCast3Animation);
+            addChoice("Buff attack 3", data.buffAttack3Animation);
+            addChoice("Skill 1", data.skill1Animation);
+            addChoice("Skill 2", data.skill2Animation);
+            addChoice("Skill 3", data.skill3Animation);
+            addChoice("Skill 4", data.skill4Animation);
+            addChoice("Skill 5", data.skill5Animation);
+            addChoice("Skill 6", data.skill6Animation);
+            addChoice("Skill 7", data.skill7Animation);
+            addChoice("Skill 8", data.skill8Animation);
+            addChoice("Skill 9", data.skill9Animation);
+            addChoice("Skill 10", data.skill10Animation);
+            addChoice("Skill 11", data.skill11Animation);
+            addChoice("Stun", data.stunAnimation);
+            addChoice("Emote 1", data.emote1Animation);
+            addChoice("Emote 2", data.emote2Animation);
+            addChoice("Emote 3", data.emote3Animation);
+            addChoice("Emote 4", data.emote4Animation);
+            addChoice("Emote 5", data.emote5Animation);
+            addChoice("Emote 6", data.emote6Animation);
+            addChoice("Emote 7", data.emote7Animation);
+            addChoice("Emote 8", data.emote8Animation);
+            addChoice("Emote 9", data.emote9Animation);
+            addChoice("Emote 10", data.emote10Animation);
+
+            static int selectedAnimation = 0;
+            if (choices.empty())
+            {
+                ImGui::TextDisabled("No mapped animations loaded.");
+            }
+            else
+            {
+                selectedAnimation = std::clamp(selectedAnimation, 0, static_cast<int>(choices.size()) - 1);
+                ImGui::SetNextItemWidth(240.0f);
+                if (ImGui::BeginCombo("Animation", choices[static_cast<std::size_t>(selectedAnimation)].label.c_str()))
+                {
+                    for (int i = 0; i < static_cast<int>(choices.size()); ++i)
+                    {
+                        const bool selected = selectedAnimation == i;
+                        if (ImGui::Selectable(choices[static_cast<std::size_t>(i)].label.c_str(), selected))
+                            selectedAnimation = i;
+                        if (selected)
+                            ImGui::SetItemDefaultFocus();
+                    }
+                    ImGui::EndCombo();
+                }
+                if (ImGui::Button("Play"))
+                    result.animationTriggered = choices[static_cast<std::size_t>(selectedAnimation)].index;
+            }
+        }
         result.characterChanged = selectedCharacterOption != prevCharOption
             || appearance.raceFolder != prevAppearance.raceFolder
             || appearance.prefix != prevAppearance.prefix

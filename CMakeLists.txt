@@ -22,6 +22,8 @@ set(ENGINE_SOURCES
     src/character/bot_manager.cpp
     src/character/character_options.cpp
     src/character/character_system.cpp
+    src/character/monster_manager.cpp
+    src/character/npc_manager.cpp
     src/character/weapon_bone_map.cpp
     src/character/weapon_effect.cpp
     src/effects/effect_placement.cpp
@@ -141,6 +143,28 @@ if(WIN32)
                 "$<TARGET_FILE_DIR:PhoenixEngine>/SDL2.dll"
         )
     endif()
+
+elseif(APPLE)
+    # macOS (experimental, untested in CI yet): SDL2 via Homebrew pkg-config,
+    # Vulkan via the LunarG SDK loader + MoltenVK ICD resolved at runtime by
+    # volk. The renderer auto-enables VK_KHR_portability_enumeration/_subset.
+    find_package(PkgConfig REQUIRED)
+    find_package(Threads REQUIRED)
+    pkg_check_modules(SDL2 REQUIRED IMPORTED_TARGET sdl2)
+
+    target_link_libraries(PhoenixEngine PRIVATE
+        PkgConfig::SDL2
+        Threads::Threads
+        ${CMAKE_DL_LIBS}
+    )
+
+    target_compile_options(PhoenixEngine PRIVATE -Wno-missing-field-initializers)
+
+    # Find libvulkan.dylib next to the executable or via the Vulkan SDK rpath.
+    set_target_properties(PhoenixEngine PROPERTIES
+        BUILD_RPATH "@executable_path;@executable_path/lib"
+        INSTALL_RPATH "@executable_path;@executable_path/lib"
+    )
 
 else()
     # Linux / other POSIX: SDL2 via pkg-config.

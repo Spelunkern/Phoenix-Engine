@@ -9,6 +9,8 @@
 #include "character/character_system.h"
 #include "character/bot_manager.h"
 #include "character/character_options.h"
+#include "character/monster_manager.h"
+#include "character/npc_manager.h"
 #include "character/weapon_effect.h"
 #include "effects/effect_system.h"
 #include "effects/effect_placement.h"
@@ -77,6 +79,8 @@ namespace
     using phoenix::renderer::sort_scene_front_to_back;
     using phoenix::renderer::sphere_visible;
     using phoenix::character::BotManager;
+    using phoenix::character::MonsterManager;
+    using phoenix::character::NpcManager;
     using phoenix::character::scan_bot_equipment_pools;
     using phoenix::character::scan_character_options;
     using phoenix::world::PendingTeleport;
@@ -125,6 +129,7 @@ int main(int, char**)
     perfHud.gpuName = renderer.adapter_name();
     perfHud.renderer = &renderer;
     perfHud.load_settings(executableDir);
+    auto displaySettings = phoenix::ui::load_display_settings(executableDir);
 
     // Closing the window must work even mid-load: skip all teardown and let
     // the OS reclaim the process — waiting on loaders/GPU only delays the user.
@@ -135,6 +140,7 @@ int main(int, char**)
             // process (potentially gigabytes) with no window on screen.
             window.hide();
             perfHud.save_settings(executableDir);
+            phoenix::ui::save_display_settings(executableDir, displaySettings);
             std::_Exit(0);
         }
     };
@@ -190,6 +196,8 @@ int main(int, char**)
     std::vector<phoenix::renderer::ParticleInstance> particleScratch;
     phoenix::character::CharacterAppearance characterAppearance{};
     BotManager botManager;
+    MonsterManager monsterManager;
+    NpcManager npcManager;
 
     std::size_t defaultMap{};
     const auto& startupMaps = runtime.world_map_names();
@@ -217,6 +225,8 @@ int main(int, char**)
     auto botEquipmentPools = runAsync([&]() {
         return scan_bot_equipment_pools(runtime.state().assets.root);
     }, 0.31f, "Scanning equipment");
+    npcManager.load_catalog(runtime.state().assets.root);
+    monsterManager.load_catalog(runtime.state().assets.root);
     // The full character/item caches (all races + BC3 textures, ~93MB, several
     // seconds) used to be built synchronously here. To launch fast we now skip that:
     // the default character (Humf on map 1) loads via on-demand disk fallback, and
@@ -241,7 +251,10 @@ int main(int, char**)
 
     bool fogEnabled = true;
     float viewDistance = 300.0f;
+    float npcViewDistance = 100.0f;
+    float monsterViewDistance = 100.0f;
     bool showCollisionDebug = false;
+    std::vector<phoenix::renderer::TerrainVertex> characterShadowScratch;
     WeatherMode weatherMode = WeatherMode::Default;
     WaterMode waterMode = WaterMode::Natural;
     // fogCullDistance is the actual cull boundary: nothing beyond the fog-end is
@@ -253,6 +266,7 @@ int main(int, char**)
     applyFogSettings();
     apply_renderer_water_style(renderer, waterMode);
     int pendingEmote = 0;   // emote triggered from ImGui, consumed next frame
+    std::size_t pendingAnimation = 0; // animation test triggered from ImGui, consumed next frame
 
     std::uint32_t terrainVertexCount{};
     std::uint32_t terrainIndexCount{};
@@ -313,7 +327,8 @@ int main(int, char**)
     const auto uploadCharacterMesh = [&]() {
         if (!characterLoaded || !characterSystem.ready())
             return;
-        phoenix::app::set_character_mesh(renderer, characterSystem, playableMode);
+        phoenix::app::set_character_mesh(renderer, characterSystem, playableMode,
+            displaySettings.characterShadow);
     };
 
     const auto releaseDecodedTextureRam = [](std::vector<phoenix::renderer::DdsTexture>& textures) {
@@ -429,6 +444,10 @@ int main(int, char**)
 
     constexpr std::size_t kCharacterTextureSlotReserve = 32;
     constexpr std::size_t kBotTextureSlotReserve = 256;
+    constexpr std::size_t kNpcTextureSlotReserve = 96;
+    constexpr std::size_t kMonsterTextureSlotReserve = 256;
+    std::size_t npcTextureBaseSlot = 0;
+    std::size_t monsterTextureBaseSlot = 0;
 
     const auto reloadCharacterIntoRenderer = [&]() {
         if (characterTextureBaseSlot == 0 || !terrainTexturesUploaded)
@@ -453,7 +472,8 @@ int main(int, char**)
         renderer.upload_terrain_texture_layers(static_cast<std::uint32_t>(characterTextureBaseSlot), characterTextures);
 
         // Fast mesh update: reuses existing GPU buffers, no vkDeviceWaitIdle.
-        phoenix::app::update_character_mesh(renderer, characterSystem, playableMode);
+        phoenix::app::update_character_mesh(renderer, characterSystem, playableMode,
+            displaySettings.characterShadow);
         return true;
     };
 
@@ -547,19 +567,6 @@ int main(int, char**)
                 }
             }
 
-            std::size_t loadedAssetTextures = 0;
-            std::size_t failedAssetTextures = 0;
-            for (std::size_t i = 0; i < assetTexturePaths.size(); ++i)
-            {
-                const auto& tex = terrainTextures[kAssetTextureLayerBase + i];
-                if (tex.valid)
-                    ++loadedAssetTextures;
-                else
-                    ++failedAssetTextures;
-
-                {
-                }
-            }
         }
 
         const bool skyReady = !skyTexturePath.empty() && terrainTextures[kSkyTextureLayer].valid;
@@ -575,7 +582,9 @@ int main(int, char**)
         // Reserve character + bot slots so appearance swaps and bot spawns don't resize the GPU array.
         {
             const auto botTextureBaseSlot = characterTextureBaseSlot + kCharacterTextureSlotReserve;
-            const auto reservedEnd = botTextureBaseSlot + kBotTextureSlotReserve;
+            npcTextureBaseSlot = botTextureBaseSlot + kBotTextureSlotReserve;
+            monsterTextureBaseSlot = npcTextureBaseSlot + kNpcTextureSlotReserve;
+            const auto reservedEnd = monsterTextureBaseSlot + kMonsterTextureSlotReserve;
             terrainTextures.resize(reservedEnd);
 
             const auto loadCharTextures = [&]() {
@@ -606,7 +615,7 @@ int main(int, char**)
 
             if (characterLoaded)
             {
-                const bool botPresetsReady = runAsync([&]() {
+                runAsync([&]() {
                     return botManager.build_random_presets(
                         runtime.state().assets.root,
                         characterOptions,
@@ -722,7 +731,6 @@ int main(int, char**)
                 {
                     const bool packMasks = !dungeonLightmaps
                         && (alphaMaskFlags & ~1u) != 0 && !alphaMaskPaths.empty();
-                    constexpr auto kMasksPerSection = phoenix::runtime::PhoenixRuntime::kFieldAlphaMaskLayers;
                     const auto sectionTotal = lmSectionCount * lmSectionCount;
                     const auto pixelCount = static_cast<std::size_t>(lmW) * lmH;
 
@@ -759,6 +767,7 @@ int main(int, char**)
                                 {
                                     // Pack section s: masks for terrain layers
                                     // 1..7 into two RGBA weight textures.
+                                    constexpr auto kMasksPerSection = phoenix::runtime::PhoenixRuntime::kFieldAlphaMaskLayers;
                                     const auto s = static_cast<std::uint32_t>(job - pageCount);
                                     std::vector<std::uint8_t> packed[2];
                                     packed[0].assign(pixelCount * 4, 0);
@@ -910,7 +919,7 @@ int main(int, char**)
 
         // ---- Spawn the fiery Portal effect at every gate on this map ----
         {
-            const auto portalCount = place_portal_effects(effectManager, runtime);
+            place_portal_effects(effectManager, runtime);
         }
         // ---- Initial playable spawn: centre of the map (valid interior point in
         // dungeons), snapped to a walkable surface. A queued portal teleport, if
@@ -979,7 +988,7 @@ int main(int, char**)
             std::this_thread::sleep_for(std::chrono::milliseconds(100));
             continue;
         }
-        const bool restoreEvent = window.consume_restore_event();
+        window.consume_restore_event();
         if (windowWasMinimized)
         {
             windowWasMinimized = false;
@@ -1065,7 +1074,8 @@ int main(int, char**)
                 pInput.left = window.is_key_down(SDLK_a);
                 pInput.right = window.is_key_down(SDLK_d);
                 pInput.jump = window.is_key_down(SDLK_SPACE);
-                pInput.fast = window.is_key_down(SDLK_LSHIFT);
+                // Running is the default gait; holding Shift walks.
+                pInput.fast = !window.is_key_down(SDLK_LSHIFT);
                 pInput.yawLeft = window.is_key_down(SDLK_LEFT);
                 pInput.yawRight = window.is_key_down(SDLK_RIGHT);
                 pInput.pitchUp = window.is_key_down(SDLK_UP);
@@ -1080,6 +1090,8 @@ int main(int, char**)
             // Apply pending emote from ImGui (set last frame's panel result).
             pInput.emote = pendingEmote;
             pendingEmote = 0;  // consumed
+            pInput.debugAnimation = pendingAnimation;
+            pendingAnimation = 0;  // consumed
 
             heightSamplerCtx.lastCharacterY = characterSystem.world_y();
             characterSystem.update(deltaSeconds, pInput);
@@ -1110,35 +1122,35 @@ int main(int, char**)
                         pendingTeleportDestination = activation->teleport;
                         pendingMapLoad = *activation->destinationMapIndex;
                         portalCooldown = 2.0f;
-                        const auto& tp = activation->teleport;
                     }
                 }
             }
 
-            botManager.update(deltaSeconds, cameraX, cameraZ, fogCullDistance,
-                character_height_sampler, &heightSamplerCtx, &cpuLoader);
-
-            // Spawn one-shot effects queued by bots.
-            if (!botManager.pendingEffects.empty())
+            if (!npcManager.active())
             {
-                const auto& catalog = phoenix::effects::preset_catalog();
-                for (const auto& pe : botManager.pendingEffects)
+                botManager.update(deltaSeconds, cameraX, cameraZ, cameraYaw, fogCullDistance,
+                    character_height_sampler, &heightSamplerCtx, &cpuLoader);
+
+                // Spawn one-shot effects queued by bots.
+                if (!botManager.pendingEffects.empty())
                 {
-                    if (pe.catalogIndex < catalog.size())
-                        effectManager.spawn(catalog[pe.catalogIndex],
-                            phoenix::effects::EffectAnchor::at(pe.x, pe.y + 1.0f, pe.z));
+                    const auto& catalog = phoenix::effects::preset_catalog();
+                    for (const auto& pe : botManager.pendingEffects)
+                    {
+                        if (pe.catalogIndex < catalog.size())
+                            effectManager.spawn(catalog[pe.catalogIndex],
+                                phoenix::effects::EffectAnchor::at(pe.x, pe.y + 1.0f, pe.z));
+                    }
                 }
             }
 
-            const auto& charVerts = characterSystem.world_vertices();
-            const auto* tv = reinterpret_cast<const phoenix::renderer::TerrainVertex*>(charVerts.data());
-
-            renderer.update_character_vertices(tv, charVerts.size());
-            if (botManager.bots.empty())
+            phoenix::app::update_character_vertices(renderer, characterSystem,
+                characterShadowScratch, displaySettings.characterShadow);
+            if (!npcManager.active() && botManager.bots.empty())
             {
                 renderer.set_bot_character_visible(false);
             }
-            else
+            else if (!npcManager.active())
             {
                 if (botManager.updatePoseMesh(renderer))
                 {
@@ -1212,6 +1224,19 @@ int main(int, char**)
         currentView.aspect = static_cast<float>(std::max(1u, renderer.surface_width()))
             / static_cast<float>(std::max(1u, renderer.surface_height()));
         currentView.distance = fogCullDistance;
+
+        if (npcManager.active())
+        {
+            auto npcView = currentView;
+            npcView.distance = std::min(npcViewDistance, fogCullDistance);
+            npcManager.update(deltaSeconds, npcView, renderer, &cpuLoader);
+        }
+        if (monsterManager.active())
+        {
+            auto monsterView = currentView;
+            monsterView.distance = std::min(monsterViewDistance, fogCullDistance);
+            monsterManager.update(deltaSeconds, monsterView, renderer, &cpuLoader);
+        }
 
         const auto cullMoveDx = currentView.x - lastCullView.x;
         const auto cullMoveDy = currentView.y - lastCullView.y;
@@ -1288,11 +1313,13 @@ int main(int, char**)
         if (imguiAvailable)
         {
             const bool botEffectsWereEnabled = botManager.effectsEnabled;
+            const bool prevCharacterShadow = displaySettings.characterShadow;
             const auto panelResult = draw_editor_panel(
                 runtime,
                 renderer,
                 fogEnabled,
                 showCollisionDebug,
+                displaySettings.characterShadow,
                 playMapSounds,
                 playMapMusic,
                 masterVolume,
@@ -1310,11 +1337,25 @@ int main(int, char**)
                 botManager.bots.size(),
                 botManager.effectsEnabled,
                 botManager.weaponAurasEnabled,
+                botManager.viewDistance,
+                npcManager.catalog(),
+                npcManager.active_count(),
+                npcManager.status(),
+                npcViewDistance,
+                monsterManager.catalog(),
+                monsterManager.active_count(),
+                monsterManager.status(),
+                monsterViewDistance,
                 assetsFullyLoaded.load(),
                 cameraX,
                 cameraY,
                 cameraZ,
                 cameraYaw);
+
+            // The shadow toggle changes the character mesh topology (extra
+            // flattened range), so rebuild the GPU buffers on change.
+            if (prevCharacterShadow != displaySettings.characterShadow)
+                uploadCharacterMesh();
 
             if (panelResult.loadRequested)
                 pendingMapLoad = static_cast<std::size_t>(std::max(0, selectedMapIndex));
@@ -1336,8 +1377,11 @@ int main(int, char**)
                 reloadCharacterIntoRenderer();
             if (panelResult.emoteTriggered > 0)
                 pendingEmote = panelResult.emoteTriggered;
+            if (panelResult.animationTriggered > 0)
+                pendingAnimation = panelResult.animationTriggered;
             if (panelResult.botSpawnCount > 0 && playableMode && characterLoaded && characterSystem.ready())
             {
+                npcManager.clear(renderer);
                 botManager.spawn(panelResult.botSpawnCount, characterSystem.world_x(), characterSystem.world_z(),
                     character_height_sampler, &heightSamplerCtx);
             }
@@ -1348,6 +1392,59 @@ int main(int, char**)
                 reloadCharacterIntoRenderer();
                 phoenix::app::release_memory_to_os();
             }
+            if (panelResult.npcSpawnCatalogIndex >= 0)
+            {
+                botManager.clear_bots();
+                const int spawnCount = std::max(1, panelResult.npcSpawnCount);
+                for (int n = 0; n < spawnCount; ++n)
+                {
+                    // Lay them out in receding rows of 5 so bulk spawns spread
+                    // out in front of the camera instead of stacking.
+                    const auto idx = npcManager.active_count();
+                    const float spawnDistance = 3.0f + static_cast<float>(idx / 5u) * 1.6f;
+                    const float sideOffset = (static_cast<float>(idx % 5u) - 2.0f) * 1.25f;
+                    const float sx = cameraX + std::sin(cameraYaw) * spawnDistance + std::cos(cameraYaw) * sideOffset;
+                    const float sz = cameraZ + std::cos(cameraYaw) * spawnDistance - std::sin(cameraYaw) * sideOffset;
+                    const float sy = character_height_sampler(sx, sz, &heightSamplerCtx);
+                    npcManager.spawn(
+                        runtime.state().assets.root,
+                        static_cast<std::size_t>(panelResult.npcSpawnCatalogIndex),
+                        sx,
+                        sy,
+                        sz,
+                        cameraYaw + 3.14159265f,
+                        static_cast<std::uint32_t>(npcTextureBaseSlot),
+                        static_cast<std::uint32_t>(kNpcTextureSlotReserve),
+                        renderer);
+                }
+            }
+            if (panelResult.clearNpcs)
+                npcManager.clear(renderer);
+            if (panelResult.monsterSpawnCatalogIndex >= 0)
+            {
+                const int spawnCount = std::max(1, panelResult.monsterSpawnCount);
+                for (int n = 0; n < spawnCount; ++n)
+                {
+                    const auto idx = monsterManager.active_count();
+                    const float spawnDistance = 4.5f + static_cast<float>(idx / 5u) * 2.0f;
+                    const float sideOffset = (static_cast<float>(idx % 5u) - 2.0f) * 1.6f;
+                    const float sx = cameraX + std::sin(cameraYaw) * spawnDistance + std::cos(cameraYaw) * sideOffset;
+                    const float sz = cameraZ + std::cos(cameraYaw) * spawnDistance - std::sin(cameraYaw) * sideOffset;
+                    const float sy = character_height_sampler(sx, sz, &heightSamplerCtx);
+                    monsterManager.spawn(
+                        runtime.state().assets.root,
+                        static_cast<std::size_t>(panelResult.monsterSpawnCatalogIndex),
+                        sx,
+                        sy,
+                        sz,
+                        cameraYaw + 3.14159265f,
+                        static_cast<std::uint32_t>(monsterTextureBaseSlot),
+                        static_cast<std::uint32_t>(kMonsterTextureSlotReserve),
+                        renderer);
+                }
+            }
+            if (panelResult.clearMonsters)
+                monsterManager.clear(renderer);
             if (botEffectsWereEnabled && !botManager.effectsEnabled)
                 effectManager.clear();
 
@@ -1440,8 +1537,10 @@ int main(int, char**)
         // Gather all scene particles (weapon aura + world/attack/portal effects)
         // into one batch and upload once: alpha-blended first, then additive.
         particleBatch.clear();
-        weaponEffect.update(deltaSeconds, characterSystem.weapon_attachment(), particleBatch);
-        botManager.emit_weapon_auras(deltaSeconds, particleBatch);
+        weaponEffect.update(deltaSeconds, characterSystem.weapon_attachment(), particleBatch,
+            &characterSystem.dual_weapon_attachment());
+        if (!npcManager.active())
+            botManager.emit_weapon_auras(deltaSeconds, particleBatch);
         effectManager.update(deltaSeconds, particleBatch);
         if (!particleBatch.alpha.empty() || !particleBatch.additive.empty())
         {
@@ -1477,6 +1576,8 @@ int main(int, char**)
             const auto mapIdx = *pendingMapLoad;
             pendingMapLoad.reset();
             botManager.clear();
+            npcManager.clear(renderer);
+            monsterManager.clear(renderer);
 
             // Release previous map data BEFORE loading the new one to avoid
             // both maps coexisting in RAM (doubles peak memory).
@@ -1539,5 +1640,6 @@ int main(int, char**)
     window.hide();
     audioSystem.shutdown();
     perfHud.save_settings(executableDir);
+    phoenix::ui::save_display_settings(executableDir, displaySettings);
     std::_Exit(0);
 }
