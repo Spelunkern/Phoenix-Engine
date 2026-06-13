@@ -500,7 +500,10 @@ namespace phoenix::character
 
         ActiveMonster monster{};
         monster.modelIndex = entry.modelIndex;
-        monster.scale = std::max(0.1f, static_cast<float>(entry.size) / 100.0f);
+        // CSV `size` is a percentage anchored at 100 = default (x1.0); every
+        // +100 adds 10% of the default size. So 200 -> x1.1, 800 -> x1.7,
+        // 1000 -> x1.9. Floored so tiny/zero sizes never invert or vanish.
+        monster.scale = std::max(0.1f, 1.0f + (static_cast<float>(entry.size) - 100.0f) * 0.001f);
         monster.x = x;
         monster.y = y - visual->localGroundY * monster.scale;
         monster.z = z;
