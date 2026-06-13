@@ -108,15 +108,18 @@ namespace phoenix::ui
 
     float PerfHudState::fps_cap_seconds() const
     {
-        constexpr float caps[] = { 0.0f, 1.0f/30.0f, 1.0f/60.0f, 1.0f/120.0f, 1.0f/144.0f };
-        return (fpsCapIndex >= 0 && fpsCapIndex < 5) ? caps[fpsCapIndex] : 0.0f;
+        constexpr float caps[] = {
+            0.0f, 1.0f/30.0f, 1.0f/60.0f, 1.0f/75.0f, 1.0f/90.0f,
+            1.0f/120.0f, 1.0f/144.0f, 1.0f/165.0f, 1.0f/240.0f, 1.0f/360.0f };
+        constexpr int kCapCount = static_cast<int>(sizeof(caps) / sizeof(caps[0]));
+        return (fpsCapIndex >= 0 && fpsCapIndex < kCapCount) ? caps[fpsCapIndex] : 0.0f;
     }
 
     void PerfHudState::load_settings(const std::filesystem::path& executableDir)
     {
         std::ifstream f(executableDir / kSettingsFile);
         if (f) f >> fpsCapIndex;
-        fpsCapIndex = std::clamp(fpsCapIndex, 0, 4);
+        fpsCapIndex = std::clamp(fpsCapIndex, 0, 9);
     }
 
     void PerfHudState::save_settings(const std::filesystem::path& executableDir) const
@@ -353,10 +356,11 @@ namespace phoenix::ui
 
         ImGui::Separator();
         {
-            const char* caps[] = { "Off", "30", "60", "120", "144" };
+            const char* caps[] = { "Off", "30", "60", "75", "90", "120", "144", "165", "240", "360" };
             const int prev = hud.fpsCapIndex;
             ImGui::SetNextItemWidth(80.0f);
-            if (ImGui::Combo("FPS Cap", &hud.fpsCapIndex, caps, 5) && hud.fpsCapIndex != prev && hud.renderer)
+            if (ImGui::Combo("FPS Cap", &hud.fpsCapIndex, caps, static_cast<int>(sizeof(caps) / sizeof(caps[0])))
+                && hud.fpsCapIndex != prev && hud.renderer)
                 hud.save_settings(std::filesystem::current_path());
         }
 

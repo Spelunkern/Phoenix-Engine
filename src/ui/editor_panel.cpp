@@ -285,14 +285,14 @@ namespace phoenix::ui
         sectionButton(Section::Map, "Map##nav"); ImGui::SameLine();
         sectionButton(Section::Display, "Display##nav"); ImGui::SameLine();
         sectionButton(Section::Sound, "Sound##nav"); ImGui::SameLine();
-        sectionButton(Section::Effects, "Effects##nav");
+        sectionButton(Section::Effects, "Effects##nav"); ImGui::SameLine();
+        sectionButton(Section::Animations, "Animations##nav");
         sectionButton(Section::Character, "Character##nav"); ImGui::SameLine();
         sectionButton(Section::Vehicle, "Vehicle##nav"); ImGui::SameLine();
         sectionButton(Section::Bots, "Bots##nav"); ImGui::SameLine();
         sectionButton(Section::NPCs, "NPCs##nav"); ImGui::SameLine();
         sectionButton(Section::Monsters, "Monsters##nav");
-        sectionButton(Section::Emotes, "Emotes##nav"); ImGui::SameLine();
-        sectionButton(Section::Animations, "Animations##nav");
+        sectionButton(Section::Emotes, "Emotes##nav");
         ImGui::Separator();
 
         if (activeSection == Section::Map)
