@@ -28,7 +28,7 @@ namespace phoenix::app
         // title ("Phoenix Engine"). Until a numeric id is set, presence is a
         // no-op. The icon is an art asset you upload under Rich Presence ->
         // Art Assets; reference it by its key below.
-        constexpr const char* kDiscordClientId  = "PASTE_YOUR_APPLICATION_ID_HERE";
+        constexpr const char* kDiscordClientId  = "1515435377891217610";
         constexpr const char* kDiscordLargeImage = "phoenix";          // art asset key
         constexpr const char* kDiscordLargeText  = "Phoenix Engine";   // hover tooltip
         // --------------------------------------------------------------------
