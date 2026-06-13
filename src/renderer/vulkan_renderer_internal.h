@@ -251,6 +251,26 @@ namespace phoenix::renderer
         std::size_t monsterPaletteCapacity{};
         VkDescriptorSet monsterPaletteDescriptorSet{};
 
+        // GPU-skinned NPC path — dedicated buffers (NPCs share the render slot
+        // with bots in gameplay, but use their own skinned geometry here).
+        VkBuffer npcCharacterVertexBuffer{};
+        VkDeviceMemory npcCharacterVertexMemory{};
+        VkBuffer npcCharacterIndexBuffer{};
+        VkDeviceMemory npcCharacterIndexMemory{};
+        VkBuffer npcCharacterInstanceBuffer{};
+        VkDeviceMemory npcCharacterInstanceMemory{};
+        void* npcCharacterInstanceMapped{};
+        std::size_t npcCharacterVertexCapacity{};
+        std::size_t npcCharacterInstanceCapacity{};
+        std::vector<ObjectBatch> npcCharacterBatches;
+        bool npcCharacterReady{};
+        bool npcCharacterVisible{};
+        VkBuffer npcPaletteBuffer{};
+        VkDeviceMemory npcPaletteMemory{};
+        void* npcPaletteMapped{};
+        std::size_t npcPaletteCapacity{};
+        VkDescriptorSet npcPaletteDescriptorSet{};
+
         VkDescriptorPool descriptorPool{};
         VkDescriptorSetLayout descriptorSetLayout{};
         VkDescriptorSet descriptorSet{};

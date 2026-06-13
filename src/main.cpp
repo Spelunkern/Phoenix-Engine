@@ -1158,6 +1158,12 @@ int main(int, char**)
                     renderer.set_bot_character_visible(true);
                 }
             }
+            else
+            {
+                // NPCs active: they render on their own GPU-skinned path now
+                // (not the shared bot-character buffers), so hide any stale bots.
+                renderer.set_bot_character_visible(false);
+            }
         }
         else
         {

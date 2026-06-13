@@ -1413,11 +1413,12 @@ namespace phoenix::renderer
             return false;
         }
 
+        // Two palette sets: one for monsters, one for NPCs (independent buffers).
         VkDescriptorPoolSize poolSize{};
         poolSize.type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-        poolSize.descriptorCount = 1;
+        poolSize.descriptorCount = 2;
         VkDescriptorPoolCreateInfo poolInfo{ VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO };
-        poolInfo.maxSets = 1;
+        poolInfo.maxSets = 2;
         poolInfo.poolSizeCount = 1;
         poolInfo.pPoolSizes = &poolSize;
         if (vkCreateDescriptorPool(impl_->device, &poolInfo, nullptr, &impl_->paletteDescriptorPool) != VK_SUCCESS)
@@ -1430,7 +1431,8 @@ namespace phoenix::renderer
         allocInfo.descriptorPool = impl_->paletteDescriptorPool;
         allocInfo.descriptorSetCount = 1;
         allocInfo.pSetLayouts = &impl_->paletteSetLayout;
-        if (vkAllocateDescriptorSets(impl_->device, &allocInfo, &impl_->monsterPaletteDescriptorSet) != VK_SUCCESS)
+        if (vkAllocateDescriptorSets(impl_->device, &allocInfo, &impl_->monsterPaletteDescriptorSet) != VK_SUCCESS
+            || vkAllocateDescriptorSets(impl_->device, &allocInfo, &impl_->npcPaletteDescriptorSet) != VK_SUCCESS)
         {
             vkDestroyShaderModule(impl_->device, vertexShader, nullptr);
             vkDestroyShaderModule(impl_->device, fragmentShader, nullptr);
@@ -4380,6 +4382,128 @@ rgba_texture_fallback:
             std::memcpy(impl_->monsterPaletteMapped, rows16PerBone, byteSize);
     }
 
+    bool VulkanRenderer::set_npc_skinned_mesh(
+        const std::vector<SkinnedVertex>& vertices,
+        const std::vector<std::uint32_t>& indices)
+    {
+        if (!impl_ || !impl_->skinnedCharacterPipeline || vertices.empty() || indices.empty())
+            return false;
+
+        vkDeviceWaitIdle(impl_->device);
+        if (impl_->npcCharacterVertexBuffer)
+            vkDestroyBuffer(impl_->device, impl_->npcCharacterVertexBuffer, nullptr);
+        if (impl_->npcCharacterVertexMemory)
+            vkFreeMemory(impl_->device, impl_->npcCharacterVertexMemory, nullptr);
+        if (impl_->npcCharacterIndexBuffer)
+            vkDestroyBuffer(impl_->device, impl_->npcCharacterIndexBuffer, nullptr);
+        if (impl_->npcCharacterIndexMemory)
+            vkFreeMemory(impl_->device, impl_->npcCharacterIndexMemory, nullptr);
+        impl_->npcCharacterVertexBuffer = {};
+        impl_->npcCharacterVertexMemory = {};
+        impl_->npcCharacterIndexBuffer = {};
+        impl_->npcCharacterIndexMemory = {};
+        impl_->npcCharacterVertexCapacity = 0;
+        impl_->npcCharacterReady = false;
+
+        const auto vertexBytes = vertices.size() * sizeof(SkinnedVertex);
+        const auto indexBytes = indices.size() * sizeof(std::uint32_t);
+        if (!create_host_buffer(vertices.data(), vertexBytes, VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
+                impl_->npcCharacterVertexBuffer, impl_->npcCharacterVertexMemory, nullptr)
+            || !create_device_local_buffer(indices.data(), indexBytes, VK_BUFFER_USAGE_INDEX_BUFFER_BIT,
+                impl_->npcCharacterIndexBuffer, impl_->npcCharacterIndexMemory))
+        {
+            log_line("Vulkan: npc skinned mesh upload failed");
+            return false;
+        }
+        impl_->npcCharacterVertexCapacity = vertexBytes;
+        impl_->npcCharacterReady = true;
+        impl_->npcCharacterVisible = true;
+        return true;
+    }
+
+    void VulkanRenderer::update_npc_bone_palette(const float* rows16PerBone, std::size_t floatCount)
+    {
+        if (!impl_ || !impl_->skinnedCharacterPipeline || !rows16PerBone || floatCount == 0)
+            return;
+
+        const std::size_t byteSize = floatCount * sizeof(float);
+        if (byteSize > impl_->npcPaletteCapacity || !impl_->npcPaletteBuffer)
+        {
+            vkDeviceWaitIdle(impl_->device);
+            if (impl_->npcPaletteBuffer)
+                vkDestroyBuffer(impl_->device, impl_->npcPaletteBuffer, nullptr);
+            if (impl_->npcPaletteMemory)
+                vkFreeMemory(impl_->device, impl_->npcPaletteMemory, nullptr);
+            impl_->npcPaletteBuffer = {};
+            impl_->npcPaletteMemory = {};
+            impl_->npcPaletteMapped = nullptr;
+            impl_->npcPaletteCapacity = 0;
+
+            const std::size_t newCapacity = byteSize + byteSize / 2 + 4096;
+            if (!create_host_buffer(nullptr, newCapacity, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
+                    impl_->npcPaletteBuffer, impl_->npcPaletteMemory, &impl_->npcPaletteMapped))
+                return;
+            impl_->npcPaletteCapacity = newCapacity;
+
+            VkDescriptorBufferInfo bufInfo{};
+            bufInfo.buffer = impl_->npcPaletteBuffer;
+            bufInfo.offset = 0;
+            bufInfo.range = VK_WHOLE_SIZE;
+            VkWriteDescriptorSet write{ VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET };
+            write.dstSet = impl_->npcPaletteDescriptorSet;
+            write.dstBinding = 0;
+            write.descriptorCount = 1;
+            write.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+            write.pBufferInfo = &bufInfo;
+            vkUpdateDescriptorSets(impl_->device, 1, &write, 0, nullptr);
+        }
+
+        if (impl_->npcPaletteMapped)
+            std::memcpy(impl_->npcPaletteMapped, rows16PerBone, byteSize);
+    }
+
+    bool VulkanRenderer::update_npc_skinned_instances(
+        const std::vector<ObjectInstance>& instances,
+        const std::vector<ObjectBatch>& batches)
+    {
+        if (!impl_ || !impl_->npcCharacterReady)
+            return false;
+        if (instances.empty() || batches.empty())
+        {
+            impl_->npcCharacterBatches.clear();
+            return true;
+        }
+
+        const auto instanceBytes = instances.size() * sizeof(ObjectInstance);
+        if (!impl_->npcCharacterInstanceBuffer || instanceBytes > impl_->npcCharacterInstanceCapacity)
+        {
+            vkDeviceWaitIdle(impl_->device);
+            if (impl_->npcCharacterInstanceBuffer)
+                vkDestroyBuffer(impl_->device, impl_->npcCharacterInstanceBuffer, nullptr);
+            if (impl_->npcCharacterInstanceMemory)
+                vkFreeMemory(impl_->device, impl_->npcCharacterInstanceMemory, nullptr);
+            impl_->npcCharacterInstanceBuffer = {};
+            impl_->npcCharacterInstanceMemory = {};
+            impl_->npcCharacterInstanceMapped = nullptr;
+            const auto capacity = instanceBytes + instanceBytes / 2 + sizeof(ObjectInstance) * 64;
+            if (!create_host_buffer(nullptr, capacity, VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
+                    impl_->npcCharacterInstanceBuffer, impl_->npcCharacterInstanceMemory,
+                    &impl_->npcCharacterInstanceMapped))
+                return false;
+            impl_->npcCharacterInstanceCapacity = capacity;
+        }
+        if (impl_->npcCharacterInstanceMapped)
+            std::memcpy(impl_->npcCharacterInstanceMapped, instances.data(), instanceBytes);
+        impl_->npcCharacterBatches = batches;
+        return true;
+    }
+
+    void VulkanRenderer::set_npc_skinned_visible(bool visible)
+    {
+        if (impl_)
+            impl_->npcCharacterVisible = visible;
+    }
+
     void VulkanRenderer::set_camera(float x, float y, float z, float yaw, float pitch, float aspect, float farPlane)
     {
         if (!impl_)
@@ -5031,6 +5155,24 @@ rgba_texture_fallback:
                     vkCmdDrawIndexed(commandBuffer, batch.indexCount, batch.instanceCount, batch.firstIndex, 0, batch.firstInstance);
                 lastBoundPipeline = VK_NULL_HANDLE;
             }
+            if (impl_->npcCharacterVisible && impl_->npcCharacterReady
+                && impl_->npcCharacterInstanceBuffer && !impl_->npcCharacterBatches.empty()
+                && impl_->skinnedCharacterPipeline && impl_->npcPaletteBuffer)
+            {
+                VkBuffer buffers[2]{ impl_->npcCharacterVertexBuffer, impl_->npcCharacterInstanceBuffer };
+                VkDeviceSize offsets[2]{ 0, 0 };
+                vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, impl_->skinnedCharacterPipeline);
+                VkDescriptorSet sets[2]{ impl_->descriptorSet, impl_->npcPaletteDescriptorSet };
+                vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                    impl_->skinnedCharacterPipelineLayout, 0, 2, sets, 0, nullptr);
+                vkCmdPushConstants(commandBuffer, impl_->skinnedCharacterPipelineLayout,
+                    kPushStages, 0, sizeof(constants), constants);
+                vkCmdBindVertexBuffers(commandBuffer, 0, 2, buffers, offsets);
+                vkCmdBindIndexBuffer(commandBuffer, impl_->npcCharacterIndexBuffer, 0, VK_INDEX_TYPE_UINT32);
+                for (const auto& batch : impl_->npcCharacterBatches)
+                    vkCmdDrawIndexed(commandBuffer, batch.indexCount, batch.instanceCount, batch.firstIndex, 0, batch.firstInstance);
+                lastBoundPipeline = VK_NULL_HANDLE;
+            }
             if (impl_->waterReady && impl_->waterIndexCount > 0)
             {
                 bindPipeline(impl_->terrainPipeline);
@@ -5432,6 +5574,22 @@ rgba_texture_fallback:
             vkDestroyBuffer(impl_->device, impl_->monsterPaletteBuffer, nullptr);
         if (impl_->monsterPaletteMemory)
             vkFreeMemory(impl_->device, impl_->monsterPaletteMemory, nullptr);
+        if (impl_->npcCharacterVertexBuffer)
+            vkDestroyBuffer(impl_->device, impl_->npcCharacterVertexBuffer, nullptr);
+        if (impl_->npcCharacterVertexMemory)
+            vkFreeMemory(impl_->device, impl_->npcCharacterVertexMemory, nullptr);
+        if (impl_->npcCharacterIndexBuffer)
+            vkDestroyBuffer(impl_->device, impl_->npcCharacterIndexBuffer, nullptr);
+        if (impl_->npcCharacterIndexMemory)
+            vkFreeMemory(impl_->device, impl_->npcCharacterIndexMemory, nullptr);
+        if (impl_->npcCharacterInstanceBuffer)
+            vkDestroyBuffer(impl_->device, impl_->npcCharacterInstanceBuffer, nullptr);
+        if (impl_->npcCharacterInstanceMemory)
+            vkFreeMemory(impl_->device, impl_->npcCharacterInstanceMemory, nullptr);
+        if (impl_->npcPaletteBuffer)
+            vkDestroyBuffer(impl_->device, impl_->npcPaletteBuffer, nullptr);
+        if (impl_->npcPaletteMemory)
+            vkFreeMemory(impl_->device, impl_->npcPaletteMemory, nullptr);
         // GPU culling resources.
         if (impl_->indirectTemplateBuffer)
             vkDestroyBuffer(impl_->device, impl_->indirectTemplateBuffer, nullptr);

@@ -173,6 +173,15 @@ namespace phoenix::renderer
         bool set_monster_skinned_mesh(const std::vector<SkinnedVertex>& vertices,
             const std::vector<std::uint32_t>& indices);
         void update_monster_bone_palette(const float* rows16PerBone, std::size_t floatCount);
+
+        // GPU-skinned NPC path (dedicated buffers, same skinned pipeline).
+        bool set_npc_skinned_mesh(const std::vector<SkinnedVertex>& vertices,
+            const std::vector<std::uint32_t>& indices);
+        void update_npc_bone_palette(const float* rows16PerBone, std::size_t floatCount);
+        bool update_npc_skinned_instances(
+            const std::vector<ObjectInstance>& instances,
+            const std::vector<ObjectBatch>& batches);
+        void set_npc_skinned_visible(bool visible);
         // `pump` (optional) is invoked periodically during the CPU staging
         // phase so the caller can keep processing window messages — the
         // upload takes seconds and the app must stay closable throughout.
