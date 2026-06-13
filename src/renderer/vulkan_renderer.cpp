@@ -102,6 +102,8 @@ namespace phoenix::renderer
             log_line("Vulkan: sky rendering unavailable (non-fatal)");
         if (!create_particle_pipeline())
             log_line("Vulkan: particle rendering unavailable (non-fatal)");
+        if (!create_skinned_character_pipeline())
+            log_line("Vulkan: GPU-skinned character pipeline unavailable (non-fatal)");
 
         {
             VkPhysicalDeviceProperties props{};
@@ -1377,6 +1379,171 @@ namespace phoenix::renderer
             depth.depthCompareOp = VK_COMPARE_OP_LESS_OR_EQUAL;
             vkCreateGraphicsPipelines(impl_->device, impl_->pipelineCache, 1, &createInfo, nullptr, &impl_->staticObjectPipelineZEqual);
         }
+        vkDestroyShaderModule(impl_->device, vertexShader, nullptr);
+        vkDestroyShaderModule(impl_->device, fragmentShader, nullptr);
+        return ok;
+    }
+
+    bool VulkanRenderer::create_skinned_character_pipeline()
+    {
+        VkShaderModule vertexShader{};
+        VkShaderModule fragmentShader{};
+        if (!load_shader_module("shaders/compiled/skinned_character.vert.spv", vertexShader)
+            || !load_shader_module("shaders/compiled/skinned_character.frag.spv", fragmentShader))
+        {
+            if (vertexShader) vkDestroyShaderModule(impl_->device, vertexShader, nullptr);
+            log_line("Vulkan: could not load skinned character shaders");
+            return false;
+        }
+
+        // Set 1 = bone-palette storage buffer (vertex stage). Set 0 reuses the
+        // shared terrain descriptor layout (textures sampled in the PS).
+        VkDescriptorSetLayoutBinding paletteBinding{};
+        paletteBinding.binding = 0;
+        paletteBinding.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+        paletteBinding.descriptorCount = 1;
+        paletteBinding.stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
+        VkDescriptorSetLayoutCreateInfo paletteLayoutInfo{ VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO };
+        paletteLayoutInfo.bindingCount = 1;
+        paletteLayoutInfo.pBindings = &paletteBinding;
+        if (vkCreateDescriptorSetLayout(impl_->device, &paletteLayoutInfo, nullptr, &impl_->paletteSetLayout) != VK_SUCCESS)
+        {
+            vkDestroyShaderModule(impl_->device, vertexShader, nullptr);
+            vkDestroyShaderModule(impl_->device, fragmentShader, nullptr);
+            return false;
+        }
+
+        VkDescriptorPoolSize poolSize{};
+        poolSize.type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+        poolSize.descriptorCount = 1;
+        VkDescriptorPoolCreateInfo poolInfo{ VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO };
+        poolInfo.maxSets = 1;
+        poolInfo.poolSizeCount = 1;
+        poolInfo.pPoolSizes = &poolSize;
+        if (vkCreateDescriptorPool(impl_->device, &poolInfo, nullptr, &impl_->paletteDescriptorPool) != VK_SUCCESS)
+        {
+            vkDestroyShaderModule(impl_->device, vertexShader, nullptr);
+            vkDestroyShaderModule(impl_->device, fragmentShader, nullptr);
+            return false;
+        }
+        VkDescriptorSetAllocateInfo allocInfo{ VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO };
+        allocInfo.descriptorPool = impl_->paletteDescriptorPool;
+        allocInfo.descriptorSetCount = 1;
+        allocInfo.pSetLayouts = &impl_->paletteSetLayout;
+        if (vkAllocateDescriptorSets(impl_->device, &allocInfo, &impl_->monsterPaletteDescriptorSet) != VK_SUCCESS)
+        {
+            vkDestroyShaderModule(impl_->device, vertexShader, nullptr);
+            vkDestroyShaderModule(impl_->device, fragmentShader, nullptr);
+            return false;
+        }
+
+        VkPushConstantRange pushRange{};
+        pushRange.stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
+        pushRange.offset = 0;
+        pushRange.size = sizeof(float) * 60;
+        VkDescriptorSetLayout setLayouts[2]{ impl_->descriptorSetLayout, impl_->paletteSetLayout };
+        VkPipelineLayoutCreateInfo layoutInfo{ VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO };
+        layoutInfo.setLayoutCount = 2;
+        layoutInfo.pSetLayouts = setLayouts;
+        layoutInfo.pushConstantRangeCount = 1;
+        layoutInfo.pPushConstantRanges = &pushRange;
+        if (vkCreatePipelineLayout(impl_->device, &layoutInfo, nullptr, &impl_->skinnedCharacterPipelineLayout) != VK_SUCCESS)
+        {
+            vkDestroyShaderModule(impl_->device, vertexShader, nullptr);
+            vkDestroyShaderModule(impl_->device, fragmentShader, nullptr);
+            return false;
+        }
+
+        VkPipelineShaderStageCreateInfo stages[2]{};
+        stages[0].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+        stages[0].stage = VK_SHADER_STAGE_VERTEX_BIT;
+        stages[0].module = vertexShader;
+        stages[0].pName = "VSMain";
+        stages[1].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+        stages[1].stage = VK_SHADER_STAGE_FRAGMENT_BIT;
+        stages[1].module = fragmentShader;
+        stages[1].pName = "PSMain";
+
+        VkVertexInputBindingDescription bindings[2]{};
+        bindings[0].binding = 0;
+        bindings[0].stride = sizeof(SkinnedVertex);
+        bindings[0].inputRate = VK_VERTEX_INPUT_RATE_VERTEX;
+        bindings[1].binding = 1;
+        bindings[1].stride = sizeof(ObjectInstance);
+        bindings[1].inputRate = VK_VERTEX_INPUT_RATE_INSTANCE;
+
+        VkVertexInputAttributeDescription attributes[11]{};
+        attributes[0] = { 0, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(SkinnedVertex, position) };
+        attributes[1] = { 1, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(SkinnedVertex, color) };
+        attributes[2] = { 2, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(SkinnedVertex, normal) };
+        attributes[3] = { 3, 0, VK_FORMAT_R32G32_SFLOAT, offsetof(SkinnedVertex, uv) };
+        attributes[4] = { 4, 0, VK_FORMAT_R32_UINT, offsetof(SkinnedVertex, textureLayer) };
+        attributes[5] = { 5, 0, VK_FORMAT_R32G32B32A32_UINT, offsetof(SkinnedVertex, bones) };
+        attributes[6] = { 6, 0, VK_FORMAT_R32G32B32A32_SFLOAT, offsetof(SkinnedVertex, weights) };
+        attributes[7] = { 7, 1, VK_FORMAT_R32G32B32A32_SFLOAT, offsetof(ObjectInstance, right) };
+        attributes[8] = { 8, 1, VK_FORMAT_R32G32B32A32_SFLOAT, offsetof(ObjectInstance, up) };
+        attributes[9] = { 9, 1, VK_FORMAT_R32G32B32A32_SFLOAT, offsetof(ObjectInstance, forward) };
+        attributes[10] = { 10, 1, VK_FORMAT_R32G32B32A32_SFLOAT, offsetof(ObjectInstance, position) };
+
+        VkPipelineVertexInputStateCreateInfo vertexInput{ VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO };
+        vertexInput.vertexBindingDescriptionCount = static_cast<std::uint32_t>(std::size(bindings));
+        vertexInput.pVertexBindingDescriptions = bindings;
+        vertexInput.vertexAttributeDescriptionCount = static_cast<std::uint32_t>(std::size(attributes));
+        vertexInput.pVertexAttributeDescriptions = attributes;
+
+        VkPipelineInputAssemblyStateCreateInfo inputAssembly{ VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO };
+        inputAssembly.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+
+        VkViewport viewport{};
+        viewport.width = static_cast<float>(impl_->swapchainExtent.width);
+        viewport.height = static_cast<float>(impl_->swapchainExtent.height);
+        viewport.maxDepth = 1.0f;
+        VkRect2D scissor{};
+        scissor.extent = impl_->swapchainExtent;
+        VkPipelineViewportStateCreateInfo viewportState{ VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO };
+        viewportState.viewportCount = 1;
+        viewportState.scissorCount = 1;
+        VkDynamicState dynamicStates[]{ VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR };
+        VkPipelineDynamicStateCreateInfo dynamicState{ VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO };
+        dynamicState.dynamicStateCount = static_cast<std::uint32_t>(std::size(dynamicStates));
+        dynamicState.pDynamicStates = dynamicStates;
+
+        VkPipelineRasterizationStateCreateInfo raster{ VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO };
+        raster.polygonMode = VK_POLYGON_MODE_FILL;
+        raster.cullMode = VK_CULL_MODE_NONE;
+        raster.frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE;
+        raster.lineWidth = 1.0f;
+
+        VkPipelineMultisampleStateCreateInfo multisample{ VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO };
+        multisample.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
+
+        VkPipelineDepthStencilStateCreateInfo depth{ VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO };
+        depth.depthTestEnable = VK_TRUE;
+        depth.depthWriteEnable = VK_TRUE;
+        depth.depthCompareOp = VK_COMPARE_OP_LESS;
+
+        VkPipelineColorBlendAttachmentState blendAttachment{};
+        blendAttachment.colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT | VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
+        VkPipelineColorBlendStateCreateInfo blend{ VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO };
+        blend.attachmentCount = 1;
+        blend.pAttachments = &blendAttachment;
+
+        VkGraphicsPipelineCreateInfo createInfo{ VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO };
+        createInfo.stageCount = 2;
+        createInfo.pStages = stages;
+        createInfo.pVertexInputState = &vertexInput;
+        createInfo.pInputAssemblyState = &inputAssembly;
+        createInfo.pViewportState = &viewportState;
+        createInfo.pRasterizationState = &raster;
+        createInfo.pMultisampleState = &multisample;
+        createInfo.pDepthStencilState = &depth;
+        createInfo.pColorBlendState = &blend;
+        createInfo.pDynamicState = &dynamicState;
+        createInfo.layout = impl_->skinnedCharacterPipelineLayout;
+        createInfo.renderPass = impl_->renderPass;
+        createInfo.subpass = 0;
+        const auto ok = vkCreateGraphicsPipelines(impl_->device, impl_->pipelineCache, 1, &createInfo, nullptr, &impl_->skinnedCharacterPipeline) == VK_SUCCESS;
+
         vkDestroyShaderModule(impl_->device, vertexShader, nullptr);
         vkDestroyShaderModule(impl_->device, fragmentShader, nullptr);
         return ok;
@@ -4126,6 +4293,93 @@ rgba_texture_fallback:
             impl_->monsterCharacterVisible = visible;
     }
 
+    bool VulkanRenderer::set_monster_skinned_mesh(
+        const std::vector<SkinnedVertex>& vertices,
+        const std::vector<std::uint32_t>& indices)
+    {
+        if (!impl_ || !impl_->skinnedCharacterPipeline || vertices.empty() || indices.empty())
+            return false;
+
+        // Static bind mesh — uploaded once per (re)build; the GPU skins it each
+        // frame from the bone palette, so there is no per-frame vertex upload.
+        vkDeviceWaitIdle(impl_->device);
+
+        if (impl_->monsterCharacterVertexBuffer)
+            vkDestroyBuffer(impl_->device, impl_->monsterCharacterVertexBuffer, nullptr);
+        if (impl_->monsterCharacterVertexMemory)
+            vkFreeMemory(impl_->device, impl_->monsterCharacterVertexMemory, nullptr);
+        if (impl_->monsterCharacterIndexBuffer)
+            vkDestroyBuffer(impl_->device, impl_->monsterCharacterIndexBuffer, nullptr);
+        if (impl_->monsterCharacterIndexMemory)
+            vkFreeMemory(impl_->device, impl_->monsterCharacterIndexMemory, nullptr);
+        impl_->monsterCharacterVertexBuffer = {};
+        impl_->monsterCharacterVertexMemory = {};
+        impl_->monsterCharacterVertexMapped = nullptr;
+        impl_->monsterCharacterIndexBuffer = {};
+        impl_->monsterCharacterIndexMemory = {};
+        impl_->monsterCharacterVertexBytes = 0;
+        impl_->monsterCharacterVertexCapacity = 0;
+        impl_->monsterCharacterReady = false;
+
+        const auto vertexBytes = vertices.size() * sizeof(SkinnedVertex);
+        const auto indexBytes = indices.size() * sizeof(std::uint32_t);
+        if (!create_host_buffer(vertices.data(), vertexBytes, VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
+                impl_->monsterCharacterVertexBuffer, impl_->monsterCharacterVertexMemory, nullptr)
+            || !create_device_local_buffer(indices.data(), indexBytes, VK_BUFFER_USAGE_INDEX_BUFFER_BIT,
+                impl_->monsterCharacterIndexBuffer, impl_->monsterCharacterIndexMemory))
+        {
+            log_line("Vulkan: monster skinned mesh upload failed");
+            return false;
+        }
+        impl_->monsterCharacterVertexCapacity = vertexBytes;
+        impl_->monsterCharacterVertexBytes = vertexBytes;
+        impl_->monsterCharacterReady = true;
+        impl_->monsterCharacterSkinned = true;
+        impl_->monsterCharacterVisible = true;
+        return true;
+    }
+
+    void VulkanRenderer::update_monster_bone_palette(const float* rows16PerBone, std::size_t floatCount)
+    {
+        if (!impl_ || !impl_->skinnedCharacterPipeline || !rows16PerBone || floatCount == 0)
+            return;
+
+        const std::size_t byteSize = floatCount * sizeof(float);
+        if (byteSize > impl_->monsterPaletteCapacity || !impl_->monsterPaletteBuffer)
+        {
+            vkDeviceWaitIdle(impl_->device);
+            if (impl_->monsterPaletteBuffer)
+                vkDestroyBuffer(impl_->device, impl_->monsterPaletteBuffer, nullptr);
+            if (impl_->monsterPaletteMemory)
+                vkFreeMemory(impl_->device, impl_->monsterPaletteMemory, nullptr);
+            impl_->monsterPaletteBuffer = {};
+            impl_->monsterPaletteMemory = {};
+            impl_->monsterPaletteMapped = nullptr;
+            impl_->monsterPaletteCapacity = 0;
+
+            const std::size_t newCapacity = byteSize + byteSize / 2 + 4096;
+            if (!create_host_buffer(nullptr, newCapacity, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
+                    impl_->monsterPaletteBuffer, impl_->monsterPaletteMemory, &impl_->monsterPaletteMapped))
+                return;
+            impl_->monsterPaletteCapacity = newCapacity;
+
+            VkDescriptorBufferInfo bufInfo{};
+            bufInfo.buffer = impl_->monsterPaletteBuffer;
+            bufInfo.offset = 0;
+            bufInfo.range = VK_WHOLE_SIZE;
+            VkWriteDescriptorSet write{ VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET };
+            write.dstSet = impl_->monsterPaletteDescriptorSet;
+            write.dstBinding = 0;
+            write.descriptorCount = 1;
+            write.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+            write.pBufferInfo = &bufInfo;
+            vkUpdateDescriptorSets(impl_->device, 1, &write, 0, nullptr);
+        }
+
+        if (impl_->monsterPaletteMapped)
+            std::memcpy(impl_->monsterPaletteMapped, rows16PerBone, byteSize);
+    }
+
     void VulkanRenderer::set_camera(float x, float y, float z, float yaw, float pitch, float aspect, float farPlane)
     {
         if (!impl_)
@@ -4756,15 +5010,26 @@ rgba_texture_fallback:
             }
             if (impl_->monsterCharacterVisible && impl_->monsterCharacterReady
                 && impl_->monsterCharacterInstanceBuffer && !impl_->monsterCharacterBatches.empty()
-                && impl_->staticObjectPipeline)
+                && impl_->monsterCharacterSkinned && impl_->skinnedCharacterPipeline
+                && impl_->monsterPaletteBuffer)
             {
+                // GPU-skinned path: own pipeline + layout (set 0 = textures,
+                // set 1 = bone palette). Bound directly (not via the bindPipeline
+                // helper, which targets terrainPipelineLayout), so reset the
+                // helper's cache afterwards to force the next layer to re-bind.
                 VkBuffer buffers[2]{ impl_->monsterCharacterVertexBuffer, impl_->monsterCharacterInstanceBuffer };
                 VkDeviceSize offsets[2]{ 0, 0 };
-                bindPipeline(impl_->staticObjectPipeline);
+                vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, impl_->skinnedCharacterPipeline);
+                VkDescriptorSet sets[2]{ impl_->descriptorSet, impl_->monsterPaletteDescriptorSet };
+                vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                    impl_->skinnedCharacterPipelineLayout, 0, 2, sets, 0, nullptr);
+                vkCmdPushConstants(commandBuffer, impl_->skinnedCharacterPipelineLayout,
+                    kPushStages, 0, sizeof(constants), constants);
                 vkCmdBindVertexBuffers(commandBuffer, 0, 2, buffers, offsets);
                 vkCmdBindIndexBuffer(commandBuffer, impl_->monsterCharacterIndexBuffer, 0, VK_INDEX_TYPE_UINT32);
                 for (const auto& batch : impl_->monsterCharacterBatches)
                     vkCmdDrawIndexed(commandBuffer, batch.indexCount, batch.instanceCount, batch.firstIndex, 0, batch.firstInstance);
+                lastBoundPipeline = VK_NULL_HANDLE;
             }
             if (impl_->waterReady && impl_->waterIndexCount > 0)
             {
@@ -5154,6 +5419,19 @@ rgba_texture_fallback:
             vkDestroyPipeline(impl_->device, impl_->staticObjectPipeline, nullptr);
         if (impl_->staticObjectPipelineZEqual)
             vkDestroyPipeline(impl_->device, impl_->staticObjectPipelineZEqual, nullptr);
+        // GPU-skinned character resources.
+        if (impl_->skinnedCharacterPipeline)
+            vkDestroyPipeline(impl_->device, impl_->skinnedCharacterPipeline, nullptr);
+        if (impl_->skinnedCharacterPipelineLayout)
+            vkDestroyPipelineLayout(impl_->device, impl_->skinnedCharacterPipelineLayout, nullptr);
+        if (impl_->paletteDescriptorPool)
+            vkDestroyDescriptorPool(impl_->device, impl_->paletteDescriptorPool, nullptr);
+        if (impl_->paletteSetLayout)
+            vkDestroyDescriptorSetLayout(impl_->device, impl_->paletteSetLayout, nullptr);
+        if (impl_->monsterPaletteBuffer)
+            vkDestroyBuffer(impl_->device, impl_->monsterPaletteBuffer, nullptr);
+        if (impl_->monsterPaletteMemory)
+            vkFreeMemory(impl_->device, impl_->monsterPaletteMemory, nullptr);
         // GPU culling resources.
         if (impl_->indirectTemplateBuffer)
             vkDestroyBuffer(impl_->device, impl_->indirectTemplateBuffer, nullptr);
