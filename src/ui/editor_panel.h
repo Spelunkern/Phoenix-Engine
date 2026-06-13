@@ -71,9 +71,11 @@ namespace phoenix::ui
         bool clearBots{};
         int npcSpawnCatalogIndex{ -1 };
         int npcSpawnCount{ 1 };
+        bool npcSpawnRandom{};   // spawn npcSpawnCount of random catalog entries
         bool clearNpcs{};
         int monsterSpawnCatalogIndex{ -1 };
         int monsterSpawnCount{ 1 };
+        bool monsterSpawnRandom{};
         bool clearMonsters{};
     };
 
