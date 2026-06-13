@@ -510,7 +510,10 @@ namespace phoenix::character
         monster.idleGesturePick = static_cast<std::uint32_t>(active_.size() * 13u + entry.modelIndex);
         active_.push_back(monster);
         activeLabel_ = entry.label;
-        rebuild_render_mesh(renderer);
+        // The shared mesh only changes when a model appears for the first time;
+        // spawning more of an existing model just adds an instance at draw time.
+        if (!modelIndexOffset_.contains(entry.modelIndex))
+            rebuild_render_mesh(renderer);
         status_ = std::format("monster active: {} ({} visible)", active_.size(), visibleCount_);
         return true;
     }
@@ -764,24 +767,30 @@ namespace phoenix::character
 
     void MonsterManager::rebuild_render_mesh(phoenix::renderer::VulkanRenderer& renderer)
     {
+        // ONE shared bind mesh per unique model (not per entity). Every monster
+        // of a model draws this geometry, instanced — so memory and draw calls
+        // scale with the number of models, not the number of monsters.
         renderVertices_.clear();
         renderIndices_.clear();
+        modelIndexOffset_.clear();
         instances_.clear();
         instanceBatches_.clear();
         visibleCount_ = 0;
 
-        for (auto& monster : active_)
+        for (const auto& monster : active_)
         {
+            if (modelIndexOffset_.contains(monster.modelIndex))
+                continue;
             auto it = visuals_.find(monster.modelIndex);
             if (it == visuals_.end() || !it->second.ready)
                 continue;
             const auto& visual = it->second;
-            monster.vertexOffset = static_cast<std::uint32_t>(renderVertices_.size());
-            monster.vertexCount = static_cast<std::uint32_t>(visual.skinnedBind.size());
-            monster.indexOffset = static_cast<std::uint32_t>(renderIndices_.size());
+            const auto vertexOffset = static_cast<std::uint32_t>(renderVertices_.size());
+            const auto indexOffset = static_cast<std::uint32_t>(renderIndices_.size());
             renderVertices_.insert(renderVertices_.end(), visual.skinnedBind.begin(), visual.skinnedBind.end());
             for (const auto index : visual.indices)
-                renderIndices_.push_back(monster.vertexOffset + index);
+                renderIndices_.push_back(vertexOffset + index);
+            modelIndexOffset_[monster.modelIndex] = indexOffset;
         }
 
         if (renderVertices_.empty() || renderIndices_.empty())
@@ -970,6 +979,11 @@ namespace phoenix::character
         struct PoseKey { std::uint32_t model; std::size_t anim; std::int32_t bucket; std::uint32_t baseBone; };
         static std::vector<PoseKey> poseKeys;
         poseKeys.clear();
+        // Visible entities with their built instance, kept per-entity so they can
+        // be grouped by model into contiguous instanced draws below.
+        struct VisInst { std::uint32_t model; phoenix::renderer::ObjectInstance inst; };
+        static std::vector<VisInst> vis;
+        vis.clear();
 
         for (auto& monster : active_)
         {
@@ -1013,7 +1027,6 @@ namespace phoenix::character
             // Placement transform; kMonsterBaseScale folded into the basis (the
             // GPU skins the UNSCALED bind pose). Palette base packed in right.w.
             const float S = monster.scale * kMonsterBaseScale;
-            const auto instanceIndex = static_cast<std::uint32_t>(instances_.size());
             const float sn = std::sin(monster.yaw);
             const float cs = std::cos(monster.yaw);
             phoenix::renderer::ObjectInstance inst{};
@@ -1026,13 +1039,34 @@ namespace phoenix::character
             inst.position[1] = monster.y;
             inst.position[2] = monster.z;
             inst.right[3] = static_cast<float>(baseBone);  // palette base (exact int in float)
-            instances_.push_back(inst);
+            vis.push_back({ monster.modelIndex, inst });
+        }
 
-            for (auto batch : visual.batches)
+        // Group visible entities by model into contiguous instance blocks, and
+        // emit one instanced batch per (model, part): a single draw covers all
+        // entities of a model, each reading its own transform + palette base.
+        static std::vector<std::uint32_t> modelOrder;
+        modelOrder.clear();
+        for (const auto& v : vis)
+            if (std::find(modelOrder.begin(), modelOrder.end(), v.model) == modelOrder.end())
+                modelOrder.push_back(v.model);
+        for (const std::uint32_t model : modelOrder)
+        {
+            const auto geomIt = modelIndexOffset_.find(model);
+            const auto visualIt = visuals_.find(model);
+            if (geomIt == modelIndexOffset_.end() || visualIt == visuals_.end())
+                continue;
+            const std::uint32_t indexOffset = geomIt->second;
+            const auto firstInstance = static_cast<std::uint32_t>(instances_.size());
+            for (const auto& v : vis)
+                if (v.model == model)
+                    instances_.push_back(v.inst);
+            const auto count = static_cast<std::uint32_t>(instances_.size()) - firstInstance;
+            for (auto batch : visualIt->second.batches)
             {
-                batch.firstIndex += monster.indexOffset;
-                batch.firstInstance = instanceIndex;
-                batch.instanceCount = 1;
+                batch.firstIndex += indexOffset;
+                batch.firstInstance = firstInstance;
+                batch.instanceCount = count;
                 instanceBatches_.push_back(batch);
             }
         }

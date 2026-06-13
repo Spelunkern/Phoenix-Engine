@@ -167,6 +167,9 @@ namespace phoenix::character
         std::vector<ActiveNpc> active_;
         std::vector<phoenix::renderer::SkinnedVertex> renderVertices_;
         std::vector<std::uint32_t> renderIndices_;
+        // One shared bind mesh per model: modelIndex -> its first index in
+        // renderIndices_. All entities of a model draw this geometry, instanced.
+        std::unordered_map<std::uint32_t, std::uint32_t> modelIndexOffset_;
         std::vector<float> paletteFloats_;   // per-frame concatenated bone palettes
         std::vector<phoenix::renderer::ObjectInstance> instances_;
         std::vector<phoenix::renderer::ObjectBatch> instanceBatches_;

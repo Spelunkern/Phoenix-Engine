@@ -509,7 +509,10 @@ namespace phoenix::character
         npc.idleGesturePick = static_cast<std::uint32_t>(active_.size() * 13u + entry.modelIndex);
         active_.push_back(npc);
         activeLabel_ = entry.label;
-        rebuild_render_mesh(renderer);
+        // Rebuild only when a model first appears; more of an existing model
+        // just adds a draw-time instance over the shared mesh.
+        if (!modelIndexOffset_.contains(entry.modelIndex))
+            rebuild_render_mesh(renderer);
         status_ = std::format("NPC active: {} ({} visible)", active_.size(), visibleCount_);
         return true;
     }
@@ -769,18 +772,21 @@ namespace phoenix::character
         instanceBatches_.clear();
         visibleCount_ = 0;
 
-        for (auto& npc : active_)
+        modelIndexOffset_.clear();
+        for (const auto& npc : active_)
         {
+            if (modelIndexOffset_.contains(npc.modelIndex))
+                continue;
             auto it = visuals_.find(npc.modelIndex);
             if (it == visuals_.end() || !it->second.ready)
                 continue;
             const auto& visual = it->second;
-            npc.vertexOffset = static_cast<std::uint32_t>(renderVertices_.size());
-            npc.vertexCount = static_cast<std::uint32_t>(visual.skinnedBind.size());
-            npc.indexOffset = static_cast<std::uint32_t>(renderIndices_.size());
+            const auto vertexOffset = static_cast<std::uint32_t>(renderVertices_.size());
+            const auto indexOffset = static_cast<std::uint32_t>(renderIndices_.size());
             renderVertices_.insert(renderVertices_.end(), visual.skinnedBind.begin(), visual.skinnedBind.end());
             for (const auto index : visual.indices)
-                renderIndices_.push_back(npc.vertexOffset + index);
+                renderIndices_.push_back(vertexOffset + index);
+            modelIndexOffset_[npc.modelIndex] = indexOffset;
         }
 
         if (renderVertices_.empty() || renderIndices_.empty())
@@ -963,6 +969,9 @@ namespace phoenix::character
         struct PoseKey { std::uint32_t model; std::size_t anim; std::int32_t bucket; std::uint32_t baseBone; };
         static std::vector<PoseKey> poseKeys;
         poseKeys.clear();
+        struct VisInst { std::uint32_t model; phoenix::renderer::ObjectInstance inst; };
+        static std::vector<VisInst> vis;
+        vis.clear();
 
         for (auto& npc : active_)
         {
@@ -1002,7 +1011,6 @@ namespace phoenix::character
             }
 
             const float S = kNpcScale;
-            const auto instanceIndex = static_cast<std::uint32_t>(instances_.size());
             const float sn = std::sin(npc.yaw);
             const float cs = std::cos(npc.yaw);
             phoenix::renderer::ObjectInstance inst{};
@@ -1015,13 +1023,33 @@ namespace phoenix::character
             inst.position[1] = npc.y;
             inst.position[2] = npc.z;
             inst.right[3] = static_cast<float>(baseBone);  // palette base (exact int in float)
-            instances_.push_back(inst);
+            vis.push_back({ npc.modelIndex, inst });
+        }
 
-            for (auto batch : visual.batches)
+        // Group by model into contiguous instance blocks; one instanced batch
+        // per (model, part) draws all entities of that model in a single call.
+        static std::vector<std::uint32_t> modelOrder;
+        modelOrder.clear();
+        for (const auto& v : vis)
+            if (std::find(modelOrder.begin(), modelOrder.end(), v.model) == modelOrder.end())
+                modelOrder.push_back(v.model);
+        for (const std::uint32_t model : modelOrder)
+        {
+            const auto geomIt = modelIndexOffset_.find(model);
+            const auto visualIt = visuals_.find(model);
+            if (geomIt == modelIndexOffset_.end() || visualIt == visuals_.end())
+                continue;
+            const std::uint32_t indexOffset = geomIt->second;
+            const auto firstInstance = static_cast<std::uint32_t>(instances_.size());
+            for (const auto& v : vis)
+                if (v.model == model)
+                    instances_.push_back(v.inst);
+            const auto count = static_cast<std::uint32_t>(instances_.size()) - firstInstance;
+            for (auto batch : visualIt->second.batches)
             {
-                batch.firstIndex += npc.indexOffset;
-                batch.firstInstance = instanceIndex;
-                batch.instanceCount = 1;
+                batch.firstIndex += indexOffset;
+                batch.firstInstance = firstInstance;
+                batch.instanceCount = count;
                 instanceBatches_.push_back(batch);
             }
         }
