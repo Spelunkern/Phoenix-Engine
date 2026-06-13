@@ -11,7 +11,6 @@ option(PHOENIX_COPY_RUNTIME_DLLS "Copy runtime DLLs next to the executable on Wi
 set(ENGINE_SOURCES
     src/main.cpp
     src/app/bootstrap.cpp
-    src/app/discord_presence.cpp
     src/app/loading_scheduler.cpp
     src/app/map_session.cpp
     src/app/renderer_uploads.cpp

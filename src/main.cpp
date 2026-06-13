@@ -1,5 +1,4 @@
 ﻿#include "app/bootstrap.h"
-#include "app/discord_presence.h"
 #include "app/loading_scheduler.h"
 #include "audio/map_audio_scene.h"
 #include "app/renderer_uploads.h"
@@ -123,9 +122,6 @@ int main(int, char**)
     }
 
     const auto imguiAvailable = renderer.initialize_imgui(window.handle());
-
-    // Best-effort Discord Rich Presence (async, no-op if Discord/id absent).
-    phoenix::app::start_discord_presence();
 
     phoenix::app::LoadingScheduler cpuLoader(phoenix::app::LoadingWorkKind::Cpu);
     phoenix::app::LoadingScheduler ioLoader(phoenix::app::LoadingWorkKind::Io);
