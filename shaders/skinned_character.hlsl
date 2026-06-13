@@ -127,7 +127,8 @@ VSOutput VSMain(VSInput input)
     }
 
     // GPU skinning: model-space skinned bind vertex via the per-instance palette.
-    const uint paletteBase = asuint(input.instanceRight.w);
+    // right.w carries the palette base bone index as an exact float value.
+    const uint paletteBase = (uint)(input.instanceRight.w + 0.5);
     float totalWeight = input.boneWeights.x + input.boneWeights.y + input.boneWeights.z;
     float3 localPos;
     float3 localNrm;

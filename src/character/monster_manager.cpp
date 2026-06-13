@@ -637,6 +637,26 @@ namespace phoenix::character
                 gv.textureLayer = textureBaseSlot + textureSlot + (alphaCutout ? 2048u : 0u);
                 next.bindVertices.push_back(gv);
 
+                // GPU-skinning bind vertex: UNSCALED bind pose (kMonsterBaseScale
+                // is folded into the per-instance basis) + global bone indices.
+                phoenix::renderer::SkinnedVertex skv{};
+                skv.position[0] = sv.position[0];
+                skv.position[1] = sv.position[1];
+                skv.position[2] = sv.position[2];
+                skv.color[0] = skv.color[1] = skv.color[2] = 1.0f;
+                skv.normal[0] = sv.normal[0];
+                skv.normal[1] = sv.normal[1];
+                skv.normal[2] = sv.normal[2];
+                skv.uv[0] = sv.uv[0];
+                skv.uv[1] = sv.uv[1];
+                skv.textureLayer = gv.textureLayer;
+                for (int b = 0; b < 3; ++b)
+                {
+                    skv.bones[b] = meshBoneBase + static_cast<std::uint32_t>(sv.bones[b]);
+                    skv.weights[b] = sv.weights[b];
+                }
+                next.skinnedBind.push_back(skv);
+
                 minX = std::min(minX, gv.position[0]);
                 minY = std::min(minY, gv.position[1]);
                 minZ = std::min(minZ, gv.position[2]);
@@ -757,9 +777,9 @@ namespace phoenix::character
                 continue;
             const auto& visual = it->second;
             monster.vertexOffset = static_cast<std::uint32_t>(renderVertices_.size());
-            monster.vertexCount = static_cast<std::uint32_t>(visual.bindVertices.size());
+            monster.vertexCount = static_cast<std::uint32_t>(visual.skinnedBind.size());
             monster.indexOffset = static_cast<std::uint32_t>(renderIndices_.size());
-            renderVertices_.insert(renderVertices_.end(), visual.bindVertices.begin(), visual.bindVertices.end());
+            renderVertices_.insert(renderVertices_.end(), visual.skinnedBind.begin(), visual.skinnedBind.end());
             for (const auto index : visual.indices)
                 renderIndices_.push_back(monster.vertexOffset + index);
         }
@@ -771,8 +791,10 @@ namespace phoenix::character
             return;
         }
 
-        if (!renderer.set_monster_character_mesh(renderVertices_, renderIndices_))
-            status_ = "monster renderer mesh upload failed.";
+        // Static bind mesh — uploaded once here; per frame only the palette +
+        // instances change (the GPU skins the bind pose).
+        if (!renderer.set_monster_skinned_mesh(renderVertices_, renderIndices_))
+            status_ = "monster skinned mesh upload failed.";
     }
 
     void MonsterManager::update_animation(float deltaSeconds, ActiveMonster& monster, const Visual& visual)
@@ -841,11 +863,23 @@ namespace phoenix::character
         }
     }
 
-    void MonsterManager::skin(const ActiveMonster& monster, const Visual& visual)
+    void MonsterManager::append_palette(const ActiveMonster& monster, const Visual& visual)
     {
+        // Append this entity's model-space bone palette (16 floats / bone, the 4
+        // rows of meshBind * animatedFinal) to paletteFloats_. The GPU applies it
+        // to the static bind mesh. Bones not referenced by any vertex stay
+        // identity (harmless — no vertex indexes them).
+        const std::size_t boneCount = visual.meshBones.size();
+        const std::size_t baseFloat = paletteFloats_.size();
+        paletteFloats_.resize(baseFloat + boneCount * 16);
+        for (std::size_t b = 0; b < boneCount; ++b)
+        {
+            float* dst = &paletteFloats_[baseFloat + b * 16];
+            for (int i = 0; i < 16; ++i) dst[i] = 0.0f;
+            dst[0] = dst[5] = dst[10] = dst[15] = 1.0f;
+        }
         if (!visual.ready || visual.animations.empty()
-            || monster.activeAnimation >= visual.animations.size()
-            || monster.vertexCount == 0)
+            || monster.activeAnimation >= visual.animations.size() || boneCount == 0)
             return;
 
         const auto& activeChoice = visual.animations[monster.activeAnimation];
@@ -874,74 +908,37 @@ namespace phoenix::character
                 clientFinals[i] = blend_mat4(previousFinals[i], clientFinals[i], t);
         }
 
-        // Precompute each mesh bone's skin matrix (bind * animated final) once
-        // per frame. The inner loop used to rebuild it for every vertex
-        // influence — thousands of redundant matrix multiplies per entity when
-        // only ~30 bones exist. A monotonic stamp marks which are valid this
-        // call without clearing the whole table.
-        static thread_local std::vector<Mat4> skinMatrices;
-        static thread_local std::vector<std::uint32_t> skinStamp;
-        static thread_local std::uint32_t skinStampCounter = 0;
-        const std::uint32_t stamp = ++skinStampCounter;
-        if (skinMatrices.size() < visual.meshBones.size())
-            skinMatrices.resize(visual.meshBones.size());
-        if (skinStamp.size() < visual.meshBones.size())
-            skinStamp.resize(visual.meshBones.size(), 0u);
-
+        // Fill each referenced mesh bone once (a vertex carries the local bone +
+        // its part's meshBoneBase; the global index is the palette slot).
+        static thread_local std::vector<std::uint32_t> stampTbl;
+        static thread_local std::uint32_t stampCtr = 0;
+        const std::uint32_t stamp = ++stampCtr;
+        if (stampTbl.size() < boneCount)
+            stampTbl.resize(boneCount, 0u);
         for (const auto& source : visual.sourceVertices)
         {
-            const auto localIndex = static_cast<std::size_t>(source.gpuIndex);
-            const auto vi = static_cast<std::size_t>(monster.vertexOffset) + localIndex;
-            if (localIndex >= visual.bindVertices.size() || vi >= renderVertices_.size())
-                continue;
-            Vec3 position{};
-            Vec3 normal{};
-            float totalWeight = 0.0f;
-            for (std::size_t influence = 0; influence < 3; ++influence)
+            for (int influence = 0; influence < 3; ++influence)
             {
                 const auto boneIndex = static_cast<std::size_t>(source.bones[influence]);
                 if (boneIndex >= source.meshBoneCount || boneIndex >= clientFinals.size())
                     continue;
-                const float weight = std::max(0.0f, source.weights[influence]);
-                if (weight <= 0.0001f)
+                if (source.weights[influence] <= 0.0001f)
                     continue;
                 const auto meshBoneIdx = static_cast<std::size_t>(source.meshBoneBase) + boneIndex;
-                if (meshBoneIdx >= visual.meshBones.size())
+                if (meshBoneIdx >= boneCount || stampTbl[meshBoneIdx] == stamp)
                     continue;
-                if (skinStamp[meshBoneIdx] != stamp)
+                stampTbl[meshBoneIdx] = stamp;
+                const auto meshBone = mat4_from_shaiya_transposed(visual.meshBones[meshBoneIdx].matrix);
+                const auto m = mat4_multiply(meshBone, clientFinals[boneIndex]);
+                float* dst = &paletteFloats_[baseFloat + meshBoneIdx * 16];
+                for (int r = 0; r < 4; ++r)
                 {
-                    const auto meshBone = mat4_from_shaiya_transposed(visual.meshBones[meshBoneIdx].matrix);
-                    skinMatrices[meshBoneIdx] = mat4_multiply(meshBone, clientFinals[boneIndex]);
-                    skinStamp[meshBoneIdx] = stamp;
+                    dst[r * 4 + 0] = m.m[r][0];
+                    dst[r * 4 + 1] = m.m[r][1];
+                    dst[r * 4 + 2] = m.m[r][2];
+                    dst[r * 4 + 3] = m.m[r][3];
                 }
-                const auto& skinMatrix = skinMatrices[meshBoneIdx];
-                const Vec3 srcPos{ source.position[0], source.position[1], source.position[2] };
-                const Vec3 srcNrm{ source.normal[0], source.normal[1], source.normal[2] };
-                const auto p = transform_point(skinMatrix, srcPos);
-                const auto n = transform_normal(skinMatrix, srcNrm);
-                position.x += p.x * weight;
-                position.y += p.y * weight;
-                position.z += p.z * weight;
-                normal.x += n.x * weight;
-                normal.y += n.y * weight;
-                normal.z += n.z * weight;
-                totalWeight += weight;
             }
-            if (totalWeight <= 0.0001f)
-                continue;
-            const float invWeight = 1.0f / totalWeight;
-            position.x *= invWeight;
-            position.y *= invWeight;
-            position.z *= invWeight;
-            const auto n = normalize_vec3(normal);
-            auto out = visual.bindVertices[localIndex];
-            out.position[0] = position.x * kMonsterBaseScale;
-            out.position[1] = position.y * kMonsterBaseScale;
-            out.position[2] = position.z * kMonsterBaseScale;
-            out.normal[0] = n.x;
-            out.normal[1] = n.y;
-            out.normal[2] = n.z;
-            renderVertices_[vi] = out;
         }
     }
 
@@ -957,36 +954,30 @@ namespace phoenix::character
             return;
         }
 
+        (void)workerPool;
         ++frameCounter_;
         instances_.clear();
         instanceBatches_.clear();
+        paletteFloats_.clear();
         visibleCount_ = 0;
 
-        // Single pass: cull, advance animation, build the instance + draw
-        // batches, and dedup poses. Entities sharing model+animation+phase
-        // produce identical MODEL-SPACE skinned vertices (per-entity scale/yaw/
-        // position come from the instance transform, not baked into the mesh),
-        // so a sharer's batches point straight at the first ("donor") entity's
-        // geometry — no skin, no copy, no upload for it. This is the bots'
-        // pose-sharing model: 50 identical mobs cost ~1 skinning pass.
-        struct SkinItem { ActiveMonster* monster; const Visual* visual; };
-        static std::vector<SkinItem> donorSkins;
-        donorSkins.clear();
-        struct PoseKey { std::uint32_t model; std::size_t anim; std::int32_t bucket; std::uint32_t geomIndexOffset; };
+        // GPU skinning: one pass — cull, advance animation, compute each unique
+        // pose's bone palette (deduped: entities sharing model+animation+phase
+        // reuse one palette), build the instance (placement transform; the
+        // palette base bone index is bit-packed into right.w) + draw batches.
+        // The bind mesh is static on the GPU; only the palette + instances are
+        // uploaded per frame, and the GPU does all per-vertex skinning.
+        struct PoseKey { std::uint32_t model; std::size_t anim; std::int32_t bucket; std::uint32_t baseBone; };
         static std::vector<PoseKey> poseKeys;
         poseKeys.clear();
 
-        std::uint32_t slot = 0;
         for (auto& monster : active_)
         {
-            const std::uint32_t s = slot++;
             monster.visible = false;
             const auto it = visuals_.find(monster.modelIndex);
             if (it == visuals_.end() || !it->second.ready)
                 continue;
             const auto& visual = it->second;
-            // sphere_visible culls by both view.distance (UI "Cull dist", clamped
-            // to fog) and the frustum.
             if (!phoenix::renderer::sphere_visible(
                 view,
                 monster.x,
@@ -999,84 +990,55 @@ namespace phoenix::character
             monster.visible = true;
             ++visibleCount_;
 
-            // Which index range's vertices this entity draws — its own by
-            // default; a matching donor overrides it. Skipped while blending.
-            std::uint32_t geomIndexOffset = monster.indexOffset;
-            bool ownsGeometry = true;
-            if (monster.animationBlendDuration <= 0.0f)
+            // Palette dedup: reuse an identical pose's palette base; otherwise
+            // append this entity's palette. Skipped while blending (transient).
+            std::uint32_t baseBone = static_cast<std::uint32_t>(paletteFloats_.size() / 16u);
+            bool reused = false;
+            std::int32_t bucket = 0;
+            const bool dedup = monster.animationBlendDuration <= 0.0f;
+            if (dedup)
             {
-                const std::int32_t bucket =
-                    static_cast<std::int32_t>(std::lround(monster.animationSeconds * 60.0f));
+                bucket = static_cast<std::int32_t>(std::lround(monster.animationSeconds * 60.0f));
                 for (const auto& k : poseKeys)
                     if (k.model == monster.modelIndex && k.anim == monster.activeAnimation && k.bucket == bucket)
-                    { geomIndexOffset = k.geomIndexOffset; ownsGeometry = false; break; }
-                if (ownsGeometry)
-                    poseKeys.push_back({ monster.modelIndex, monster.activeAnimation, bucket, monster.indexOffset });
+                    { baseBone = k.baseBone; reused = true; break; }
+            }
+            if (!reused)
+            {
+                append_palette(monster, visual);
+                if (dedup)
+                    poseKeys.push_back({ monster.modelIndex, monster.activeAnimation, bucket, baseBone });
             }
 
+            // Placement transform; kMonsterBaseScale folded into the basis (the
+            // GPU skins the UNSCALED bind pose). Palette base packed in right.w.
+            const float S = monster.scale * kMonsterBaseScale;
             const auto instanceIndex = static_cast<std::uint32_t>(instances_.size());
             const float sn = std::sin(monster.yaw);
             const float cs = std::cos(monster.yaw);
             phoenix::renderer::ObjectInstance inst{};
-            inst.right[0] = cs * monster.scale;
-            inst.right[2] = -sn * monster.scale;
-            inst.up[1] = monster.scale;
-            inst.forward[0] = sn * monster.scale;
-            inst.forward[2] = cs * monster.scale;
+            inst.right[0] = cs * S;
+            inst.right[2] = -sn * S;
+            inst.up[1] = S;
+            inst.forward[0] = sn * S;
+            inst.forward[2] = cs * S;
             inst.position[0] = monster.x;
             inst.position[1] = monster.y;
             inst.position[2] = monster.z;
+            inst.right[3] = static_cast<float>(baseBone);  // palette base (exact int in float)
             instances_.push_back(inst);
 
             for (auto batch : visual.batches)
             {
-                batch.firstIndex += geomIndexOffset;
+                batch.firstIndex += monster.indexOffset;
                 batch.firstInstance = instanceIndex;
                 batch.instanceCount = 1;
                 instanceBatches_.push_back(batch);
             }
-
-            // Donors (unique pose) skin their own geometry; distant donors
-            // re-skin every 2nd/3rd frame, but the first skin is never skipped.
-            if (ownsGeometry)
-            {
-                std::uint32_t stride = 1;
-                if (monster.everSkinned)
-                {
-                    const float ddx = monster.x - view.x;
-                    const float ddz = monster.z - view.z;
-                    const float distSq = ddx * ddx + ddz * ddz;
-                    if (distSq > 55.0f * 55.0f) stride = 3;
-                    else if (distSq > 25.0f * 25.0f) stride = 2;
-                }
-                if (!monster.everSkinned || ((frameCounter_ + s) % stride) == 0)
-                {
-                    monster.everSkinned = true;
-                    donorSkins.push_back({ &monster, &visual });
-                }
-            }
         }
 
-        // Skin donor poses in parallel (disjoint ranges + thread_local scratch).
-        if (workerPool && donorSkins.size() >= 4)
-        {
-            phoenix::app::parallel_for_loading(*workerPool, donorSkins.size(), [&](std::size_t i) {
-                skin(*donorSkins[i].monster, *donorSkins[i].visual);
-            });
-        }
-        else
-        {
-            for (auto& d : donorSkins)
-                skin(*d.monster, *d.visual);
-        }
-
-        // Upload only the donor ranges (sharers draw a donor's geometry).
-        for (auto& d : donorSkins)
-            renderer.update_monster_character_vertices_range(
-                renderVertices_.data(),
-                d.monster->vertexOffset,
-                d.monster->vertexCount);
-
+        if (!paletteFloats_.empty())
+            renderer.update_monster_bone_palette(paletteFloats_.data(), paletteFloats_.size());
         renderer.update_monster_character_instances(instances_, instanceBatches_);
         if (visibleCount_ != lastStatusVisible_)
         {

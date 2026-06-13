@@ -103,6 +103,9 @@ namespace phoenix::character
         struct Visual
         {
             std::vector<phoenix::renderer::TerrainVertex> bindVertices;
+            // GPU-skinning bind mesh: unscaled bind pose + global bone indices
+            // and weights. Skinned on the GPU from the per-entity bone palette.
+            std::vector<phoenix::renderer::SkinnedVertex> skinnedBind;
             std::vector<SourceVertex> sourceVertices;
             std::vector<phoenix::world::CharacterBone> meshBones;
             std::vector<std::uint32_t> indices;
@@ -151,7 +154,10 @@ namespace phoenix::character
             phoenix::renderer::VulkanRenderer& renderer);
         void rebuild_render_mesh(phoenix::renderer::VulkanRenderer& renderer);
         void update_animation(float deltaSeconds, ActiveMonster& monster, const Visual& visual);
-        void skin(const ActiveMonster& monster, const Visual& visual);
+        // Computes the monster's model-space bone palette (mesh-bind * animated
+        // final per bone) and appends it, flattened to 16 floats/bone, to
+        // paletteFloats_. The GPU applies it to the static bind mesh.
+        void append_palette(const ActiveMonster& monster, const Visual& visual);
 
         std::vector<MonsterCatalogEntry> catalog_;
         std::unordered_map<std::uint32_t, std::vector<VisualPartRow>> visualRows_;
@@ -159,8 +165,9 @@ namespace phoenix::character
         std::unordered_map<std::string, std::uint32_t> textureSlotByPath_;
         std::filesystem::path catalogRoot_;
         std::vector<ActiveMonster> active_;
-        std::vector<phoenix::renderer::TerrainVertex> renderVertices_;
+        std::vector<phoenix::renderer::SkinnedVertex> renderVertices_;
         std::vector<std::uint32_t> renderIndices_;
+        std::vector<float> paletteFloats_;   // per-frame concatenated bone palettes
         std::vector<phoenix::renderer::ObjectInstance> instances_;
         std::vector<phoenix::renderer::ObjectBatch> instanceBatches_;
         std::uint32_t nextTextureSlot_{};
