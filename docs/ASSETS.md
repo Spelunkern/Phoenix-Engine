@@ -27,7 +27,8 @@ case-sensitive filesystems). The runtime expects this layout:
 
 ```text
 data/
-  world/              All maps as flat <id>.wld files.
+  world/              All maps as flat <id>.wld files, plus <id>.svmap (actor
+                      placement: NPC positions and monster spawn areas).
     field/<id>/       Field lightmaps  <id>_<sec>_l.dds (baked shadow + tone)
                       and alpha splat masks <id>_<sec>_a0..a7.dds per section.
     dungeon/          <name>.dg models plus <name>/<name>_L<i>.dds lightmap pages.
@@ -35,6 +36,10 @@ data/
                       building/ shape/ tree/ grass/ vani/ mani/ terrain/ texture/
                       object/ (climbable ladders & ivy).
   character/<race>/   3dc/ dds/ ani/ plus <prefix>_<part>.csv and <prefix>_action.csv.
+  npc/                3dc/ dds/ ani/ plus npc.csv (per-model visuals) and
+                      npcdata.csv (id / type / name catalog).
+  monster/            3dc/ dds/ ani/ plus monster.csv (per-model visuals) and
+                      monsterdata.csv (id / name / size catalog).
   weapons/            3do/ dds/ plus per-type CSVs (sword1h.csv, bow.csv, shieldlight.csv, ...).
   vehicle/            3dc/ dds/ ani/ plus vehicle_<class>_01.csv.
   mantles/            3DC/ DDS/ plus mantle_<race>.csv.
@@ -46,6 +51,7 @@ data/
 **Binary formats** (loaded as-is from the original client):
 
 - World/map data: `.wld`, `.dg`
+- Actor placement: `.svmap` (per-map NPC positions and monster spawn areas)
 - Static and animated models: `.smod`, `.vani`, `.mani`, `.3dc`, `.3do`
 - Animation: `.ani`
 - Textures: `.dds` (see canonical format below), `.bmp`, `.tga`
@@ -58,6 +64,13 @@ data/
   `Bone` (rider seat bone), `Bone2` (reserved), `AlternateAnimation` (0/1).
 - `character/<race>/<prefix>_<part>.csv` — body part tables by record index.
 - `character/<race>/<prefix>_action.csv` — animation clips by action id.
+- `npc/npc.csv`, `monster/monster.csv` — per-model visual rows (mesh, texture,
+  and the walk/run/attack/death/breath/damage/idle animation names).
+- `npc/npcdata.csv` — NPC catalog (`npc_index,npc_id,npc_type,npc_type_name,`
+  `npc_type_id,model,name`); the svmap `(NpcType, NpcId)` resolves to
+  `(npc_type, npc_type_id)`.
+- `monster/monsterdata.csv` — monster catalog (`monster_id,name,model_id,size`);
+  the svmap `MobId` resolves to `monster_id`, and `size` is a percentage scale.
 
 **Canonical texture format:**
 

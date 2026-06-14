@@ -45,6 +45,7 @@ set(ENGINE_SOURCES
     src/world/mani_loader.cpp
     src/world/portal_runtime.cpp
     src/world/smod_loader.cpp
+    src/world/svmap_loader.cpp
     src/world/vani_loader.cpp
     src/world/wld_loader.cpp
     external/volk/volk.c

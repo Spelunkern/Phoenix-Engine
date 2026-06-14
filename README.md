@@ -46,6 +46,7 @@ Phoenix Engine does not assume deep technical knowledge from final users. Everyo
 - WLD/DG map loading with free-camera viewer mode and playable character mode.
 - Field lightmaps with baked shadows and colour tones, alpha-mask terrain splatting ("tonality" maps), and full dungeon lightmap support (per-vertex page sampling).
 - VANI vertex-animated decor (distance-based animation LOD) and MANI GPU-driven rotating objects.
+- World NPCs and monsters placed from each map's `.svmap`: NPCs stand at their authored spots (multi-point groups patrol between waypoints), and monster spawn areas populate with mobs that wander their area and follow the terrain. Entities stream in only within camera range, with off-thread visual loading (no first-sighting hitch), distance-based despawn, LRU texture-slot eviction, parallel/LOD pose skinning, and floating name labels. Placement and movement are client-side for now, structured to later be driven by server state.
 - Character appearance loading with race, armor, face, hair, weapon, shield, and mantle selection.
 - Per-race/class weapon and shield attach-bone mapping, with a default starting loadout (one-hand sword + light shield + mantle).
 - Mounts/vehicles: ride seated on a data-driven seat bone, mount animations, and faster-than-foot movement.
@@ -69,7 +70,7 @@ src/
   app/       Application setup helpers.
   assets/    Data indexing and path resolution.
   audio/     Audio playback via miniaudio (OGG Vorbis).
-  character/ Playable character controller, bots, and character mesh assembly.
+  character/ Playable character controller, bots, NPC and monster managers, and character mesh assembly.
   effects/   Particle effect placement.
   runtime/   Engine runtime state, map loading, terrain/object scene building.
   platform/  SDL2 window/input wrapper.
@@ -193,18 +194,20 @@ The data tree is all-lowercase (legacy capitalised layouts still resolve). Expec
 
 ```text
 data/
-  world/          All maps as flat <id>.wld files.
+  world/          All maps as flat <id>.wld files, plus <id>.svmap actor placement.
     field/<id>/   Field lightmaps (<id>_<sec>_l.dds) and alpha splat masks (<id>_<sec>_a0..7.dds).
     dungeon/      Dungeon DG models plus per-dungeon lightmap pages (<name>/<name>_L<i>.dds).
   entity/         Placeable world assets by section (building, tree, grass, object = climbables, ...).
   character/      Per-race 3dc/dds/ani plus part and action CSV tables.
+  npc/            NPC 3dc/dds/ani plus npc.csv (visuals) and npcdata.csv (id/type/name).
+  monster/        Monster 3dc/dds/ani plus monster.csv (visuals) and monsterdata.csv (id/name/size).
   weapons/        Item meshes/textures plus per-type CSVs (sword1h.csv, bow.csv, ...).
   vehicle/        Mount meshes/animations plus vehicle_<class>_01.csv.
   mantles/        Cloak meshes, textures, and per-race CSVs.
   sound/          Map/terrain-referenced OGG audio only.
 ```
 
-The code references formats such as `.wld`, `.dg`, `.smod`, `.vani`, `.3dc`, `.3do`, `.ani`, and `.dds`. These files are user-supplied and are intentionally excluded from the repository.
+The code references formats such as `.wld`, `.svmap`, `.dg`, `.smod`, `.vani`, `.3dc`, `.3do`, `.ani`, and `.dds`. These files are user-supplied and are intentionally excluded from the repository.
 
 See [docs/ASSETS.md](docs/ASSETS.md) for more details.
 
@@ -226,8 +229,10 @@ See [docs/ASSETS.md](docs/ASSETS.md) for more details.
 
 ## Data Formats
 
-Maps load directly from the native WLD/DG binary formats. Item and mount data
-use trimmed CSV tables that contain only the columns the engine consumes:
+Maps load directly from the native WLD/DG binary formats, with per-map actor
+placement (NPC positions and monster spawn areas) read from `.svmap`. Item,
+mount, NPC, and monster catalogs use trimmed CSV tables that contain only the
+columns the engine consumes:
 
 | Table | Format |
 |-------|--------|
@@ -235,6 +240,9 @@ use trimmed CSV tables that contain only the columns the engine consumes:
 | `vehicle/vehicle_<class>_01.csv` | `RecordIndex,Name,Walk/Run/Jump/Breath/IdleAnimation,Objects,Bone,Bone2,AlternateAnimation` — `Bone` is the rider seat bone; `AlternateAnimation=1` switches the rider to the variant ride clips. |
 | `character/<race>/<prefix>_<part>.csv` | Body part tables (mesh, texture, alpha mode per record index). |
 | `character/<race>/<prefix>_action.csv` | Animation clips by action id. |
+| `npc/npc.csv`, `monster/monster.csv` | Per-model visual rows: mesh, texture, and the walk/run/attack/death/breath/damage/idle animation names. |
+| `npc/npcdata.csv` | NPC catalog: `npc_index,npc_id,npc_type,npc_type_name,npc_type_id,model,name` — the svmap `(NpcType, NpcId)` resolves to `(npc_type, npc_type_id)`. |
+| `monster/monsterdata.csv` | Monster catalog: `monster_id,name,model_id,size` — the svmap `MobId` resolves to `monster_id`; `size` is a percentage scale. |
 
 All textures are expected in the canonical format: **BC3 (DXT5) with a full mip
 chain** (256x256 for content textures, native dimensions for lightmaps). The

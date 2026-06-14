@@ -4,6 +4,70 @@ All notable changes to Phoenix Engine are documented here. Dates are ISO-8601.
 
 ## [Unreleased]
 
+## [v0.8] - 2026-06-14
+
+### Added
+- **World NPCs from `.svmap`.** Each map's `data/world/<id>.svmap` is parsed for
+  NPC placements (`src/world/svmap_loader.*`) and rendered at their authored
+  positions, keeping their authored Y (no terrain clamp). The svmap
+  `(NpcType, NpcId)` resolves against `npc/npcdata.csv`'s `(npc_type,
+  npc_type_id)`; visuals come from `npc/npc.csv`.
+  - **Patrol routes.** An NPC entry with multiple authored positions becomes a
+    single NPC that occasionally walks (walk clip) between those waypoints,
+    instead of one static NPC per point.
+- **World monsters from `.svmap`.** Monster spawn areas (a box + per-mob counts)
+  populate with the authored number of mobs of each `MobId` (resolved against
+  `monster/monsterdata.csv`), scaled by the catalog `size`.
+  - **Wandering.** Mobs roam their spawn area: rest, then walk to a random point
+    in the box, with an occasional short run, **following the ground** — both at
+    spawn and while moving they sample the same height callback the character
+    uses (terrain heightmap plus collision-mesh floor), so they stay on the
+    surface. (NPCs, by contrast, keep their authored Y and never clamp.)
+- **Floating name labels.** Small outlined Arial labels above on-screen actors:
+  NPC name (yellow) over type (light blue; hidden for generic `Normal`/`Animal`/
+  `DeadNpc`/`GamblingHouse` types), monster name only. Labels are occluded by
+  world geometry (collision-mesh segment test), distance-capped, and hold a
+  consistent screen-space offset regardless of camera distance.
+- **Lazy streaming + async visual loading.** Actors only stream in within camera
+  range; a model's mesh/texture/animation parse runs off the render thread on the
+  CPU worker pool, so the first sighting of a new actor type no longer hitches.
+- **Entity lifecycle and budget.** Actors beyond a despawn radius (with
+  hysteresis past the stream range) are freed and re-stream when the camera
+  returns; hard caps bound the active count. Under texture-slot pressure, the
+  least-recently-used idle visuals are evicted (slots refcounted and returned to
+  a free list), bounding GPU texture memory across a long session.
+- **Optimised pose skinning.** Each visual precomputes its static skinning plan
+  (the referenced bones + their transposed bind matrices), so per-frame skinning
+  walks ~dozens of bones instead of every vertex. Distance-based animation LOD
+  coarsens the pose-dedup rate for far actors (more share one skinning job).
+  Skinning is serial by default and only fans out to the worker pool for very
+  large crowds (waking the sleeping pool per frame costs more than it saves at
+  normal counts).
+- The panel "clear" command for NPCs/monsters now removes only manually-spawned
+  actors, leaving the map's `.svmap` actors (which are always present).
+- **Dual-wield off-hand defaults.** A per-character off-hand attach bone plus a
+  local-space offset/rotation, recovered for dual swords (human/deatheater
+  fighters) and claws (elf/vile rangers); elf rangers also get a dedicated
+  primary claw bone. Still tunable live from the panel.
+- New map/prop particle effects (cursed grave mist, forge heat haze, lantern
+  light, and more) with richer per-layer parameters (per-layer turbulence and
+  fade controls) on the procedural effect system.
+
+### Changed
+- The NPC and monster bone-palette and instance buffers are double-buffered
+  across frames-in-flight. A single shared buffer was overwritten by the CPU
+  while the previous frame's GPU draw still read it, garbling bone palettes
+  (deformed meshes) under load.
+- On every map load the NPC/monster visual and texture-slot caches are reset, so
+  reused models re-upload their textures into the freshly recreated GPU texture
+  array instead of rendering green.
+
+### Removed
+- Dead NPC/monster manager state left over from the GPU-skinning move: the
+  legacy `TerrainVertex` bind copy, the cached per-vertex source array (now a
+  transient parse local), unused per-entity buffer offsets, and the unread
+  `active_label`/`texturePaths` fields.
+
 ## [v0.7] - 2026-06-11
 
 ### Added

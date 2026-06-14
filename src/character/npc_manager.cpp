@@ -2,8 +2,10 @@
 
 #include "app/loading_scheduler.h"
 #include "assets/data_index.h"
+#include "world/svmap_loader.h"
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
@@ -11,7 +13,7 @@
 #include <format>
 #include <fstream>
 #include <limits>
-#include <sstream>
+#include <random>
 #include <unordered_map>
 
 namespace phoenix::character
@@ -19,6 +21,11 @@ namespace phoenix::character
     namespace
     {
         constexpr float kNpcScale = 0.95f;
+        // Animation-LOD distance tiers (squared, world units): within near -> full
+        // 60/s pose rate; within mid -> 30/s; beyond -> 15/s. Coarser rates let
+        // more distant entities share one skinning job.
+        constexpr float kAnimLodNearSq = 25.0f * 25.0f;
+        constexpr float kAnimLodMidSq = 55.0f * 55.0f;
         constexpr float kAniFramesPerSecond = 30.0f;
         constexpr float kAnimationBlendDuration = 0.12f;
         constexpr float kOneShotBlendDuration = 0.25f;
@@ -397,6 +404,7 @@ namespace phoenix::character
             return true;
 
         catalog_.clear();
+        catalogByTypeKey_.clear();
         visualRows_.clear();
         visuals_.clear();
         textureSlotByPath_.clear();
@@ -465,11 +473,19 @@ namespace phoenix::character
                 entry.npcId = row[1];
                 entry.npcType = parse_u32(row[2]);
                 entry.npcTypeName = row[3];
+                entry.npcTypeId = parse_u32(row[4]);
                 entry.modelIndex = parse_u32(row[5]);
                 entry.name = row[6];
                 entry.label = entry.name + "  [" + entry.npcId + " / model " + std::to_string(entry.modelIndex) + "]";
                 if (visualRows_.contains(entry.modelIndex))
+                {
+                    // svmap stores (NpcType, NpcId); npcdata's npc_type/npc_type_id
+                    // are that pair. Key the catalog by it so map placements resolve.
+                    const std::uint64_t typeKey =
+                        (static_cast<std::uint64_t>(entry.npcType) << 32) | entry.npcTypeId;
+                    catalogByTypeKey_.emplace(typeKey, catalog_.size());
                     catalog_.push_back(std::move(entry));
+                }
             }
         }
 
@@ -500,6 +516,7 @@ namespace phoenix::character
 
         ActiveNpc npc{};
         npc.modelIndex = entry.modelIndex;
+        npc.catalogIndex = catalogIndex;
         npc.x = x;
         npc.y = y - visual->localGroundY;
         npc.z = z;
@@ -508,7 +525,6 @@ namespace phoenix::character
         npc.previousAnimation = visual->breathAnimation;
         npc.idleGesturePick = static_cast<std::uint32_t>(active_.size() * 13u + entry.modelIndex);
         active_.push_back(npc);
-        activeLabel_ = entry.label;
         // Rebuild only when a model first appears; more of an existing model
         // just adds a draw-time instance over the shared mesh.
         if (!modelIndexOffset_.contains(entry.modelIndex))
@@ -517,10 +533,241 @@ namespace phoenix::character
         return true;
     }
 
+    bool NpcManager::load_map_npcs(
+        const std::filesystem::path& dataRoot,
+        const std::filesystem::path& svmapPath,
+        float halfMap,
+        std::uint32_t textureBaseSlot,
+        std::uint32_t textureSlotReserve,
+        phoenix::renderer::VulkanRenderer& renderer)
+    {
+        placements_.clear();
+        streamedPlacements_ = 0;
+        mapDataRoot_ = dataRoot;
+        mapTextureBaseSlot_ = textureBaseSlot;
+        mapTextureReserve_ = textureSlotReserve;
+
+        // The renderer recreates the whole terrain/character texture array on each
+        // map load (re-uploading terrainTextures), which wipes the NPC slots we
+        // filled incrementally on the previous map. Drop the cached visuals and
+        // texture-slot assignments so every NPC re-decodes and re-uploads its
+        // textures into the fresh array — otherwise reused models render green
+        // (unresolved texture). Cheap now that loads are async.
+        visuals_.clear();
+        visualLoads_.clear();
+        failedModels_.clear();
+        modelIndexOffset_.clear();
+        textureSlotByPath_.clear();
+        slotRefcount_.clear();
+        textureKeyBySlot_.clear();
+        freeTextureSlots_.clear();
+        modelLastUsedFrame_.clear();
+        nextTextureSlot_ = 0;
+
+        if (!load_catalog(dataRoot))
+            return false;
+
+        const auto resolved = resolve_ci(svmapPath);
+        if (resolved.empty())
+        {
+            status_ = "svmap not found for this map.";
+            return false;
+        }
+
+        const auto data = phoenix::world::load_svmap_npcs(resolved);
+        if (!data.parsed)
+        {
+            status_ = "svmap parse failed.";
+            return false;
+        }
+
+        std::size_t unresolved = 0;
+        placements_.reserve(data.groups.size());
+        for (const auto& group : data.groups)
+        {
+            const std::uint64_t typeKey =
+                (static_cast<std::uint64_t>(static_cast<std::uint32_t>(group.npcType)) << 32)
+                | static_cast<std::uint32_t>(group.npcId);
+            const auto it = catalogByTypeKey_.find(typeKey);
+            if (it == catalogByTypeKey_.end())
+            {
+                ++unresolved;
+                continue;   // no visual/catalog entry for this NPC — skip it
+            }
+            MapPlacement mp{};
+            mp.catalogIndex = it->second;
+            mp.modelIndex = catalog_[it->second].modelIndex;
+            mp.waypoints.reserve(group.waypoints.size());
+            for (const auto& wp : group.waypoints)
+            {
+                Waypoint out{};
+                // Raw map-space X/Z -> engine/world space (matches WLD instances).
+                // Y is kept exactly as authored: svmap NPCs are never terrain-clamped.
+                out.x = wp.x - halfMap;
+                out.y = wp.y;
+                out.z = wp.z - halfMap;
+                // svmap yaw points 180° opposite to the engine's NPC facing (the
+                // instance basis uses the reverse forward convention), so NPCs
+                // faced away from their authored direction — flip by pi.
+                out.yaw = wp.yaw + 3.14159265358979323846f;
+                mp.waypoints.push_back(out);
+            }
+            placements_.push_back(std::move(mp));
+        }
+
+        // Nothing visible yet — visuals stream in as the camera approaches.
+        renderer.set_npc_skinned_visible(active() && visibleCount_ > 0);
+        status_ = std::format("svmap NPCs: {} placed{}", placements_.size(),
+            unresolved ? std::format(", {} unresolved", unresolved) : std::string{});
+        return !placements_.empty();
+    }
+
+    void NpcManager::stream_map_npcs(
+        const phoenix::renderer::CameraView& view,
+        phoenix::renderer::VulkanRenderer& renderer,
+        phoenix::app::LoadingScheduler* workerPool)
+    {
+        // Promote finished async loads first so their placements can spawn below.
+        // (A rebuild is driven only by an actual first spawn, not by a load
+        // readying — a model that finished after its placement left range must
+        // not trigger a needless mesh rebuild / GPU stall.)
+        pump_visual_loads(renderer);
+
+        if (placements_.empty() || streamedPlacements_ >= placements_.size())
+            return;
+
+        bool newModel = false;
+
+        // Nominal bounds for the range gate: the real per-model bounds aren't
+        // known until the visual loads, so use a person-sized sphere. The gate
+        // reuses the camera frustum + far distance (npcViewDistance) test, so a
+        // placement only loads once it's actually within view range.
+        constexpr float kStreamCenterY = 1.5f;
+        constexpr float kStreamRadius = 2.5f;
+
+        for (auto& placement : placements_)
+        {
+            if (placement.spawned || placement.waypoints.empty())
+                continue;
+            // Anchor the range test on the first waypoint (patrol home).
+            const auto& home = placement.waypoints.front();
+            if (!phoenix::renderer::sphere_visible(
+                view, home.x, home.y + kStreamCenterY, home.z, kStreamRadius))
+                continue;
+
+            const auto& entry = catalog_[placement.catalogIndex];
+            const std::uint32_t model = entry.modelIndex;
+
+            // A model whose load permanently failed: drop the placement.
+            if (failedModels_.contains(model))
+            {
+                placement.spawned = true;
+                ++streamedPlacements_;
+                continue;
+            }
+
+            auto visualIt = visuals_.find(model);
+            if (visualIt == visuals_.end())
+            {
+                // Not loaded yet. Kick off (or wait on) an async load so the
+                // first sighting of this type doesn't hitch the render thread.
+                if (!visualLoads_.contains(model))
+                {
+                    VisualLoadPlan plan;
+                    if (!plan_visual(mapDataRoot_, entry, mapTextureBaseSlot_, mapTextureReserve_, plan))
+                    {
+                        failedModels_.insert(model);
+                        placement.spawned = true;
+                        ++streamedPlacements_;
+                        continue;
+                    }
+                    if (workerPool)
+                    {
+                        visualLoads_.emplace(model,
+                            workerPool->submit([plan = std::move(plan)]() { return parse_visual(plan); }));
+                    }
+                    else
+                    {
+                        // No worker pool: parse on this thread (still no hitch
+                        // beyond the unavoidable synchronous load).
+                        auto parsed = parse_visual(plan);
+                        if (!parsed)
+                        {
+                            failedModels_.insert(model);
+                            placement.spawned = true;
+                            ++streamedPlacements_;
+                            continue;
+                        }
+                        finalize_visual(model, std::move(parsed), mapTextureBaseSlot_, renderer);
+                        visualIt = visuals_.find(model);
+                    }
+                }
+                if (visualIt == visuals_.end())
+                    continue;   // still loading on the worker — spawn a later frame
+            }
+
+            Visual* visual = &visualIt->second;
+            placement.spawned = true;
+            ++streamedPlacements_;
+
+            ActiveNpc npc{};
+            npc.modelIndex = entry.modelIndex;
+            npc.catalogIndex = placement.catalogIndex;
+            npc.placementIndex = static_cast<std::size_t>(&placement - placements_.data());
+            npc.fromMap = true;
+            npc.x = home.x;
+            npc.y = home.y - visual->localGroundY;
+            npc.z = home.z;
+            npc.yaw = home.yaw;
+            npc.activeAnimation = visual->breathAnimation;
+            npc.previousAnimation = visual->breathAnimation;
+            npc.idleGesturePick = static_cast<std::uint32_t>(active_.size() * 13u + entry.modelIndex);
+
+            // Multiple authored waypoints = a patrol: one NPC that walks between
+            // them occasionally. A walk animation is required; without one it
+            // stays static. Waypoints are stored render-space (localGroundY-
+            // adjusted) so movement keeps each authored Y.
+            const bool canPatrol = placement.waypoints.size() > 1
+                && visual->walkAnimation != kInvalidAnimation
+                && visual->walkAnimation < visual->animations.size();
+            if (canPatrol)
+            {
+                npc.isPatrol = true;
+                npc.patrol.reserve(placement.waypoints.size());
+                for (const auto& wp : placement.waypoints)
+                    npc.patrol.push_back({ wp.x, wp.y - visual->localGroundY, wp.z, wp.yaw });
+                npc.patrolFrom = 0;
+                npc.patrolTo = 0;
+                npc.patrolMoving = false;
+                // Stagger the first move and vary the cadence so patrols don't
+                // step off together; they rest most of the time ("a veces").
+                std::uniform_real_distribution<float> rest(10.0f, 26.0f);
+                npc.patrolWaitInterval = rest(patrolRng_);
+                npc.patrolWaitTimer = std::uniform_real_distribution<float>(
+                    0.0f, npc.patrolWaitInterval)(patrolRng_);
+            }
+
+            const bool firstOfModel = !modelIndexOffset_.contains(entry.modelIndex);
+            active_.push_back(std::move(npc));
+            if (firstOfModel)
+                newModel = true;
+        }
+
+        // A model's first instance needs the shared bind mesh (re)uploaded;
+        // additional instances of existing models are handled at draw time.
+        if (newModel)
+            rebuild_render_mesh(renderer);
+    }
+
     void NpcManager::clear(phoenix::renderer::VulkanRenderer& renderer)
     {
+        placements_.clear();
+        streamedPlacements_ = 0;
+        // In-flight worker parses (if any) complete harmlessly; their results are
+        // self-contained and simply discarded when the futures are dropped.
+        visualLoads_.clear();
+        failedModels_.clear();
         active_.clear();
-        activeLabel_.clear();
         renderVertices_.clear();
         renderIndices_.clear();
         instances_.clear();
@@ -528,6 +775,195 @@ namespace phoenix::character
         visibleCount_ = 0;
         renderer.update_npc_skinned_instances(instances_, instanceBatches_);
         renderer.set_npc_skinned_visible(false);
+    }
+
+    void NpcManager::clear_manual(phoenix::renderer::VulkanRenderer& renderer)
+    {
+        const auto before = active_.size();
+        active_.erase(std::remove_if(active_.begin(), active_.end(),
+            [](const ActiveNpc& npc) { return !npc.fromMap; }), active_.end());
+        if (active_.size() == before)
+            return;   // no manually-spawned NPCs to remove
+
+        // Refit the shared bind mesh to the surviving map NPCs and blank this
+        // frame's instances; the next update() repopulates them, so no stale
+        // instance indexes a just-rebuilt mesh.
+        labels_.clear();
+        visibleCount_ = 0;
+        rebuild_render_mesh(renderer);
+        renderer.update_npc_skinned_instances(instances_, instanceBatches_);
+        renderer.set_npc_skinned_visible(false);
+    }
+
+    bool NpcManager::plan_visual(
+        const std::filesystem::path& dataRoot,
+        const NpcCatalogEntry& entry,
+        std::uint32_t textureBaseSlot,
+        std::uint32_t textureSlotReserve,
+        VisualLoadPlan& out)
+    {
+        const auto rowsIt = visualRows_.find(entry.modelIndex);
+        if (rowsIt == visualRows_.end() || rowsIt->second.empty())
+        {
+            status_ = "NPC visual model not found.";
+            return false;
+        }
+        const auto root = resolve_ci(dataRoot / "npc");
+        const auto meshRoot = resolve_ci(root / "3dc");
+        const auto textureRoot = resolve_ci(root / "dds");
+        const auto animationRoot = resolve_ci(root / "ani");
+        if (meshRoot.empty() || textureRoot.empty() || animationRoot.empty())
+        {
+            status_ = "NPC asset folders are incomplete.";
+            return false;
+        }
+
+        out = {};
+        out.modelIndex = entry.modelIndex;
+        out.textureBaseSlot = textureBaseSlot;
+        out.animationRoot = animationRoot;
+        // Resolve paths and assign texture slots here (main thread): the slot
+        // maps are shared state. The worker parse only reads the resulting plan.
+        for (const auto& part : rowsIt->second)
+        {
+            VisualPartLoad load{};
+            load.meshPath = resolve_ci(meshRoot / part.meshName);
+            load.texturePath = resolve_ci(textureRoot / part.textureName);
+            if (load.meshPath.empty() || load.texturePath.empty())
+                continue;
+            const auto textureKey = phoenix::assets::lower_ascii(load.texturePath.generic_string());
+            if (const auto it = textureSlotByPath_.find(textureKey); it != textureSlotByPath_.end())
+            {
+                load.textureSlot = it->second;
+                load.decodeTexture = false;
+            }
+            else
+            {
+                // Reuse a slot freed by eviction before growing the watermark.
+                if (!freeTextureSlots_.empty())
+                {
+                    load.textureSlot = freeTextureSlots_.back();
+                    freeTextureSlots_.pop_back();
+                }
+                else if (nextTextureSlot_ < textureSlotReserve)
+                {
+                    load.textureSlot = nextTextureSlot_++;
+                }
+                else
+                {
+                    status_ = "NPC texture reserve exhausted.";
+                    return false;
+                }
+                textureSlotByPath_.emplace(textureKey, load.textureSlot);
+                textureKeyBySlot_[load.textureSlot] = textureKey;
+                load.decodeTexture = true;
+            }
+            out.parts.push_back(std::move(load));
+        }
+        if (out.parts.empty())
+        {
+            status_ = "NPC visual model not found.";
+            return false;
+        }
+        const auto& firstPart = rowsIt->second.front();
+        out.walkAni = firstPart.walkAni;
+        out.breathAni = firstPart.breathAni;
+        out.idleAni = firstPart.idleAni;
+        out.runAni = firstPart.runAni;
+        out.attack1Ani = firstPart.attack1Ani;
+        return true;
+    }
+
+    NpcManager::Visual* NpcManager::finalize_visual(
+        std::uint32_t modelIndex,
+        std::shared_ptr<Visual> visual,
+        std::uint32_t textureBaseSlot,
+        phoenix::renderer::VulkanRenderer& renderer)
+    {
+        for (auto& [slot, texture] : visual->pendingTextureUploads)
+        {
+            std::vector<phoenix::renderer::DdsTexture> single{ std::move(texture) };
+            renderer.upload_terrain_texture_layers(textureBaseSlot + slot, single);
+        }
+        visual->pendingTextureUploads.clear();
+        visual->ready = true;
+        // This visual now references its texture slots; track for eviction.
+        for (const auto slot : visual->textureSlots)
+            ++slotRefcount_[slot];
+        auto [it, inserted] = visuals_.emplace(modelIndex, std::move(*visual));
+        return &it->second;
+    }
+
+    void NpcManager::evict_visual(std::uint32_t modelIndex)
+    {
+        const auto it = visuals_.find(modelIndex);
+        if (it == visuals_.end())
+            return;
+        for (const auto slot : it->second.textureSlots)
+        {
+            const auto refIt = slotRefcount_.find(slot);
+            if (refIt == slotRefcount_.end())
+                continue;
+            if (--refIt->second == 0)
+            {
+                // Last user gone: reclaim the slot. Its GPU texture data lingers
+                // harmlessly until the slot is reused (no geometry references it
+                // after the caller's rebuild).
+                slotRefcount_.erase(refIt);
+                freeTextureSlots_.push_back(slot);
+                if (const auto keyIt = textureKeyBySlot_.find(slot); keyIt != textureKeyBySlot_.end())
+                {
+                    textureSlotByPath_.erase(keyIt->second);
+                    textureKeyBySlot_.erase(keyIt);
+                }
+            }
+        }
+        visuals_.erase(it);
+        modelIndexOffset_.erase(modelIndex);
+        modelLastUsedFrame_.erase(modelIndex);
+    }
+
+    void NpcManager::evict_visuals_if_needed(phoenix::renderer::VulkanRenderer& renderer)
+    {
+        if (mapTextureReserve_ == 0 || visuals_.empty())
+            return;
+        // Slots in use = high-watermark minus reclaimed. Only evict above a
+        // high-water mark, down to a low-water mark, so there's no churn when
+        // there's room. Cap eviction to idle visuals (no active NPC references).
+        const auto usedSlots = [&]() -> std::uint32_t {
+            return nextTextureSlot_ - static_cast<std::uint32_t>(freeTextureSlots_.size());
+        };
+        const std::uint32_t highWater = mapTextureReserve_ * 3u / 4u;
+        if (usedSlots() <= highWater)
+            return;
+        const std::uint32_t lowWater = mapTextureReserve_ / 2u;
+
+        std::unordered_set<std::uint32_t> activeModels;
+        activeModels.reserve(active_.size());
+        for (const auto& npc : active_)
+            activeModels.insert(npc.modelIndex);
+
+        // Idle visuals, least-recently-used first.
+        std::vector<std::pair<std::uint32_t, std::uint32_t>> candidates;   // (lastUsedFrame, model)
+        for (const auto& [model, visual] : visuals_)
+            if (!activeModels.contains(model))
+            {
+                const auto fit = modelLastUsedFrame_.find(model);
+                candidates.emplace_back(fit != modelLastUsedFrame_.end() ? fit->second : 0u, model);
+            }
+        std::sort(candidates.begin(), candidates.end());
+
+        bool evicted = false;
+        for (const auto& [lastUsed, model] : candidates)
+        {
+            if (usedSlots() <= lowWater)
+                break;
+            (void)lastUsed;
+            evict_visual(model);
+            evicted = true;
+        }
+        if (evicted)
+            rebuild_render_mesh(renderer);
     }
 
     NpcManager::Visual* NpcManager::load_visual(
@@ -539,28 +975,26 @@ namespace phoenix::character
     {
         if (auto it = visuals_.find(entry.modelIndex); it != visuals_.end())
             return &it->second;
-
-        const auto rowsIt = visualRows_.find(entry.modelIndex);
-        if (rowsIt == visualRows_.end() || rowsIt->second.empty())
+        VisualLoadPlan plan;
+        if (!plan_visual(dataRoot, entry, textureBaseSlot, textureSlotReserve, plan))
+            return nullptr;
+        auto parsed = parse_visual(plan);
+        if (!parsed)
         {
-            status_ = "NPC visual model not found.";
+            status_ = "NPC visual load failed: no mesh parts or animation.";
             return nullptr;
         }
+        return finalize_visual(entry.modelIndex, std::move(parsed), textureBaseSlot, renderer);
+    }
 
-        Visual next{};
+    std::shared_ptr<NpcManager::Visual> NpcManager::parse_visual(const VisualLoadPlan& plan)
+    {
+        auto visualPtr = std::make_shared<Visual>();
+        Visual& next = *visualPtr;
         next.breathAnimation = kInvalidAnimation;
         next.idleAnimation = kInvalidAnimation;
-        const auto root = resolve_ci(dataRoot / "npc");
-        const auto meshRoot = resolve_ci(root / "3dc");
-        const auto textureRoot = resolve_ci(root / "dds");
-        const auto animationRoot = resolve_ci(root / "ani");
-        if (meshRoot.empty() || textureRoot.empty() || animationRoot.empty())
-        {
-            status_ = "NPC asset folders are incomplete.";
-            return nullptr;
-        }
+        next.walkAnimation = kInvalidAnimation;
 
-        std::vector<std::pair<std::uint32_t, phoenix::renderer::DdsTexture>> newTextures;
         std::size_t parsedParts = 0;
         float minX = std::numeric_limits<float>::max();
         float minY = std::numeric_limits<float>::max();
@@ -568,53 +1002,31 @@ namespace phoenix::character
         float maxX = -std::numeric_limits<float>::max();
         float maxY = -std::numeric_limits<float>::max();
         float maxZ = -std::numeric_limits<float>::max();
-        for (const auto& part : rowsIt->second)
+        // Per-vertex skinning inputs, kept only long enough to build the static
+        // skinning plan below — not stored in the cached Visual.
+        std::vector<SourceVertex> sourceVertices;
+        for (const auto& part : plan.parts)
         {
-            const auto meshPath = resolve_ci(meshRoot / part.meshName);
-            auto model = phoenix::world::load_character_3dc(meshPath);
+            auto model = phoenix::world::load_character_3dc(part.meshPath);
             if (!model.parsed || model.vertices.empty())
                 continue;
 
-            const auto texturePath = resolve_ci(textureRoot / part.textureName);
-            if (texturePath.empty())
-                continue;
+            const std::uint32_t textureSlot = part.textureSlot;
+            const bool alphaCutout = phoenix::renderer::dds_file_has_alpha_cutout(part.texturePath);
+            if (part.decodeTexture)
+                next.pendingTextureUploads.push_back(
+                    { textureSlot, phoenix::renderer::load_dds(part.texturePath) });
+            next.textureSlots.push_back(textureSlot);
 
-            const auto textureKey = phoenix::assets::lower_ascii(texturePath.generic_string());
-            std::uint32_t textureSlot = 0;
-            if (const auto it = textureSlotByPath_.find(textureKey); it != textureSlotByPath_.end())
-            {
-                textureSlot = it->second;
-            }
-            else
-            {
-                if (nextTextureSlot_ >= textureSlotReserve)
-                {
-                    status_ = "NPC texture reserve exhausted.";
-                    return nullptr;
-                }
-                textureSlot = nextTextureSlot_++;
-                textureSlotByPath_.emplace(textureKey, textureSlot);
-                newTextures.push_back({ textureSlot, phoenix::renderer::load_dds(texturePath) });
-            }
-            next.texturePaths.push_back(texturePath);
-
-            const auto baseVertex = static_cast<std::uint32_t>(next.bindVertices.size());
+            const auto baseVertex = static_cast<std::uint32_t>(next.skinnedBind.size());
             const auto meshBoneBase = static_cast<std::uint32_t>(next.meshBones.size());
             const auto meshBoneCount = static_cast<std::uint32_t>(model.bones.size());
             next.meshBones.insert(next.meshBones.end(), model.bones.begin(), model.bones.end());
-            const bool alphaCutout = phoenix::renderer::dds_file_has_alpha_cutout(texturePath);
+            const std::uint32_t textureLayer = plan.textureBaseSlot + textureSlot + (alphaCutout ? 2048u : 0u);
 
             for (const auto& src : model.vertices)
             {
                 SourceVertex sv{};
-                sv.position[0] = src.position[0];
-                sv.position[1] = src.position[1];
-                sv.position[2] = src.position[2];
-                sv.normal[0] = src.normal[0];
-                sv.normal[1] = src.normal[1];
-                sv.normal[2] = src.normal[2];
-                sv.uv[0] = src.uv[0];
-                sv.uv[1] = src.uv[1];
                 sv.weights[0] = src.boneWeights[0];
                 sv.weights[1] = src.boneWeights[1];
                 sv.weights[2] = src.boneWeights[2];
@@ -623,35 +1035,21 @@ namespace phoenix::character
                 sv.bones[2] = src.boneIndices[2];
                 sv.meshBoneBase = meshBoneBase;
                 sv.meshBoneCount = meshBoneCount;
-                sv.gpuIndex = static_cast<std::uint32_t>(next.bindVertices.size());
-                next.sourceVertices.push_back(sv);
-
-                phoenix::renderer::TerrainVertex gv{};
-                gv.position[0] = sv.position[0] * kNpcScale;
-                gv.position[1] = sv.position[1] * kNpcScale;
-                gv.position[2] = sv.position[2] * kNpcScale;
-                gv.color[0] = gv.color[1] = gv.color[2] = 1.0f;
-                gv.normal[0] = sv.normal[0];
-                gv.normal[1] = sv.normal[1];
-                gv.normal[2] = sv.normal[2];
-                gv.uv[0] = sv.uv[0];
-                gv.uv[1] = sv.uv[1];
-                gv.textureLayer = textureBaseSlot + textureSlot + (alphaCutout ? 2048u : 0u);
-                next.bindVertices.push_back(gv);
+                sourceVertices.push_back(sv);
 
                 // GPU-skinning bind vertex: UNSCALED bind pose (kNpcScale folded
                 // into the per-instance basis) + global bone indices.
                 phoenix::renderer::SkinnedVertex skv{};
-                skv.position[0] = sv.position[0];
-                skv.position[1] = sv.position[1];
-                skv.position[2] = sv.position[2];
+                skv.position[0] = src.position[0];
+                skv.position[1] = src.position[1];
+                skv.position[2] = src.position[2];
                 skv.color[0] = skv.color[1] = skv.color[2] = 1.0f;
-                skv.normal[0] = sv.normal[0];
-                skv.normal[1] = sv.normal[1];
-                skv.normal[2] = sv.normal[2];
-                skv.uv[0] = sv.uv[0];
-                skv.uv[1] = sv.uv[1];
-                skv.textureLayer = gv.textureLayer;
+                skv.normal[0] = src.normal[0];
+                skv.normal[1] = src.normal[1];
+                skv.normal[2] = src.normal[2];
+                skv.uv[0] = src.uv[0];
+                skv.uv[1] = src.uv[1];
+                skv.textureLayer = textureLayer;
                 for (int b = 0; b < 3; ++b)
                 {
                     skv.bones[b] = meshBoneBase + static_cast<std::uint32_t>(sv.bones[b]);
@@ -659,12 +1057,16 @@ namespace phoenix::character
                 }
                 next.skinnedBind.push_back(skv);
 
-                minX = std::min(minX, gv.position[0]);
-                minY = std::min(minY, gv.position[1]);
-                minZ = std::min(minZ, gv.position[2]);
-                maxX = std::max(maxX, gv.position[0]);
-                maxY = std::max(maxY, gv.position[1]);
-                maxZ = std::max(maxZ, gv.position[2]);
+                // Bounds use the scaled bind pose (kNpcScale folded into the basis).
+                const float sx = src.position[0] * kNpcScale;
+                const float sy = src.position[1] * kNpcScale;
+                const float sz = src.position[2] * kNpcScale;
+                minX = std::min(minX, sx);
+                minY = std::min(minY, sy);
+                minZ = std::min(minZ, sz);
+                maxX = std::max(maxX, sx);
+                maxY = std::max(maxY, sy);
+                maxZ = std::max(maxZ, sz);
             }
 
             phoenix::renderer::ObjectBatch batch{};
@@ -686,7 +1088,7 @@ namespace phoenix::character
         const auto loadAnimation = [&](const std::string& name) -> std::size_t {
             if (is_load_placeholder(name))
                 return kInvalidAnimation;
-            const auto aniPath = resolve_ci(animationRoot / name);
+            const auto aniPath = resolve_ci(plan.animationRoot / name);
             if (aniPath.empty())
                 return kInvalidAnimation;
             const auto key = phoenix::assets::lower_ascii(aniPath.generic_string());
@@ -707,9 +1109,10 @@ namespace phoenix::character
             return next.animations.size() - 1;
         };
 
-        const auto& firstPart = rowsIt->second.front();
-        next.breathAnimation = loadAnimation(firstPart.breathAni);
-        next.idleAnimation = loadAnimation(firstPart.idleAni);
+        next.breathAnimation = loadAnimation(plan.breathAni);
+        next.idleAnimation = loadAnimation(plan.idleAni);
+        // Walk drives patrolling NPCs while moving between waypoints.
+        next.walkAnimation = loadAnimation(plan.walkAni);
         if (next.breathAnimation == kInvalidAnimation)
             next.breathAnimation = next.idleAnimation;
         if (next.idleAnimation == kInvalidAnimation)
@@ -717,9 +1120,9 @@ namespace phoenix::character
         if (next.breathAnimation == kInvalidAnimation)
         {
             const std::string fallbackCandidates[] = {
-                firstPart.walkAni,
-                firstPart.runAni,
-                firstPart.attack1Ani,
+                plan.walkAni,
+                plan.runAni,
+                plan.attack1Ani,
             };
             for (const auto& name : fallbackCandidates)
             {
@@ -733,15 +1136,36 @@ namespace phoenix::character
         }
 
         if (parsedParts == 0 || next.animations.empty() || next.breathAnimation == kInvalidAnimation)
-        {
-            status_ = "NPC visual load failed: no mesh parts or animation.";
             return nullptr;
-        }
 
-        for (const auto& [slot, texture] : newTextures)
+        // Precompute the static skinning plan: the unique mesh bones referenced by
+        // any vertex (with the animation bone they read and their transposed bind
+        // matrix). Per-frame skinning then walks ~dozens of bones instead of every
+        // vertex — the dominant per-mob CPU cost otherwise.
         {
-            std::vector<phoenix::renderer::DdsTexture> single{ texture };
-            renderer.upload_terrain_texture_layers(textureBaseSlot + slot, single);
+            const std::size_t boneCount = next.meshBones.size();
+            std::vector<std::uint8_t> seen(boneCount, 0u);
+            for (const auto& src : sourceVertices)
+            {
+                for (int influence = 0; influence < 3; ++influence)
+                {
+                    if (src.weights[influence] <= 0.0001f)
+                        continue;
+                    const auto local = static_cast<std::uint32_t>(src.bones[influence]);
+                    if (local >= src.meshBoneCount)
+                        continue;
+                    const std::uint32_t global = src.meshBoneBase + local;
+                    if (global >= boneCount || seen[global])
+                        continue;
+                    seen[global] = 1u;
+                    next.paletteGlobalBone.push_back(global);
+                    next.paletteLocalBone.push_back(local);
+                    const auto bind = mat4_from_shaiya_transposed(next.meshBones[global].matrix);
+                    const auto base = next.paletteMeshBind.size();
+                    next.paletteMeshBind.resize(base + 16);
+                    std::memcpy(&next.paletteMeshBind[base], &bind.m[0][0], 16 * sizeof(float));
+                }
+            }
         }
 
         next.localGroundY = std::isfinite(minY) ? minY : 0.0f;
@@ -755,13 +1179,35 @@ namespace phoenix::character
             const float ey = maxY - cy;
             const float ez = maxZ - cz;
             next.boundsRadius = std::max(0.5f, std::sqrt(ex * ex + ey * ey + ez * ez));
+            next.modelTopY = maxY;   // scaled-local head height (label anchor)
         }
-        next.ready = true;
+        next.ready = false;   // finalize_visual flips this after uploading textures
+        return visualPtr;
+    }
 
-        auto [it, inserted] = visuals_.emplace(entry.modelIndex, std::move(next));
-        status_ = std::format("NPC visual cached: model {}, {} parts, {} textures used",
-            entry.modelIndex, parsedParts, textureSlotByPath_.size());
-        return &it->second;
+    bool NpcManager::pump_visual_loads(phoenix::renderer::VulkanRenderer& renderer)
+    {
+        // Promote at most one finished async load per call: the finalize does a
+        // GPU texture upload (and the spawn it enables triggers a mesh rebuild),
+        // so spreading them keeps any single frame cheap.
+        for (auto it = visualLoads_.begin(); it != visualLoads_.end(); ++it)
+        {
+            if (it->second.wait_for(std::chrono::seconds(0)) != std::future_status::ready)
+                continue;
+            const std::uint32_t model = it->first;
+            std::shared_ptr<Visual> parsed = it->second.get();
+            visualLoads_.erase(it);
+            if (!parsed)
+            {
+                failedModels_.insert(model);
+                status_ = "NPC visual load failed: no mesh parts or animation.";
+                return false;
+            }
+            if (!visuals_.contains(model))
+                finalize_visual(model, std::move(parsed), mapTextureBaseSlot_, renderer);
+            return true;
+        }
+        return false;
     }
 
     void NpcManager::rebuild_render_mesh(phoenix::renderer::VulkanRenderer& renderer)
@@ -806,22 +1252,36 @@ namespace phoenix::character
         if (visual.animations.empty())
             return;
 
-        const bool hasSeparateIdle = visual.idleAnimation != kInvalidAnimation
-            && visual.idleAnimation != visual.breathAnimation
-            && visual.idleAnimation < visual.animations.size();
-        if (!npc.playingIdle && hasSeparateIdle)
+        std::size_t desiredAnimation;
+        if (npc.isPatrol)
         {
-            npc.idleGestureTimer += deltaSeconds;
-            const float interval = 8.0f + static_cast<float>((npc.idleGesturePick * 37u) % 60u) * 0.1f;
-            if (npc.idleGestureTimer >= interval)
-            {
-                npc.playingIdle = true;
-                npc.idleGestureTimer = 0.0f;
-                ++npc.idleGesturePick;
-            }
+            // Patrols don't play idle gestures; they walk while moving between
+            // waypoints (update_patrol set patrolMoving) and breathe at rest.
+            npc.playingIdle = false;
+            desiredAnimation = (npc.patrolMoving
+                && visual.walkAnimation != kInvalidAnimation
+                && visual.walkAnimation < visual.animations.size())
+                ? visual.walkAnimation
+                : visual.breathAnimation;
         }
-
-        const auto desiredAnimation = npc.playingIdle ? visual.idleAnimation : visual.breathAnimation;
+        else
+        {
+            const bool hasSeparateIdle = visual.idleAnimation != kInvalidAnimation
+                && visual.idleAnimation != visual.breathAnimation
+                && visual.idleAnimation < visual.animations.size();
+            if (!npc.playingIdle && hasSeparateIdle)
+            {
+                npc.idleGestureTimer += deltaSeconds;
+                const float interval = 8.0f + static_cast<float>((npc.idleGesturePick * 37u) % 60u) * 0.1f;
+                if (npc.idleGestureTimer >= interval)
+                {
+                    npc.playingIdle = true;
+                    npc.idleGestureTimer = 0.0f;
+                    ++npc.idleGesturePick;
+                }
+            }
+            desiredAnimation = npc.playingIdle ? visual.idleAnimation : visual.breathAnimation;
+        }
         if (desiredAnimation != npc.activeAnimation && desiredAnimation < visual.animations.size())
         {
             const bool canBlend = npc.activeAnimation < visual.animations.size()
@@ -867,14 +1327,76 @@ namespace phoenix::character
         }
     }
 
-    void NpcManager::append_palette(const ActiveNpc& npc, const Visual& visual)
+    void NpcManager::update_patrol(float deltaSeconds, ActiveNpc& npc, const Visual& visual)
     {
-        // Append this entity's model-space bone palette (16 floats / bone) to
-        // paletteFloats_; the GPU applies it to the static bind mesh. Bones not
+        (void)visual;
+        if (!npc.isPatrol || npc.patrol.size() < 2)
+            return;
+
+        constexpr float kPi = 3.14159265358979323846f;
+        constexpr float kWalkSpeed = 2.2f;   // world units/sec — a calm walk
+
+        if (!npc.patrolMoving)
+        {
+            // Rest at the current waypoint, then occasionally step to the next.
+            npc.patrolWaitTimer += deltaSeconds;
+            if (npc.patrolWaitTimer >= npc.patrolWaitInterval)
+            {
+                npc.patrolMoving = true;
+                npc.patrolWaitTimer = 0.0f;
+                npc.patrolTo = (npc.patrolFrom + 1u)
+                    % static_cast<std::uint32_t>(npc.patrol.size());
+            }
+            return;
+        }
+
+        const auto& to = npc.patrol[npc.patrolTo];
+        const float dx = to.x - npc.x;
+        const float dz = to.z - npc.z;
+        const float dist = std::sqrt(dx * dx + dz * dz);
+        const float step = kWalkSpeed * deltaSeconds;
+        if (dist <= step || dist < 1e-4f)
+        {
+            // Arrived: snap to the waypoint and rest for a randomized interval.
+            npc.x = to.x;
+            npc.y = to.y;
+            npc.z = to.z;
+            npc.yaw = to.yaw;
+            npc.patrolFrom = npc.patrolTo;
+            npc.patrolMoving = false;
+            npc.patrolWaitInterval = std::uniform_real_distribution<float>(10.0f, 26.0f)(patrolRng_);
+            return;
+        }
+
+        const float inv = 1.0f / dist;
+        npc.x += dx * inv * step;
+        npc.z += dz * inv * step;
+
+        // Interpolate Y along the leg so the NPC follows each waypoint's authored
+        // height (svmap NPCs are never clamped to terrain).
+        const auto& from = npc.patrol[npc.patrolFrom];
+        const float legDx = to.x - from.x;
+        const float legDz = to.z - from.z;
+        const float legLen = std::sqrt(legDx * legDx + legDz * legDz);
+        const float t = legLen > 1e-4f
+            ? std::clamp((legLen - (dist - step)) / legLen, 0.0f, 1.0f)
+            : 1.0f;
+        npc.y = from.y + (to.y - from.y) * t;
+
+        // Face the direction of travel (same convention as the static facing fix).
+        npc.yaw = std::atan2(dx, dz) + kPi;
+    }
+
+    void NpcManager::write_palette_at(const PaletteJob& job)
+    {
+        // Write this pose's model-space bone palette (16 floats / bone) into
+        // paletteFloats_ at job.baseBone. The vector is pre-sized by the caller,
+        // and jobs own disjoint regions, so this is safe to run on worker threads
+        // (the matrix scratch + dedup stamp are thread-local). Bones not
         // referenced by any vertex stay identity (harmless).
+        const Visual& visual = *job.visual;
         const std::size_t boneCount = visual.meshBones.size();
-        const std::size_t baseFloat = paletteFloats_.size();
-        paletteFloats_.resize(baseFloat + boneCount * 16);
+        const std::size_t baseFloat = static_cast<std::size_t>(job.baseBone) * 16u;
         for (std::size_t b = 0; b < boneCount; ++b)
         {
             float* dst = &paletteFloats_[baseFloat + b * 16];
@@ -882,65 +1404,106 @@ namespace phoenix::character
             dst[0] = dst[5] = dst[10] = dst[15] = 1.0f;
         }
         if (!visual.ready || visual.animations.empty()
-            || npc.activeAnimation >= visual.animations.size() || boneCount == 0)
+            || job.activeAnimation >= visual.animations.size() || boneCount == 0)
             return;
 
-        const auto& activeChoice = visual.animations[npc.activeAnimation];
+        const auto& activeChoice = visual.animations[job.activeAnimation];
         static thread_local std::vector<Mat4> clientFinals;
         compute_client_finals(
             activeChoice.animation,
             activeChoice.bindLocals,
-            sample_animation_frame(activeChoice.animation, npc.animationSeconds),
+            sample_animation_frame(activeChoice.animation, job.animationSeconds),
             clientFinals);
 
-        if (npc.animationBlendDuration > 0.0f
-            && npc.previousAnimation < visual.animations.size()
-            && visual.animations[npc.previousAnimation].animation.parsed
-            && visual.animations[npc.previousAnimation].animation.bones.size() == clientFinals.size())
+        if (job.blend && job.animationBlendDuration > 0.0f
+            && job.previousAnimation < visual.animations.size()
+            && visual.animations[job.previousAnimation].animation.parsed
+            && visual.animations[job.previousAnimation].animation.bones.size() == clientFinals.size())
         {
-            const auto& previousChoice = visual.animations[npc.previousAnimation];
+            const auto& previousChoice = visual.animations[job.previousAnimation];
             const auto& previousAnim = previousChoice.animation;
-            const float previousFrame = npc.previousAnimationHoldEnd
+            const float previousFrame = job.previousAnimationHoldEnd
                 ? static_cast<float>(previousAnim.endKeyframe)
-                : sample_animation_frame(previousAnim, npc.previousAnimationSeconds);
+                : sample_animation_frame(previousAnim, job.previousAnimationSeconds);
             static thread_local std::vector<Mat4> previousFinals;
             compute_client_finals(previousAnim, previousChoice.bindLocals, previousFrame, previousFinals);
-            const float rawT = std::clamp(npc.animationBlendSeconds / npc.animationBlendDuration, 0.0f, 1.0f);
+            const float rawT = std::clamp(job.animationBlendSeconds / job.animationBlendDuration, 0.0f, 1.0f);
             const float t = rawT * rawT * (3.0f - 2.0f * rawT);
             for (std::size_t i = 0; i < clientFinals.size(); ++i)
                 clientFinals[i] = blend_mat4(previousFinals[i], clientFinals[i], t);
         }
 
-        static thread_local std::vector<std::uint32_t> stampTbl;
-        static thread_local std::uint32_t stampCtr = 0;
-        const std::uint32_t stamp = ++stampCtr;
-        if (stampTbl.size() < boneCount)
-            stampTbl.resize(boneCount, 0u);
-        for (const auto& source : visual.sourceVertices)
+        // Walk only the referenced bones (precomputed). For each: meshBind *
+        // animatedFinal, written to its palette slot.
+        const std::size_t referenced = visual.paletteGlobalBone.size();
+        for (std::size_t e = 0; e < referenced; ++e)
         {
-            for (int influence = 0; influence < 3; ++influence)
+            const std::size_t localBone = visual.paletteLocalBone[e];
+            if (localBone >= clientFinals.size())
+                continue;
+            const std::size_t meshBoneIdx = visual.paletteGlobalBone[e];
+            Mat4 meshBone;
+            std::memcpy(&meshBone.m[0][0], &visual.paletteMeshBind[e * 16], 16 * sizeof(float));
+            const auto m = mat4_multiply(meshBone, clientFinals[localBone]);
+            float* dst = &paletteFloats_[baseFloat + meshBoneIdx * 16];
+            for (int r = 0; r < 4; ++r)
             {
-                const auto boneIndex = static_cast<std::size_t>(source.bones[influence]);
-                if (boneIndex >= source.meshBoneCount || boneIndex >= clientFinals.size())
-                    continue;
-                if (source.weights[influence] <= 0.0001f)
-                    continue;
-                const auto meshBoneIdx = static_cast<std::size_t>(source.meshBoneBase) + boneIndex;
-                if (meshBoneIdx >= boneCount || stampTbl[meshBoneIdx] == stamp)
-                    continue;
-                stampTbl[meshBoneIdx] = stamp;
-                const auto meshBone = mat4_from_shaiya_transposed(visual.meshBones[meshBoneIdx].matrix);
-                const auto m = mat4_multiply(meshBone, clientFinals[boneIndex]);
-                float* dst = &paletteFloats_[baseFloat + meshBoneIdx * 16];
-                for (int r = 0; r < 4; ++r)
-                {
-                    dst[r * 4 + 0] = m.m[r][0];
-                    dst[r * 4 + 1] = m.m[r][1];
-                    dst[r * 4 + 2] = m.m[r][2];
-                    dst[r * 4 + 3] = m.m[r][3];
-                }
+                dst[r * 4 + 0] = m.m[r][0];
+                dst[r * 4 + 1] = m.m[r][1];
+                dst[r * 4 + 2] = m.m[r][2];
+                dst[r * 4 + 3] = m.m[r][3];
             }
         }
+    }
+
+    void NpcManager::despawn_distant(const phoenix::renderer::CameraView& view)
+    {
+        if (active_.empty())
+            return;
+        // Hysteresis: stream-in uses the camera frustum within view.distance;
+        // despawn only well beyond it (any direction) so turning around or small
+        // moves never thrash. A hard budget caps the farthest survivors.
+        constexpr std::size_t kMaxMapNpcs = 256;
+        const float despawn = view.distance * 1.4f;
+        float despawnSq = despawn * despawn;
+
+        const auto distSq = [&](const ActiveNpc& npc) {
+            const float dx = npc.x - view.x, dy = npc.y - view.y, dz = npc.z - view.z;
+            return dx * dx + dy * dy + dz * dz;
+        };
+
+        // Budget: if too many map NPCs are active, tighten the cutoff to the
+        // kMaxMapNpcs-th nearest so the farthest extras are dropped too.
+        std::size_t mapCount = 0;
+        for (const auto& npc : active_)
+            if (npc.fromMap)
+                ++mapCount;
+        if (mapCount > kMaxMapNpcs)
+        {
+            static std::vector<float> dists;
+            dists.clear();
+            dists.reserve(mapCount);
+            for (const auto& npc : active_)
+                if (npc.fromMap)
+                    dists.push_back(distSq(npc));
+            std::nth_element(dists.begin(), dists.begin() + kMaxMapNpcs, dists.end());
+            despawnSq = std::min(despawnSq, dists[kMaxMapNpcs]);
+        }
+
+        std::size_t removed = 0;
+        active_.erase(std::remove_if(active_.begin(), active_.end(), [&](const ActiveNpc& npc) {
+            if (!npc.fromMap || distSq(npc) <= despawnSq)
+                return false;
+            if (npc.placementIndex < placements_.size() && placements_[npc.placementIndex].spawned)
+            {
+                placements_[npc.placementIndex].spawned = false;
+                ++removed;
+            }
+            return true;
+        }), active_.end());
+
+        // Let the freed placements re-stream when the camera returns.
+        streamedPlacements_ = (removed <= streamedPlacements_) ? streamedPlacements_ - removed : 0;
     }
 
     void NpcManager::update(
@@ -949,29 +1512,44 @@ namespace phoenix::character
         phoenix::renderer::VulkanRenderer& renderer,
         phoenix::app::LoadingScheduler* workerPool)
     {
+        // Stream in any map (.svmap) NPCs that have come into camera range,
+        // loading their visuals asynchronously on workerPool so a new NPC type's
+        // first sighting doesn't hitch. Off-screen placements stay dormant.
+        stream_map_npcs(view, renderer, workerPool);
+        // Free map NPCs that have moved out of range (bounds active count / CPU).
+        despawn_distant(view);
+        // Under texture-slot pressure, drop idle visuals to reclaim slots.
+        evict_visuals_if_needed(renderer);
+
         if (!active())
         {
             renderer.set_npc_skinned_visible(false);
             return;
         }
 
-        (void)workerPool;
         ++frameCounter_;
         instances_.clear();
         instanceBatches_.clear();
         paletteFloats_.clear();
+        labels_.clear();
         visibleCount_ = 0;
 
         // GPU skinning: cull, advance animation, compute each unique pose's bone
         // palette (deduped per model+animation+phase), build the instance
         // (placement transform; palette base bone packed in right.w) + batches.
         // The GPU does all per-vertex skinning of the static bind mesh.
-        struct PoseKey { std::uint32_t model; std::size_t anim; std::int32_t bucket; std::uint32_t baseBone; };
+        struct PoseKey { std::uint32_t model; std::size_t anim; std::int32_t tier; std::int32_t bucket; std::uint32_t baseBone; };
         static std::vector<PoseKey> poseKeys;
         poseKeys.clear();
         struct VisInst { std::uint32_t model; phoenix::renderer::ObjectInstance inst; };
         static std::vector<VisInst> vis;
         vis.clear();
+        // Pass 1 (serial): cull, advance animation, dedup poses. Each unique pose
+        // gets a job + a reserved palette region (baseBone); the heavy per-bone
+        // skinning happens afterwards, in parallel.
+        static std::vector<PaletteJob> jobs;
+        jobs.clear();
+        std::uint32_t runningBones = 0;
 
         for (auto& npc : active_)
         {
@@ -988,26 +1566,61 @@ namespace phoenix::character
                 visual.boundsRadius))
                 continue;
 
+            update_patrol(deltaSeconds, npc, visual);
             update_animation(deltaSeconds, npc, visual);
             npc.visible = true;
             ++visibleCount_;
+            modelLastUsedFrame_[npc.modelIndex] = frameCounter_;   // LRU for eviction
 
-            std::uint32_t baseBone = static_cast<std::uint32_t>(paletteFloats_.size() / 16u);
+            // Floating name/type label anchored just above the NPC's head.
+            if (npc.catalogIndex < catalog_.size())
+            {
+                const auto& entry = catalog_[npc.catalogIndex];
+                // Anchor exactly at the head top; the UI adds a fixed pixel gap so
+                // the label position stays consistent regardless of distance.
+                labels_.push_back({ npc.x, npc.y + visual.modelTopY, npc.z,
+                    &entry.name, &entry.npcTypeName });
+            }
+
+            std::uint32_t baseBone = runningBones;
             bool reused = false;
             std::int32_t bucket = 0;
+            std::int32_t tier = 0;
             const bool dedup = npc.animationBlendDuration <= 0.0f;
             if (dedup)
             {
-                bucket = static_cast<std::int32_t>(std::lround(npc.animationSeconds * 60.0f));
+                // Animation LOD: distant NPCs quantize their pose to a coarser rate
+                // (fewer frames/sec), so many more share one skinning job. The pose
+                // snaps to whichever entity owns the bucket — imperceptible at
+                // distance. tier keeps near/far buckets from colliding.
+                const float dx = npc.x - view.x, dy = npc.y - view.y, dz = npc.z - view.z;
+                const float d2 = dx * dx + dy * dy + dz * dz;
+                const float rate = d2 < kAnimLodNearSq ? 60.0f
+                    : (d2 < kAnimLodMidSq ? 30.0f : 15.0f);
+                tier = d2 < kAnimLodNearSq ? 0 : (d2 < kAnimLodMidSq ? 1 : 2);
+                bucket = static_cast<std::int32_t>(std::lround(npc.animationSeconds * rate));
                 for (const auto& k : poseKeys)
-                    if (k.model == npc.modelIndex && k.anim == npc.activeAnimation && k.bucket == bucket)
+                    if (k.model == npc.modelIndex && k.anim == npc.activeAnimation
+                        && k.tier == tier && k.bucket == bucket)
                     { baseBone = k.baseBone; reused = true; break; }
             }
             if (!reused)
             {
-                append_palette(npc, visual);
+                PaletteJob job{};
+                job.visual = &visual;
+                job.baseBone = baseBone;
+                job.activeAnimation = npc.activeAnimation;
+                job.animationSeconds = npc.animationSeconds;
+                job.blend = npc.animationBlendDuration > 0.0f;
+                job.previousAnimation = npc.previousAnimation;
+                job.previousAnimationSeconds = npc.previousAnimationSeconds;
+                job.animationBlendSeconds = npc.animationBlendSeconds;
+                job.animationBlendDuration = npc.animationBlendDuration;
+                job.previousAnimationHoldEnd = npc.previousAnimationHoldEnd;
+                jobs.push_back(job);
+                runningBones += static_cast<std::uint32_t>(visual.meshBones.size());
                 if (dedup)
-                    poseKeys.push_back({ npc.modelIndex, npc.activeAnimation, bucket, baseBone });
+                    poseKeys.push_back({ npc.modelIndex, npc.activeAnimation, tier, bucket, baseBone });
             }
 
             const float S = kNpcScale;
@@ -1025,6 +1638,19 @@ namespace phoenix::character
             inst.right[3] = static_cast<float>(baseBone);  // palette base (exact int in float)
             vis.push_back({ npc.modelIndex, inst });
         }
+
+        // Pass 2: skin every unique pose into its reserved palette region. Serial
+        // by default — the worker pool sleeps, so waking it per frame costs ~1ms
+        // of sync latency that dwarfs the (now cheap) skinning for normal scenes.
+        // Only fan out for genuinely large crowds, where the work amortizes it.
+        paletteFloats_.resize(static_cast<std::size_t>(runningBones) * 16u);
+        constexpr std::size_t kParallelSkinThreshold = 192;
+        if (workerPool && jobs.size() >= kParallelSkinThreshold)
+            phoenix::app::parallel_for_loading(*workerPool, jobs.size(),
+                [&](std::size_t i) { write_palette_at(jobs[i]); });
+        else
+            for (const auto& job : jobs)
+                write_palette_at(job);
 
         // Group by model into contiguous instance blocks; one instanced batch
         // per (model, part) draws all entities of that model in a single call.

@@ -2817,6 +2817,69 @@ namespace phoenix::runtime
         return volumes;
     }
 
+    bool WorldCollisionMesh::segment_occluded(const float a[3], const float b[3]) const
+    {
+        if (triangles.empty() || grid.empty())
+            return false;
+
+        const float dir[3] = { b[0] - a[0], b[1] - a[1], b[2] - a[2] };
+        const int cx0 = static_cast<int>(std::floor(std::min(a[0], b[0]) / kCellSize));
+        const int cx1 = static_cast<int>(std::floor(std::max(a[0], b[0]) / kCellSize));
+        const int cz0 = static_cast<int>(std::floor(std::min(a[2], b[2]) / kCellSize));
+        const int cz1 = static_cast<int>(std::floor(std::max(a[2], b[2]) / kCellSize));
+        // Callers pass short segments; bail on a pathologically large span.
+        if ((cx1 - cx0) > 64 || (cz1 - cz0) > 64)
+            return false;
+
+        // Margins skip the camera's immediate surroundings and the triangle right
+        // under the NPC so neither self-occludes the label.
+        constexpr float kTMin = 0.03f;
+        constexpr float kTMax = 0.985f;
+        constexpr float kEps = 1e-7f;
+
+        for (int cx = cx0; cx <= cx1; ++cx)
+        {
+            for (int cz = cz0; cz <= cz1; ++cz)
+            {
+                const auto it = grid.find(cell_key(cx, cz));
+                if (it == grid.end())
+                    continue;
+                for (const auto idx : it->second)
+                {
+                    const auto& tri = triangles[idx];
+                    // Möller–Trumbore against the segment (dir = b - a, t in [0,1]).
+                    const float e1[3] = { tri.v1[0] - tri.v0[0], tri.v1[1] - tri.v0[1], tri.v1[2] - tri.v0[2] };
+                    const float e2[3] = { tri.v2[0] - tri.v0[0], tri.v2[1] - tri.v0[1], tri.v2[2] - tri.v0[2] };
+                    const float pvec[3] = {
+                        dir[1] * e2[2] - dir[2] * e2[1],
+                        dir[2] * e2[0] - dir[0] * e2[2],
+                        dir[0] * e2[1] - dir[1] * e2[0],
+                    };
+                    const float det = e1[0] * pvec[0] + e1[1] * pvec[1] + e1[2] * pvec[2];
+                    if (det > -kEps && det < kEps)
+                        continue;
+                    const float inv = 1.0f / det;
+                    const float tvec[3] = { a[0] - tri.v0[0], a[1] - tri.v0[1], a[2] - tri.v0[2] };
+                    const float u = (tvec[0] * pvec[0] + tvec[1] * pvec[1] + tvec[2] * pvec[2]) * inv;
+                    if (u < 0.0f || u > 1.0f)
+                        continue;
+                    const float qvec[3] = {
+                        tvec[1] * e1[2] - tvec[2] * e1[1],
+                        tvec[2] * e1[0] - tvec[0] * e1[2],
+                        tvec[0] * e1[1] - tvec[1] * e1[0],
+                    };
+                    const float v = (dir[0] * qvec[0] + dir[1] * qvec[1] + dir[2] * qvec[2]) * inv;
+                    if (v < 0.0f || u + v > 1.0f)
+                        continue;
+                    const float t = (e2[0] * qvec[0] + e2[1] * qvec[1] + e2[2] * qvec[2]) * inv;
+                    if (t > kTMin && t < kTMax)
+                        return true;
+                }
+            }
+        }
+        return false;
+    }
+
     WorldCollisionMesh PhoenixRuntime::build_collision_mesh() const
     {
         WorldCollisionMesh mesh;

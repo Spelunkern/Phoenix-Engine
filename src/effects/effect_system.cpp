@@ -351,8 +351,9 @@ namespace phoenix::effects
                 mkLayer(S::Sphere, ADD, 1.0f,0.5f,0.1f, 0.5f,0.05f,0.0f, 1800,0.6f,0.16f, 8.0f,5.0f,0.3f, 1.5f,1.3f),
                 mkLayer(S::Disc, ALP, 0.3f,0.25f,0.2f, 0.05f,0.05f,0.05f, 120,1.4f,0.5f, 1.5f,-0.6f,0.5f, 0.5f,0.6f) }));
             c.push_back(mkDef("Fire pillar", C::Fire, true, 0.0f, {
-                mkLayer(S::Disc, ADD, 1.0f,0.7f,0.2f, 0.7f,0.05f,0.0f, 260,0.8f,0.18f, 2.4f,-1.5f,0.5f, 1.2f,1.0f),
-                mkLayer(S::Disc, ALP, 0.25f,0.22f,0.2f, 0.05f,0.05f,0.05f, 40,1.6f,0.35f, 1.6f,-0.8f,0.4f, 0.6f,0.5f) }));
+                mkLayer(S::Disc, ADD, 1.0f,0.68f,0.20f, 0.72f,0.08f,0.0f, 340,0.95f,0.24f, 2.75f,-1.55f,0.78f, 0.85f,1.18f, 20.0f,1.0f,0.04f, 1.10f),
+                mkLayer(S::Disc, ADD, 1.0f,0.95f,0.58f, 0.95f,0.32f,0.04f, 110,0.52f,0.13f, 2.10f,-1.05f,0.36f, 0.75f,1.18f, 16.0f,1.0f,0.06f, 1.35f),
+                mkLayer(S::Disc, ALP, 0.18f,0.15f,0.13f, 0.02f,0.018f,0.015f, 48,2.1f,0.36f, 1.1f,-0.55f,0.62f, 0.65f,0.42f, 25.0f,1.0f,0.35f, 0.45f) }));
             c.push_back(mkDef("Ember field", C::Fire, true, 0.0f, {
                 mkLayer(S::Disc, ADD, 1.0f,0.6f,0.15f, 0.6f,0.1f,0.0f, 40,2.0f,0.05f, 1.0f,-0.6f,0.8f, 0.4f) }));
             c.push_back(mkDef("Flamethrower", C::Fire, true, 0.0f, {
@@ -528,6 +529,48 @@ namespace phoenix::effects
             c.push_back(mkDef("Dust", C::Normal, true, 0.0f, {
                 mkLayer(S::Disc, ALP, 0.55f,0.52f,0.48f, 0.3f,0.28f,0.25f, 40,2.0f,0.25f, 0.6f,-0.2f,0.7f, 0.5f,0.4f) }));
 
+            // ===== MAP / LIGHTING PROPS =====
+            // Cursed Grave Mist: low cemetery fog, cold soul motes, and a faint
+            // violet pulse around the grave marker.
+            c.push_back(mkDef("Cursed grave mist", C::Shadow, true, 0.0f, {
+                mkLayer(S::Disc, ALP, 0.20f,0.24f,0.30f, 0.03f,0.04f,0.06f, 85,3.8f,0.55f, 0.22f,-0.08f,1.8f, 0.85f,0.42f),
+                mkLayer(S::Sphere, ADD, 0.45f,0.62f,0.95f, 0.12f,0.16f,0.34f, 18,2.8f,0.055f, 0.18f,-0.10f,1.25f, 0.15f,0.75f, 25.0f,1.0f,0.35f, 0.65f),
+                mkLayer(S::Ring, ADD, 0.34f,0.14f,0.58f, 0.05f,0.01f,0.12f, 44,1.8f,0.07f, 0.10f,-0.04f,1.05f, 0.20f,0.65f, 25.0f,1.0f,0.04f, 1.2f) }));
+
+            // Forge Heat Haze: ember lift, heavy dark smoke, and a soft orange
+            // shimmer column for furnace mouths or blacksmith props.
+            c.push_back(mkDef("Forge heat haze", C::Fire, true, 0.0f, {
+                mkLayer(S::Disc, ADD, 1.0f,0.50f,0.14f, 0.75f,0.12f,0.02f, 95,1.55f,0.055f, 1.25f,-0.65f,0.55f, 0.20f,1.05f, 25.0f,1.0f,0.10f, 0.45f),
+                mkLayer(S::Disc, ALP, 0.20f,0.18f,0.16f, 0.04f,0.035f,0.035f, 55,3.2f,0.42f, 0.75f,-0.48f,0.52f, 0.70f,0.50f, 25.0f,1.0f,0.28f, 0.35f),
+                mkLayer(S::Cone, ALP, 0.95f,0.42f,0.12f, 0.25f,0.08f,0.02f, 36,1.1f,0.30f, 0.72f,-0.35f,0.18f, 0.25f,0.26f, 14.0f,1.6f,0.18f, 0.0f) }));
+
+            // Lantern Light: a stable warm glow with tiny soot and lazy golden
+            // motes; good for hanging lamps or wall lanterns.
+            c.push_back(mkDef("Lantern light", C::Holy, true, 0.0f, {
+                mkLayer(S::Sphere, ADD, 1.0f,0.76f,0.34f, 1.0f,0.38f,0.08f, 120,0.65f,0.16f, 0.05f,-0.03f,0.34f, 0.10f,0.78f, 25.0f,1.0f,0.95f, 0.0f),
+                mkLayer(S::Sphere, ADD, 1.0f,0.92f,0.58f, 0.78f,0.45f,0.16f, 22,1.8f,0.045f, 0.12f,-0.05f,0.52f, 0.16f,0.62f, 25.0f,1.0f,0.9f, 0.25f),
+                mkLayer(S::Line, ALP, 0.12f,0.10f,0.08f, 0.015f,0.012f,0.01f, 12,2.0f,0.11f, 0.08f,-0.18f,0.08f, 0.30f,0.22f, 25.0f,0.55f,1.05f, 0.0f) }));
+
+            // Simple Fire: small reusable flame for torches, small camp props,
+            // candles enlarged by scale, and decorative braziers.
+            c.push_back(mkDef("Simple fire", C::Fire, true, 0.0f, {
+                mkLayer(S::Disc, ADD, 1.0f,0.68f,0.22f, 0.75f,0.10f,0.0f, 210,0.72f,0.13f, 1.55f,-1.05f,0.22f, 0.55f,1.10f, 20.0f,1.0f,0.04f, 0.65f),
+                mkLayer(S::Disc, ADD, 1.0f,0.95f,0.58f, 1.0f,0.35f,0.05f, 80,0.42f,0.08f, 1.15f,-0.70f,0.12f, 0.55f,1.15f, 18.0f,1.0f,0.05f, 0.8f),
+                mkLayer(S::Disc, ALP, 0.18f,0.15f,0.13f, 0.02f,0.018f,0.015f, 28,1.75f,0.23f, 0.52f,-0.45f,0.20f, 0.55f,0.38f, 25.0f,1.0f,0.2f, 0.25f) }));
+
+            // Fireflies: sparse wandering warm points over grass or swamp edges.
+            c.push_back(mkDef("Fireflies", C::Nature, true, 0.0f, {
+                mkLayer(S::Sphere, ADD, 0.95f,1.0f,0.42f, 0.24f,0.42f,0.08f, 18,3.6f,0.045f, 0.18f,-0.02f,2.4f, 0.10f,0.95f, 25.0f,1.0f,0.75f, 0.45f),
+                mkLayer(S::Sphere, ADD, 1.0f,0.82f,0.32f, 0.20f,0.30f,0.05f, 7,2.2f,0.075f, 0.10f,-0.01f,1.7f, 0.08f,0.55f, 25.0f,1.0f,0.95f, -0.25f),
+                mkLayer(S::Disc, ALP, 0.18f,0.24f,0.12f, 0.02f,0.03f,0.01f, 8,3.0f,0.16f, 0.06f,-0.02f,1.8f, 0.35f,0.18f, 25.0f,1.0f,0.25f, 0.0f) }));
+
+            // Candle cluster: restrained pin lights and faint smoke for interiors,
+            // shrines, or table props.
+            c.push_back(mkDef("Candle cluster", C::Fire, true, 0.0f, {
+                mkLayer(S::Disc, ADD, 1.0f,0.78f,0.36f, 1.0f,0.32f,0.08f, 95,0.45f,0.065f, 0.55f,-0.45f,0.16f, 0.25f,0.72f, 16.0f,1.0f,0.18f, 0.35f),
+                mkLayer(S::Disc, ADD, 1.0f,0.92f,0.62f, 0.80f,0.40f,0.12f, 24,0.75f,0.045f, 0.35f,-0.22f,0.26f, 0.18f,0.55f, 14.0f,1.0f,0.20f, -0.25f),
+                mkLayer(S::Line, ALP, 0.11f,0.10f,0.09f, 0.015f,0.014f,0.013f, 8,2.1f,0.10f, 0.08f,-0.12f,0.06f, 0.35f,0.18f, 25.0f,0.45f,0.35f, 0.0f) }));
+
             // ===== REQUESTED SPELLS =====
             // Fireball — forward fire projectile.
             {
@@ -553,10 +596,11 @@ namespace phoenix::effects
                 d.projectile = true; d.projectileSpeed = 14.0f; d.projectileRange = 28.0f;
                 c.push_back(d);
             }
-            // Fire bush — a curtain of fire that rings the caster.
+            // Fire bush — a broad curtain of fire that rings the caster.
             c.push_back(mkDef("Fire bush", C::Fire, true, 0.0f, {
-                mkLayer(S::Ring, ADD, 1.0f,0.65f,0.2f, 0.7f,0.1f,0.0f, 360,0.7f,0.16f, 2.0f,-1.2f,1.2f, 1.0f,1.1f),
-                mkLayer(S::Ring, ADD, 1.0f,0.5f,0.1f, 0.5f,0.05f,0.0f, 90,1.2f,0.06f, 1.6f,-0.6f,1.3f, 0.5f,1.0f) }));
+                mkLayer(S::Ring, ADD, 1.0f,0.62f,0.18f, 0.68f,0.08f,0.0f, 430,0.92f,0.19f, 2.25f,-1.15f,1.75f, 0.85f,1.12f, 20.0f,1.0f,0.02f, 1.45f),
+                mkLayer(S::Ring, ADD, 1.0f,0.92f,0.52f, 0.95f,0.34f,0.06f, 125,0.54f,0.10f, 1.70f,-0.80f,1.55f, 0.70f,1.12f, 18.0f,1.0f,0.05f, 1.85f),
+                mkLayer(S::Ring, ALP, 0.18f,0.14f,0.12f, 0.02f,0.016f,0.014f, 46,1.85f,0.26f, 0.95f,-0.45f,1.90f, 0.60f,0.36f, 25.0f,1.0f,0.32f, 0.75f) }));
             // Rock blast — boulders rain from the sky onto the target.
             c.push_back(mkDef("Rock blast", C::Rock, false, 1.0f, {
                 mkLayer(S::Disc, ALP, 0.45f,0.42f,0.40f, 0.25f,0.23f,0.22f, 110,1.5f,0.20f, 0.5f,14.0f,1.5f, 0.0f,1.0f, 25.0f, 1.0f, 9.0f),
@@ -582,11 +626,11 @@ namespace phoenix::effects
                 mkLayer(S::Disc, ALP, 0.55f,0.55f,0.6f, 0.3f,0.3f,0.34f, 520,2.0f,0.34f, 4.0f,-0.6f,2.2f, 0.0f,0.7f, 25.0f,1.0f,0.0f, 6.0f),
                 mkLayer(S::Disc, ALP, 0.5f,0.5f,0.55f, 0.28f,0.28f,0.32f, 280,1.8f,0.20f, 5.0f,-0.7f,1.0f, 0.0f,0.8f, 25.0f,1.0f,0.0f, 9.0f),
                 mkLayer(S::Sphere, ADD, 0.8f,0.9f,1.0f, 0.4f,0.5f,1.0f, 200,0.2f,0.13f, 1.0f,0.0f,1.6f, 0.0f,1.6f) }));
-            // Meteors — detailed meteorites raining onto a location.
-            c.push_back(mkDef("Meteors", C::Fire, false, 1.6f, {
-                mkLayer(S::Disc, ADD, 1.0f,0.6f,0.2f, 0.6f,0.1f,0.0f, 95,1.2f,0.30f, 1.0f,16.0f,1.6f, 0.0f,1.2f, 25.0f,1.0f, 13.0f),
-                mkLayer(S::Disc, ADD, 1.0f,0.45f,0.1f, 0.4f,0.05f,0.0f, 260,0.6f,0.16f, 0.5f,11.0f,1.6f, 0.0f,1.1f, 25.0f,1.0f, 9.0f),
-                mkLayer(S::Disc, ALP, 0.2f,0.16f,0.14f, 0.0f,0.0f,0.0f, 70,1.0f,0.30f, 0.5f,4.0f,1.6f, 0.4f,0.5f, 25.0f,1.0f, 7.0f) }));
+            // Meteors: falling fireballs with smoke trails and hot ground impacts.
+            c.push_back(mkDef("Meteors", C::Fire, false, 1.85f, {
+                mkLayer(S::Disc, ADD, 1.0f,0.72f,0.22f, 0.85f,0.08f,0.0f, 42,1.35f,0.62f, 0.0f,22.0f,2.8f, 0.0f,1.65f, 25.0f,1.0f,12.0f),
+                mkLayer(S::Disc, ALP, 0.18f,0.13f,0.10f, 0.015f,0.010f,0.008f, 130,1.55f,0.48f, 0.0f,15.0f,2.8f, 0.50f,0.65f, 25.0f,1.0f,10.5f),
+                mkLayer(S::Shockwave, ADD, 1.0f,0.62f,0.18f, 0.65f,0.08f,0.0f, 1700,0.58f,0.22f, 10.5f,2.0f,0.45f, 2.1f,1.55f) }));
             // Infernal fire — huge, detailed fireball burst with black smoke.
             c.push_back(mkDef("Infernal fire", C::Fire, false, 0.12f, {
                 mkLayer(S::Sphere, ADD, 1.0f,0.55f,0.15f, 0.7f,0.1f,0.0f, 1900,0.7f,0.40f, 5.0f,-1.0f,0.8f, 1.2f,1.3f),

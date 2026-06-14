@@ -157,6 +157,21 @@ namespace phoenix::renderer
         io.IniFilename = imguiIniPath.c_str();
         ImGui::StyleColorsDark();
 
+        // Font [0] stays the default for the editor UI. Add a small Arial as a
+        // second font, used only for the in-world NPC name/type labels. If Arial
+        // isn't present (non-Windows, etc.), labels fall back to the default font.
+        io.Fonts->AddFontDefault();
+        npcLabelFont_ = nullptr;
+        for (const char* arialPath : { "C:\\Windows\\Fonts\\arial.ttf", "C:\\Windows\\Fonts\\ARIAL.TTF" })
+        {
+            std::error_code ec;
+            if (std::filesystem::exists(arialPath, ec))
+            {
+                npcLabelFont_ = io.Fonts->AddFontFromFileTTF(arialPath, 14.0f);
+                break;
+            }
+        }
+
         if (!ImGui_ImplSDL2_InitForVulkan(window))
             return false;
 
@@ -1413,12 +1428,14 @@ namespace phoenix::renderer
             return false;
         }
 
-        // Two palette sets: one for monsters, one for NPCs (independent buffers).
+        // Palette sets: monsters and NPCs each get one set per frame-in-flight
+        // (both palettes are double-buffered to avoid a CPU/GPU write/read race).
+        constexpr std::uint32_t kPaletteSetCount = 2 * kMaxFramesInFlight;
         VkDescriptorPoolSize poolSize{};
         poolSize.type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-        poolSize.descriptorCount = 2;
+        poolSize.descriptorCount = kPaletteSetCount;
         VkDescriptorPoolCreateInfo poolInfo{ VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO };
-        poolInfo.maxSets = 2;
+        poolInfo.maxSets = kPaletteSetCount;
         poolInfo.poolSizeCount = 1;
         poolInfo.pPoolSizes = &poolSize;
         if (vkCreateDescriptorPool(impl_->device, &poolInfo, nullptr, &impl_->paletteDescriptorPool) != VK_SUCCESS)
@@ -1431,8 +1448,15 @@ namespace phoenix::renderer
         allocInfo.descriptorPool = impl_->paletteDescriptorPool;
         allocInfo.descriptorSetCount = 1;
         allocInfo.pSetLayouts = &impl_->paletteSetLayout;
-        if (vkAllocateDescriptorSets(impl_->device, &allocInfo, &impl_->monsterPaletteDescriptorSet) != VK_SUCCESS
-            || vkAllocateDescriptorSets(impl_->device, &allocInfo, &impl_->npcPaletteDescriptorSet) != VK_SUCCESS)
+        bool paletteSetsOk = true;
+        for (std::uint32_t i = 0; i < kMaxFramesInFlight && paletteSetsOk; ++i)
+        {
+            paletteSetsOk = vkAllocateDescriptorSets(
+                impl_->device, &allocInfo, &impl_->monsterPaletteDescriptorSet[i]) == VK_SUCCESS
+                && vkAllocateDescriptorSets(
+                    impl_->device, &allocInfo, &impl_->npcPaletteDescriptorSet[i]) == VK_SUCCESS;
+        }
+        if (!paletteSetsOk)
         {
             vkDestroyShaderModule(impl_->device, vertexShader, nullptr);
             vkDestroyShaderModule(impl_->device, fragmentShader, nullptr);
@@ -4137,23 +4161,26 @@ rgba_texture_fallback:
             vkDestroyBuffer(impl_->device, impl_->monsterCharacterIndexBuffer, nullptr);
         if (impl_->monsterCharacterIndexMemory)
             vkFreeMemory(impl_->device, impl_->monsterCharacterIndexMemory, nullptr);
-        if (impl_->monsterCharacterInstanceBuffer)
-            vkDestroyBuffer(impl_->device, impl_->monsterCharacterInstanceBuffer, nullptr);
-        if (impl_->monsterCharacterInstanceMemory)
-            vkFreeMemory(impl_->device, impl_->monsterCharacterInstanceMemory, nullptr);
+        for (std::uint32_t i = 0; i < kMaxFramesInFlight; ++i)
+        {
+            if (impl_->monsterCharacterInstanceBuffer[i])
+                vkDestroyBuffer(impl_->device, impl_->monsterCharacterInstanceBuffer[i], nullptr);
+            if (impl_->monsterCharacterInstanceMemory[i])
+                vkFreeMemory(impl_->device, impl_->monsterCharacterInstanceMemory[i], nullptr);
+            impl_->monsterCharacterInstanceBuffer[i] = {};
+            impl_->monsterCharacterInstanceMemory[i] = {};
+            impl_->monsterCharacterInstanceMapped[i] = nullptr;
+            impl_->monsterCharacterInstanceCapacity[i] = 0;
+        }
 
         impl_->monsterCharacterVertexBuffer = {};
         impl_->monsterCharacterVertexMemory = {};
         impl_->monsterCharacterVertexMapped = nullptr;
         impl_->monsterCharacterIndexBuffer = {};
         impl_->monsterCharacterIndexMemory = {};
-        impl_->monsterCharacterInstanceBuffer = {};
-        impl_->monsterCharacterInstanceMemory = {};
-        impl_->monsterCharacterInstanceMapped = nullptr;
         impl_->monsterCharacterVertexBytes = 0;
         impl_->monsterCharacterVertexCapacity = 0;
         impl_->monsterCharacterInstanceBytes = 0;
-        impl_->monsterCharacterInstanceCapacity = 0;
         impl_->monsterCharacterBatches.clear();
         impl_->monsterCharacterReady = false;
 
@@ -4247,41 +4274,42 @@ rgba_texture_fallback:
             return true;
         }
 
+        const auto slot = frameIndex_ % kMaxFramesInFlight;
         const auto instanceBytes = instances.size() * sizeof(ObjectInstance);
-        if (!impl_->monsterCharacterInstanceBuffer || instanceBytes > impl_->monsterCharacterInstanceCapacity)
+        if (!impl_->monsterCharacterInstanceBuffer[slot] || instanceBytes > impl_->monsterCharacterInstanceCapacity[slot])
         {
-            if (impl_->monsterCharacterInstanceBuffer || impl_->monsterCharacterInstanceMemory)
+            if (impl_->monsterCharacterInstanceBuffer[slot] || impl_->monsterCharacterInstanceMemory[slot])
                 vkDeviceWaitIdle(impl_->device);
-            if (impl_->monsterCharacterInstanceBuffer)
-                vkDestroyBuffer(impl_->device, impl_->monsterCharacterInstanceBuffer, nullptr);
-            if (impl_->monsterCharacterInstanceMemory)
-                vkFreeMemory(impl_->device, impl_->monsterCharacterInstanceMemory, nullptr);
-            impl_->monsterCharacterInstanceBuffer = {};
-            impl_->monsterCharacterInstanceMemory = {};
-            impl_->monsterCharacterInstanceMapped = nullptr;
+            if (impl_->monsterCharacterInstanceBuffer[slot])
+                vkDestroyBuffer(impl_->device, impl_->monsterCharacterInstanceBuffer[slot], nullptr);
+            if (impl_->monsterCharacterInstanceMemory[slot])
+                vkFreeMemory(impl_->device, impl_->monsterCharacterInstanceMemory[slot], nullptr);
+            impl_->monsterCharacterInstanceBuffer[slot] = {};
+            impl_->monsterCharacterInstanceMemory[slot] = {};
+            impl_->monsterCharacterInstanceMapped[slot] = nullptr;
 
             const auto capacity = instanceBytes + instanceBytes / 2 + sizeof(ObjectInstance) * 64;
             if (!create_host_buffer(nullptr, capacity, VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
-                    impl_->monsterCharacterInstanceBuffer, impl_->monsterCharacterInstanceMemory,
-                    &impl_->monsterCharacterInstanceMapped))
+                    impl_->monsterCharacterInstanceBuffer[slot], impl_->monsterCharacterInstanceMemory[slot],
+                    &impl_->monsterCharacterInstanceMapped[slot]))
             {
                 log_line("Vulkan: monster character instance buffer creation failed");
                 return false;
             }
-            impl_->monsterCharacterInstanceCapacity = capacity;
+            impl_->monsterCharacterInstanceCapacity[slot] = capacity;
         }
 
-        if (impl_->monsterCharacterInstanceMapped)
+        if (impl_->monsterCharacterInstanceMapped[slot])
         {
-            std::memcpy(impl_->monsterCharacterInstanceMapped, instances.data(), instanceBytes);
+            std::memcpy(impl_->monsterCharacterInstanceMapped[slot], instances.data(), instanceBytes);
         }
         else
         {
             void* mapped{};
-            if (vkMapMemory(impl_->device, impl_->monsterCharacterInstanceMemory, 0, instanceBytes, 0, &mapped) != VK_SUCCESS)
+            if (vkMapMemory(impl_->device, impl_->monsterCharacterInstanceMemory[slot], 0, instanceBytes, 0, &mapped) != VK_SUCCESS)
                 return false;
             std::memcpy(mapped, instances.data(), instanceBytes);
-            vkUnmapMemory(impl_->device, impl_->monsterCharacterInstanceMemory);
+            vkUnmapMemory(impl_->device, impl_->monsterCharacterInstanceMemory[slot]);
         }
 
         impl_->monsterCharacterInstanceBytes = instanceBytes;
@@ -4346,31 +4374,32 @@ rgba_texture_fallback:
         if (!impl_ || !impl_->skinnedCharacterPipeline || !rows16PerBone || floatCount == 0)
             return;
 
+        const auto slot = frameIndex_ % kMaxFramesInFlight;
         const std::size_t byteSize = floatCount * sizeof(float);
-        if (byteSize > impl_->monsterPaletteCapacity || !impl_->monsterPaletteBuffer)
+        if (byteSize > impl_->monsterPaletteCapacity[slot] || !impl_->monsterPaletteBuffer[slot])
         {
             vkDeviceWaitIdle(impl_->device);
-            if (impl_->monsterPaletteBuffer)
-                vkDestroyBuffer(impl_->device, impl_->monsterPaletteBuffer, nullptr);
-            if (impl_->monsterPaletteMemory)
-                vkFreeMemory(impl_->device, impl_->monsterPaletteMemory, nullptr);
-            impl_->monsterPaletteBuffer = {};
-            impl_->monsterPaletteMemory = {};
-            impl_->monsterPaletteMapped = nullptr;
-            impl_->monsterPaletteCapacity = 0;
+            if (impl_->monsterPaletteBuffer[slot])
+                vkDestroyBuffer(impl_->device, impl_->monsterPaletteBuffer[slot], nullptr);
+            if (impl_->monsterPaletteMemory[slot])
+                vkFreeMemory(impl_->device, impl_->monsterPaletteMemory[slot], nullptr);
+            impl_->monsterPaletteBuffer[slot] = {};
+            impl_->monsterPaletteMemory[slot] = {};
+            impl_->monsterPaletteMapped[slot] = nullptr;
+            impl_->monsterPaletteCapacity[slot] = 0;
 
             const std::size_t newCapacity = byteSize + byteSize / 2 + 4096;
             if (!create_host_buffer(nullptr, newCapacity, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
-                    impl_->monsterPaletteBuffer, impl_->monsterPaletteMemory, &impl_->monsterPaletteMapped))
+                    impl_->monsterPaletteBuffer[slot], impl_->monsterPaletteMemory[slot], &impl_->monsterPaletteMapped[slot]))
                 return;
-            impl_->monsterPaletteCapacity = newCapacity;
+            impl_->monsterPaletteCapacity[slot] = newCapacity;
 
             VkDescriptorBufferInfo bufInfo{};
-            bufInfo.buffer = impl_->monsterPaletteBuffer;
+            bufInfo.buffer = impl_->monsterPaletteBuffer[slot];
             bufInfo.offset = 0;
             bufInfo.range = VK_WHOLE_SIZE;
             VkWriteDescriptorSet write{ VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET };
-            write.dstSet = impl_->monsterPaletteDescriptorSet;
+            write.dstSet = impl_->monsterPaletteDescriptorSet[slot];
             write.dstBinding = 0;
             write.descriptorCount = 1;
             write.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
@@ -4378,8 +4407,8 @@ rgba_texture_fallback:
             vkUpdateDescriptorSets(impl_->device, 1, &write, 0, nullptr);
         }
 
-        if (impl_->monsterPaletteMapped)
-            std::memcpy(impl_->monsterPaletteMapped, rows16PerBone, byteSize);
+        if (impl_->monsterPaletteMapped[slot])
+            std::memcpy(impl_->monsterPaletteMapped[slot], rows16PerBone, byteSize);
     }
 
     bool VulkanRenderer::set_npc_skinned_mesh(
@@ -4426,31 +4455,32 @@ rgba_texture_fallback:
         if (!impl_ || !impl_->skinnedCharacterPipeline || !rows16PerBone || floatCount == 0)
             return;
 
+        const auto slot = frameIndex_ % kMaxFramesInFlight;
         const std::size_t byteSize = floatCount * sizeof(float);
-        if (byteSize > impl_->npcPaletteCapacity || !impl_->npcPaletteBuffer)
+        if (byteSize > impl_->npcPaletteCapacity[slot] || !impl_->npcPaletteBuffer[slot])
         {
             vkDeviceWaitIdle(impl_->device);
-            if (impl_->npcPaletteBuffer)
-                vkDestroyBuffer(impl_->device, impl_->npcPaletteBuffer, nullptr);
-            if (impl_->npcPaletteMemory)
-                vkFreeMemory(impl_->device, impl_->npcPaletteMemory, nullptr);
-            impl_->npcPaletteBuffer = {};
-            impl_->npcPaletteMemory = {};
-            impl_->npcPaletteMapped = nullptr;
-            impl_->npcPaletteCapacity = 0;
+            if (impl_->npcPaletteBuffer[slot])
+                vkDestroyBuffer(impl_->device, impl_->npcPaletteBuffer[slot], nullptr);
+            if (impl_->npcPaletteMemory[slot])
+                vkFreeMemory(impl_->device, impl_->npcPaletteMemory[slot], nullptr);
+            impl_->npcPaletteBuffer[slot] = {};
+            impl_->npcPaletteMemory[slot] = {};
+            impl_->npcPaletteMapped[slot] = nullptr;
+            impl_->npcPaletteCapacity[slot] = 0;
 
             const std::size_t newCapacity = byteSize + byteSize / 2 + 4096;
             if (!create_host_buffer(nullptr, newCapacity, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
-                    impl_->npcPaletteBuffer, impl_->npcPaletteMemory, &impl_->npcPaletteMapped))
+                    impl_->npcPaletteBuffer[slot], impl_->npcPaletteMemory[slot], &impl_->npcPaletteMapped[slot]))
                 return;
-            impl_->npcPaletteCapacity = newCapacity;
+            impl_->npcPaletteCapacity[slot] = newCapacity;
 
             VkDescriptorBufferInfo bufInfo{};
-            bufInfo.buffer = impl_->npcPaletteBuffer;
+            bufInfo.buffer = impl_->npcPaletteBuffer[slot];
             bufInfo.offset = 0;
             bufInfo.range = VK_WHOLE_SIZE;
             VkWriteDescriptorSet write{ VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET };
-            write.dstSet = impl_->npcPaletteDescriptorSet;
+            write.dstSet = impl_->npcPaletteDescriptorSet[slot];
             write.dstBinding = 0;
             write.descriptorCount = 1;
             write.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
@@ -4458,8 +4488,8 @@ rgba_texture_fallback:
             vkUpdateDescriptorSets(impl_->device, 1, &write, 0, nullptr);
         }
 
-        if (impl_->npcPaletteMapped)
-            std::memcpy(impl_->npcPaletteMapped, rows16PerBone, byteSize);
+        if (impl_->npcPaletteMapped[slot])
+            std::memcpy(impl_->npcPaletteMapped[slot], rows16PerBone, byteSize);
     }
 
     bool VulkanRenderer::update_npc_skinned_instances(
@@ -4474,26 +4504,27 @@ rgba_texture_fallback:
             return true;
         }
 
+        const auto slot = frameIndex_ % kMaxFramesInFlight;
         const auto instanceBytes = instances.size() * sizeof(ObjectInstance);
-        if (!impl_->npcCharacterInstanceBuffer || instanceBytes > impl_->npcCharacterInstanceCapacity)
+        if (!impl_->npcCharacterInstanceBuffer[slot] || instanceBytes > impl_->npcCharacterInstanceCapacity[slot])
         {
             vkDeviceWaitIdle(impl_->device);
-            if (impl_->npcCharacterInstanceBuffer)
-                vkDestroyBuffer(impl_->device, impl_->npcCharacterInstanceBuffer, nullptr);
-            if (impl_->npcCharacterInstanceMemory)
-                vkFreeMemory(impl_->device, impl_->npcCharacterInstanceMemory, nullptr);
-            impl_->npcCharacterInstanceBuffer = {};
-            impl_->npcCharacterInstanceMemory = {};
-            impl_->npcCharacterInstanceMapped = nullptr;
+            if (impl_->npcCharacterInstanceBuffer[slot])
+                vkDestroyBuffer(impl_->device, impl_->npcCharacterInstanceBuffer[slot], nullptr);
+            if (impl_->npcCharacterInstanceMemory[slot])
+                vkFreeMemory(impl_->device, impl_->npcCharacterInstanceMemory[slot], nullptr);
+            impl_->npcCharacterInstanceBuffer[slot] = {};
+            impl_->npcCharacterInstanceMemory[slot] = {};
+            impl_->npcCharacterInstanceMapped[slot] = nullptr;
             const auto capacity = instanceBytes + instanceBytes / 2 + sizeof(ObjectInstance) * 64;
             if (!create_host_buffer(nullptr, capacity, VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
-                    impl_->npcCharacterInstanceBuffer, impl_->npcCharacterInstanceMemory,
-                    &impl_->npcCharacterInstanceMapped))
+                    impl_->npcCharacterInstanceBuffer[slot], impl_->npcCharacterInstanceMemory[slot],
+                    &impl_->npcCharacterInstanceMapped[slot]))
                 return false;
-            impl_->npcCharacterInstanceCapacity = capacity;
+            impl_->npcCharacterInstanceCapacity[slot] = capacity;
         }
-        if (impl_->npcCharacterInstanceMapped)
-            std::memcpy(impl_->npcCharacterInstanceMapped, instances.data(), instanceBytes);
+        if (impl_->npcCharacterInstanceMapped[slot])
+            std::memcpy(impl_->npcCharacterInstanceMapped[slot], instances.data(), instanceBytes);
         impl_->npcCharacterBatches = batches;
         return true;
     }
@@ -5133,18 +5164,18 @@ rgba_texture_fallback:
                     vkCmdDrawIndexed(commandBuffer, batch.indexCount, batch.instanceCount, batch.firstIndex, 0, batch.firstInstance);
             }
             if (impl_->monsterCharacterVisible && impl_->monsterCharacterReady
-                && impl_->monsterCharacterInstanceBuffer && !impl_->monsterCharacterBatches.empty()
+                && impl_->monsterCharacterInstanceBuffer[frame] && !impl_->monsterCharacterBatches.empty()
                 && impl_->monsterCharacterSkinned && impl_->skinnedCharacterPipeline
-                && impl_->monsterPaletteBuffer)
+                && impl_->monsterPaletteBuffer[frame])
             {
                 // GPU-skinned path: own pipeline + layout (set 0 = textures,
                 // set 1 = bone palette). Bound directly (not via the bindPipeline
                 // helper, which targets terrainPipelineLayout), so reset the
                 // helper's cache afterwards to force the next layer to re-bind.
-                VkBuffer buffers[2]{ impl_->monsterCharacterVertexBuffer, impl_->monsterCharacterInstanceBuffer };
+                VkBuffer buffers[2]{ impl_->monsterCharacterVertexBuffer, impl_->monsterCharacterInstanceBuffer[frame] };
                 VkDeviceSize offsets[2]{ 0, 0 };
                 vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, impl_->skinnedCharacterPipeline);
-                VkDescriptorSet sets[2]{ impl_->descriptorSet, impl_->monsterPaletteDescriptorSet };
+                VkDescriptorSet sets[2]{ impl_->descriptorSet, impl_->monsterPaletteDescriptorSet[frame] };
                 vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
                     impl_->skinnedCharacterPipelineLayout, 0, 2, sets, 0, nullptr);
                 vkCmdPushConstants(commandBuffer, impl_->skinnedCharacterPipelineLayout,
@@ -5156,13 +5187,13 @@ rgba_texture_fallback:
                 lastBoundPipeline = VK_NULL_HANDLE;
             }
             if (impl_->npcCharacterVisible && impl_->npcCharacterReady
-                && impl_->npcCharacterInstanceBuffer && !impl_->npcCharacterBatches.empty()
-                && impl_->skinnedCharacterPipeline && impl_->npcPaletteBuffer)
+                && impl_->npcCharacterInstanceBuffer[frame] && !impl_->npcCharacterBatches.empty()
+                && impl_->skinnedCharacterPipeline && impl_->npcPaletteBuffer[frame])
             {
-                VkBuffer buffers[2]{ impl_->npcCharacterVertexBuffer, impl_->npcCharacterInstanceBuffer };
+                VkBuffer buffers[2]{ impl_->npcCharacterVertexBuffer, impl_->npcCharacterInstanceBuffer[frame] };
                 VkDeviceSize offsets[2]{ 0, 0 };
                 vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, impl_->skinnedCharacterPipeline);
-                VkDescriptorSet sets[2]{ impl_->descriptorSet, impl_->npcPaletteDescriptorSet };
+                VkDescriptorSet sets[2]{ impl_->descriptorSet, impl_->npcPaletteDescriptorSet[frame] };
                 vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
                     impl_->skinnedCharacterPipelineLayout, 0, 2, sets, 0, nullptr);
                 vkCmdPushConstants(commandBuffer, impl_->skinnedCharacterPipelineLayout,
@@ -5525,10 +5556,13 @@ rgba_texture_fallback:
             vkDestroyBuffer(impl_->device, impl_->monsterCharacterIndexBuffer, nullptr);
         if (impl_->monsterCharacterIndexMemory)
             vkFreeMemory(impl_->device, impl_->monsterCharacterIndexMemory, nullptr);
-        if (impl_->monsterCharacterInstanceBuffer)
-            vkDestroyBuffer(impl_->device, impl_->monsterCharacterInstanceBuffer, nullptr);
-        if (impl_->monsterCharacterInstanceMemory)
-            vkFreeMemory(impl_->device, impl_->monsterCharacterInstanceMemory, nullptr);
+        for (std::uint32_t i = 0; i < kMaxFramesInFlight; ++i)
+        {
+            if (impl_->monsterCharacterInstanceBuffer[i])
+                vkDestroyBuffer(impl_->device, impl_->monsterCharacterInstanceBuffer[i], nullptr);
+            if (impl_->monsterCharacterInstanceMemory[i])
+                vkFreeMemory(impl_->device, impl_->monsterCharacterInstanceMemory[i], nullptr);
+        }
         if (impl_->terrainTextureArrayView)
             vkDestroyImageView(impl_->device, impl_->terrainTextureArrayView, nullptr);
         if (impl_->terrainTextureArray)
@@ -5570,10 +5604,13 @@ rgba_texture_fallback:
             vkDestroyDescriptorPool(impl_->device, impl_->paletteDescriptorPool, nullptr);
         if (impl_->paletteSetLayout)
             vkDestroyDescriptorSetLayout(impl_->device, impl_->paletteSetLayout, nullptr);
-        if (impl_->monsterPaletteBuffer)
-            vkDestroyBuffer(impl_->device, impl_->monsterPaletteBuffer, nullptr);
-        if (impl_->monsterPaletteMemory)
-            vkFreeMemory(impl_->device, impl_->monsterPaletteMemory, nullptr);
+        for (std::uint32_t i = 0; i < kMaxFramesInFlight; ++i)
+        {
+            if (impl_->monsterPaletteBuffer[i])
+                vkDestroyBuffer(impl_->device, impl_->monsterPaletteBuffer[i], nullptr);
+            if (impl_->monsterPaletteMemory[i])
+                vkFreeMemory(impl_->device, impl_->monsterPaletteMemory[i], nullptr);
+        }
         if (impl_->npcCharacterVertexBuffer)
             vkDestroyBuffer(impl_->device, impl_->npcCharacterVertexBuffer, nullptr);
         if (impl_->npcCharacterVertexMemory)
@@ -5582,14 +5619,17 @@ rgba_texture_fallback:
             vkDestroyBuffer(impl_->device, impl_->npcCharacterIndexBuffer, nullptr);
         if (impl_->npcCharacterIndexMemory)
             vkFreeMemory(impl_->device, impl_->npcCharacterIndexMemory, nullptr);
-        if (impl_->npcCharacterInstanceBuffer)
-            vkDestroyBuffer(impl_->device, impl_->npcCharacterInstanceBuffer, nullptr);
-        if (impl_->npcCharacterInstanceMemory)
-            vkFreeMemory(impl_->device, impl_->npcCharacterInstanceMemory, nullptr);
-        if (impl_->npcPaletteBuffer)
-            vkDestroyBuffer(impl_->device, impl_->npcPaletteBuffer, nullptr);
-        if (impl_->npcPaletteMemory)
-            vkFreeMemory(impl_->device, impl_->npcPaletteMemory, nullptr);
+        for (std::uint32_t i = 0; i < kMaxFramesInFlight; ++i)
+        {
+            if (impl_->npcCharacterInstanceBuffer[i])
+                vkDestroyBuffer(impl_->device, impl_->npcCharacterInstanceBuffer[i], nullptr);
+            if (impl_->npcCharacterInstanceMemory[i])
+                vkFreeMemory(impl_->device, impl_->npcCharacterInstanceMemory[i], nullptr);
+            if (impl_->npcPaletteBuffer[i])
+                vkDestroyBuffer(impl_->device, impl_->npcPaletteBuffer[i], nullptr);
+            if (impl_->npcPaletteMemory[i])
+                vkFreeMemory(impl_->device, impl_->npcPaletteMemory[i], nullptr);
+        }
         // GPU culling resources.
         if (impl_->indirectTemplateBuffer)
             vkDestroyBuffer(impl_->device, impl_->indirectTemplateBuffer, nullptr);

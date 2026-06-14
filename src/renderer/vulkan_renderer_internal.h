@@ -232,24 +232,27 @@ namespace phoenix::renderer
         void* monsterCharacterVertexMapped{};
         VkBuffer monsterCharacterIndexBuffer{};
         VkDeviceMemory monsterCharacterIndexMemory{};
-        VkBuffer monsterCharacterInstanceBuffer{};
-        VkDeviceMemory monsterCharacterInstanceMemory{};
-        void* monsterCharacterInstanceMapped{};
+        // Per-frame-in-flight instance buffers — double-buffered to avoid a
+        // CPU/GPU write/read race (see the NPC equivalents above).
+        VkBuffer monsterCharacterInstanceBuffer[kMaxFramesInFlight]{};
+        VkDeviceMemory monsterCharacterInstanceMemory[kMaxFramesInFlight]{};
+        void* monsterCharacterInstanceMapped[kMaxFramesInFlight]{};
         std::size_t monsterCharacterVertexBytes{};
         std::size_t monsterCharacterVertexCapacity{};
         std::size_t monsterCharacterInstanceBytes{};
-        std::size_t monsterCharacterInstanceCapacity{};
+        std::size_t monsterCharacterInstanceCapacity[kMaxFramesInFlight]{};
         std::vector<ObjectBatch> monsterCharacterBatches;
         bool monsterCharacterReady{};
         bool monsterCharacterVisible{};
         bool monsterCharacterSkinned{};   // mesh uploaded as SkinnedVertex (GPU skin path)
         // Bone-palette storage buffer for the GPU-skinned monster path. Flat
         // float array, 16 floats (4 rows) per bone, all entities concatenated.
-        VkBuffer monsterPaletteBuffer{};
-        VkDeviceMemory monsterPaletteMemory{};
-        void* monsterPaletteMapped{};
-        std::size_t monsterPaletteCapacity{};
-        VkDescriptorSet monsterPaletteDescriptorSet{};
+        // Double-buffered per frame-in-flight (same race fix as the NPC palette).
+        VkBuffer monsterPaletteBuffer[kMaxFramesInFlight]{};
+        VkDeviceMemory monsterPaletteMemory[kMaxFramesInFlight]{};
+        void* monsterPaletteMapped[kMaxFramesInFlight]{};
+        std::size_t monsterPaletteCapacity[kMaxFramesInFlight]{};
+        VkDescriptorSet monsterPaletteDescriptorSet[kMaxFramesInFlight]{};
 
         // GPU-skinned NPC path — dedicated buffers (NPCs share the render slot
         // with bots in gameplay, but use their own skinned geometry here).
@@ -257,19 +260,26 @@ namespace phoenix::renderer
         VkDeviceMemory npcCharacterVertexMemory{};
         VkBuffer npcCharacterIndexBuffer{};
         VkDeviceMemory npcCharacterIndexMemory{};
-        VkBuffer npcCharacterInstanceBuffer{};
-        VkDeviceMemory npcCharacterInstanceMemory{};
-        void* npcCharacterInstanceMapped{};
+        // Per-frame-in-flight instance + bone-palette buffers. These are
+        // host-mapped and rewritten every frame; with kMaxFramesInFlight frames
+        // overlapping, a single shared buffer would be overwritten by the CPU
+        // while the previous frame's GPU draw still reads it (visible as garbled
+        // bone palettes / deformed meshes under load). One buffer per frame slot,
+        // selected by frameIndex_, removes that race — wait_for_frame() already
+        // guarantees the slot's previous user has finished before we overwrite it.
+        VkBuffer npcCharacterInstanceBuffer[kMaxFramesInFlight]{};
+        VkDeviceMemory npcCharacterInstanceMemory[kMaxFramesInFlight]{};
+        void* npcCharacterInstanceMapped[kMaxFramesInFlight]{};
         std::size_t npcCharacterVertexCapacity{};
-        std::size_t npcCharacterInstanceCapacity{};
+        std::size_t npcCharacterInstanceCapacity[kMaxFramesInFlight]{};
         std::vector<ObjectBatch> npcCharacterBatches;
         bool npcCharacterReady{};
         bool npcCharacterVisible{};
-        VkBuffer npcPaletteBuffer{};
-        VkDeviceMemory npcPaletteMemory{};
-        void* npcPaletteMapped{};
-        std::size_t npcPaletteCapacity{};
-        VkDescriptorSet npcPaletteDescriptorSet{};
+        VkBuffer npcPaletteBuffer[kMaxFramesInFlight]{};
+        VkDeviceMemory npcPaletteMemory[kMaxFramesInFlight]{};
+        void* npcPaletteMapped[kMaxFramesInFlight]{};
+        std::size_t npcPaletteCapacity[kMaxFramesInFlight]{};
+        VkDescriptorSet npcPaletteDescriptorSet[kMaxFramesInFlight]{};
 
         VkDescriptorPool descriptorPool{};
         VkDescriptorSetLayout descriptorSetLayout{};

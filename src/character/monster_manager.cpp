@@ -2,8 +2,10 @@
 
 #include "app/loading_scheduler.h"
 #include "assets/data_index.h"
+#include "world/svmap_loader.h"
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
@@ -11,7 +13,7 @@
 #include <format>
 #include <fstream>
 #include <limits>
-#include <sstream>
+#include <random>
 #include <unordered_map>
 
 namespace phoenix::character
@@ -19,6 +21,11 @@ namespace phoenix::character
     namespace
     {
         constexpr float kMonsterBaseScale = 0.95f;
+        // Animation-LOD distance tiers (squared, world units): near -> 60/s pose
+        // rate; mid -> 30/s; far -> 15/s. Coarser rates let distant mobs share a
+        // skinning job (imperceptible at distance).
+        constexpr float kAnimLodNearSq = 25.0f * 25.0f;
+        constexpr float kAnimLodMidSq = 55.0f * 55.0f;
         constexpr float kAniFramesPerSecond = 30.0f;
         constexpr float kAnimationBlendDuration = 0.12f;
         constexpr float kOneShotBlendDuration = 0.25f;
@@ -397,6 +404,7 @@ namespace phoenix::character
             return true;
 
         catalog_.clear();
+        catalogByMobId_.clear();
         visualRows_.clear();
         visuals_.clear();
         textureSlotByPath_.clear();
@@ -469,7 +477,12 @@ namespace phoenix::character
                     + " / model " + std::to_string(entry.modelIndex)
                     + " / size " + std::to_string(entry.size) + "]";
                 if (visualRows_.contains(entry.modelIndex))
+                {
+                    // svmap monster areas reference mobs by id; key the catalog by
+                    // it so areas resolve. Keep the first entry per id.
+                    catalogByMobId_.emplace(entry.monsterId, catalog_.size());
                     catalog_.push_back(std::move(entry));
+                }
             }
         }
 
@@ -500,6 +513,7 @@ namespace phoenix::character
 
         ActiveMonster monster{};
         monster.modelIndex = entry.modelIndex;
+        monster.catalogIndex = catalogIndex;
         // CSV `size` is a percentage anchored at 100 = default (x1.0), but the
         // curve is asymmetric:
         //   >= 100: gentle — every +100 adds 10% of default (800 -> x1.7, 1000 -> x1.9)
@@ -518,7 +532,6 @@ namespace phoenix::character
         monster.previousAnimation = visual->breathAnimation;
         monster.idleGesturePick = static_cast<std::uint32_t>(active_.size() * 13u + entry.modelIndex);
         active_.push_back(monster);
-        activeLabel_ = entry.label;
         // The shared mesh only changes when a model appears for the first time;
         // spawning more of an existing model just adds an instance at draw time.
         if (!modelIndexOffset_.contains(entry.modelIndex))
@@ -529,8 +542,12 @@ namespace phoenix::character
 
     void MonsterManager::clear(phoenix::renderer::VulkanRenderer& renderer)
     {
+        placements_.clear();
+        streamedPlacements_ = 0;
+        visualLoads_.clear();
+        failedModels_.clear();
         active_.clear();
-        activeLabel_.clear();
+        labels_.clear();
         renderVertices_.clear();
         renderIndices_.clear();
         instances_.clear();
@@ -538,6 +555,169 @@ namespace phoenix::character
         visibleCount_ = 0;
         renderer.update_monster_character_instances(instances_, instanceBatches_);
         renderer.set_monster_character_visible(false);
+    }
+
+    bool MonsterManager::plan_visual(
+        const std::filesystem::path& dataRoot,
+        const MonsterCatalogEntry& entry,
+        std::uint32_t textureBaseSlot,
+        std::uint32_t textureSlotReserve,
+        VisualLoadPlan& out)
+    {
+        const auto rowsIt = visualRows_.find(entry.modelIndex);
+        if (rowsIt == visualRows_.end() || rowsIt->second.empty())
+        {
+            status_ = "monster visual model not found.";
+            return false;
+        }
+        const auto root = resolve_ci(dataRoot / "monster");
+        const auto meshRoot = resolve_ci(root / "3dc");
+        const auto textureRoot = resolve_ci(root / "dds");
+        const auto animationRoot = resolve_ci(root / "ani");
+        if (meshRoot.empty() || textureRoot.empty() || animationRoot.empty())
+        {
+            status_ = "monster asset folders are incomplete.";
+            return false;
+        }
+
+        out = {};
+        out.modelIndex = entry.modelIndex;
+        out.textureBaseSlot = textureBaseSlot;
+        out.animationRoot = animationRoot;
+        // Slot assignment (shared maps) stays on the main thread; the worker parse
+        // only reads the resulting plan.
+        for (const auto& part : rowsIt->second)
+        {
+            VisualPartLoad load{};
+            load.meshPath = resolve_ci(meshRoot / part.meshName);
+            load.texturePath = resolve_ci(textureRoot / part.textureName);
+            if (load.meshPath.empty() || load.texturePath.empty())
+                continue;
+            const auto textureKey = phoenix::assets::lower_ascii(load.texturePath.generic_string());
+            if (const auto it = textureSlotByPath_.find(textureKey); it != textureSlotByPath_.end())
+            {
+                load.textureSlot = it->second;
+                load.decodeTexture = false;
+            }
+            else
+            {
+                // Reuse a slot freed by eviction before growing the watermark.
+                if (!freeTextureSlots_.empty())
+                {
+                    load.textureSlot = freeTextureSlots_.back();
+                    freeTextureSlots_.pop_back();
+                }
+                else if (nextTextureSlot_ < textureSlotReserve)
+                {
+                    load.textureSlot = nextTextureSlot_++;
+                }
+                else
+                {
+                    status_ = "monster texture reserve exhausted.";
+                    return false;
+                }
+                textureSlotByPath_.emplace(textureKey, load.textureSlot);
+                textureKeyBySlot_[load.textureSlot] = textureKey;
+                load.decodeTexture = true;
+            }
+            out.parts.push_back(std::move(load));
+        }
+        if (out.parts.empty())
+        {
+            status_ = "monster visual model not found.";
+            return false;
+        }
+        const auto& firstPart = rowsIt->second.front();
+        out.walkAni = firstPart.walkAni;
+        out.runAni = firstPart.runAni;
+        out.breathAni = firstPart.breathAni;
+        out.idleAni = firstPart.idleAni;
+        out.attack1Ani = firstPart.attack1Ani;
+        return true;
+    }
+
+    MonsterManager::Visual* MonsterManager::finalize_visual(
+        std::uint32_t modelIndex,
+        std::shared_ptr<Visual> visual,
+        std::uint32_t textureBaseSlot,
+        phoenix::renderer::VulkanRenderer& renderer)
+    {
+        for (auto& [slot, texture] : visual->pendingTextureUploads)
+        {
+            std::vector<phoenix::renderer::DdsTexture> single{ std::move(texture) };
+            renderer.upload_terrain_texture_layers(textureBaseSlot + slot, single);
+        }
+        visual->pendingTextureUploads.clear();
+        visual->ready = true;
+        for (const auto slot : visual->textureSlots)
+            ++slotRefcount_[slot];
+        auto [it, inserted] = visuals_.emplace(modelIndex, std::move(*visual));
+        return &it->second;
+    }
+
+    void MonsterManager::evict_visual(std::uint32_t modelIndex)
+    {
+        const auto it = visuals_.find(modelIndex);
+        if (it == visuals_.end())
+            return;
+        for (const auto slot : it->second.textureSlots)
+        {
+            const auto refIt = slotRefcount_.find(slot);
+            if (refIt == slotRefcount_.end())
+                continue;
+            if (--refIt->second == 0)
+            {
+                slotRefcount_.erase(refIt);
+                freeTextureSlots_.push_back(slot);
+                if (const auto keyIt = textureKeyBySlot_.find(slot); keyIt != textureKeyBySlot_.end())
+                {
+                    textureSlotByPath_.erase(keyIt->second);
+                    textureKeyBySlot_.erase(keyIt);
+                }
+            }
+        }
+        visuals_.erase(it);
+        modelIndexOffset_.erase(modelIndex);
+        modelLastUsedFrame_.erase(modelIndex);
+    }
+
+    void MonsterManager::evict_visuals_if_needed(phoenix::renderer::VulkanRenderer& renderer)
+    {
+        if (mapTextureReserve_ == 0 || visuals_.empty())
+            return;
+        const auto usedSlots = [&]() -> std::uint32_t {
+            return nextTextureSlot_ - static_cast<std::uint32_t>(freeTextureSlots_.size());
+        };
+        const std::uint32_t highWater = mapTextureReserve_ * 3u / 4u;
+        if (usedSlots() <= highWater)
+            return;
+        const std::uint32_t lowWater = mapTextureReserve_ / 2u;
+
+        std::unordered_set<std::uint32_t> activeModels;
+        activeModels.reserve(active_.size());
+        for (const auto& monster : active_)
+            activeModels.insert(monster.modelIndex);
+
+        std::vector<std::pair<std::uint32_t, std::uint32_t>> candidates;   // (lastUsedFrame, model)
+        for (const auto& [model, visual] : visuals_)
+            if (!activeModels.contains(model))
+            {
+                const auto fit = modelLastUsedFrame_.find(model);
+                candidates.emplace_back(fit != modelLastUsedFrame_.end() ? fit->second : 0u, model);
+            }
+        std::sort(candidates.begin(), candidates.end());
+
+        bool evicted = false;
+        for (const auto& [lastUsed, model] : candidates)
+        {
+            if (usedSlots() <= lowWater)
+                break;
+            (void)lastUsed;
+            evict_visual(model);
+            evicted = true;
+        }
+        if (evicted)
+            rebuild_render_mesh(renderer);
     }
 
     MonsterManager::Visual* MonsterManager::load_visual(
@@ -549,28 +729,27 @@ namespace phoenix::character
     {
         if (auto it = visuals_.find(entry.modelIndex); it != visuals_.end())
             return &it->second;
-
-        const auto rowsIt = visualRows_.find(entry.modelIndex);
-        if (rowsIt == visualRows_.end() || rowsIt->second.empty())
+        VisualLoadPlan plan;
+        if (!plan_visual(dataRoot, entry, textureBaseSlot, textureSlotReserve, plan))
+            return nullptr;
+        auto parsed = parse_visual(plan);
+        if (!parsed)
         {
-            status_ = "monster visual model not found.";
+            status_ = "monster visual load failed: no mesh parts or animation.";
             return nullptr;
         }
+        return finalize_visual(entry.modelIndex, std::move(parsed), textureBaseSlot, renderer);
+    }
 
-        Visual next{};
+    std::shared_ptr<MonsterManager::Visual> MonsterManager::parse_visual(const VisualLoadPlan& plan)
+    {
+        auto visualPtr = std::make_shared<Visual>();
+        Visual& next = *visualPtr;
         next.breathAnimation = kInvalidAnimation;
         next.idleAnimation = kInvalidAnimation;
-        const auto root = resolve_ci(dataRoot / "monster");
-        const auto meshRoot = resolve_ci(root / "3dc");
-        const auto textureRoot = resolve_ci(root / "dds");
-        const auto animationRoot = resolve_ci(root / "ani");
-        if (meshRoot.empty() || textureRoot.empty() || animationRoot.empty())
-        {
-            status_ = "monster asset folders are incomplete.";
-            return nullptr;
-        }
+        next.walkAnimation = kInvalidAnimation;
+        next.runAnimation = kInvalidAnimation;
 
-        std::vector<std::pair<std::uint32_t, phoenix::renderer::DdsTexture>> newTextures;
         std::size_t parsedParts = 0;
         float minX = std::numeric_limits<float>::max();
         float minY = std::numeric_limits<float>::max();
@@ -578,53 +757,31 @@ namespace phoenix::character
         float maxX = -std::numeric_limits<float>::max();
         float maxY = -std::numeric_limits<float>::max();
         float maxZ = -std::numeric_limits<float>::max();
-        for (const auto& part : rowsIt->second)
+        // Per-vertex skinning inputs, kept only long enough to build the static
+        // skinning plan below — not stored in the cached Visual.
+        std::vector<SourceVertex> sourceVertices;
+        for (const auto& part : plan.parts)
         {
-            const auto meshPath = resolve_ci(meshRoot / part.meshName);
-            auto model = phoenix::world::load_character_3dc(meshPath);
+            auto model = phoenix::world::load_character_3dc(part.meshPath);
             if (!model.parsed || model.vertices.empty())
                 continue;
 
-            const auto texturePath = resolve_ci(textureRoot / part.textureName);
-            if (texturePath.empty())
-                continue;
+            const std::uint32_t textureSlot = part.textureSlot;
+            const bool alphaCutout = phoenix::renderer::dds_file_has_alpha_cutout(part.texturePath);
+            if (part.decodeTexture)
+                next.pendingTextureUploads.push_back(
+                    { textureSlot, phoenix::renderer::load_dds(part.texturePath) });
+            next.textureSlots.push_back(textureSlot);
 
-            const auto textureKey = phoenix::assets::lower_ascii(texturePath.generic_string());
-            std::uint32_t textureSlot = 0;
-            if (const auto it = textureSlotByPath_.find(textureKey); it != textureSlotByPath_.end())
-            {
-                textureSlot = it->second;
-            }
-            else
-            {
-                if (nextTextureSlot_ >= textureSlotReserve)
-                {
-                    status_ = "monster texture reserve exhausted.";
-                    return nullptr;
-                }
-                textureSlot = nextTextureSlot_++;
-                textureSlotByPath_.emplace(textureKey, textureSlot);
-                newTextures.push_back({ textureSlot, phoenix::renderer::load_dds(texturePath) });
-            }
-            next.texturePaths.push_back(texturePath);
-
-            const auto baseVertex = static_cast<std::uint32_t>(next.bindVertices.size());
+            const auto baseVertex = static_cast<std::uint32_t>(next.skinnedBind.size());
             const auto meshBoneBase = static_cast<std::uint32_t>(next.meshBones.size());
             const auto meshBoneCount = static_cast<std::uint32_t>(model.bones.size());
             next.meshBones.insert(next.meshBones.end(), model.bones.begin(), model.bones.end());
-            const bool alphaCutout = phoenix::renderer::dds_file_has_alpha_cutout(texturePath);
+            const std::uint32_t textureLayer = plan.textureBaseSlot + textureSlot + (alphaCutout ? 2048u : 0u);
 
             for (const auto& src : model.vertices)
             {
                 SourceVertex sv{};
-                sv.position[0] = src.position[0];
-                sv.position[1] = src.position[1];
-                sv.position[2] = src.position[2];
-                sv.normal[0] = src.normal[0];
-                sv.normal[1] = src.normal[1];
-                sv.normal[2] = src.normal[2];
-                sv.uv[0] = src.uv[0];
-                sv.uv[1] = src.uv[1];
                 sv.weights[0] = src.boneWeights[0];
                 sv.weights[1] = src.boneWeights[1];
                 sv.weights[2] = src.boneWeights[2];
@@ -633,35 +790,21 @@ namespace phoenix::character
                 sv.bones[2] = src.boneIndices[2];
                 sv.meshBoneBase = meshBoneBase;
                 sv.meshBoneCount = meshBoneCount;
-                sv.gpuIndex = static_cast<std::uint32_t>(next.bindVertices.size());
-                next.sourceVertices.push_back(sv);
-
-                phoenix::renderer::TerrainVertex gv{};
-                gv.position[0] = sv.position[0] * kMonsterBaseScale;
-                gv.position[1] = sv.position[1] * kMonsterBaseScale;
-                gv.position[2] = sv.position[2] * kMonsterBaseScale;
-                gv.color[0] = gv.color[1] = gv.color[2] = 1.0f;
-                gv.normal[0] = sv.normal[0];
-                gv.normal[1] = sv.normal[1];
-                gv.normal[2] = sv.normal[2];
-                gv.uv[0] = sv.uv[0];
-                gv.uv[1] = sv.uv[1];
-                gv.textureLayer = textureBaseSlot + textureSlot + (alphaCutout ? 2048u : 0u);
-                next.bindVertices.push_back(gv);
+                sourceVertices.push_back(sv);
 
                 // GPU-skinning bind vertex: UNSCALED bind pose (kMonsterBaseScale
                 // is folded into the per-instance basis) + global bone indices.
                 phoenix::renderer::SkinnedVertex skv{};
-                skv.position[0] = sv.position[0];
-                skv.position[1] = sv.position[1];
-                skv.position[2] = sv.position[2];
+                skv.position[0] = src.position[0];
+                skv.position[1] = src.position[1];
+                skv.position[2] = src.position[2];
                 skv.color[0] = skv.color[1] = skv.color[2] = 1.0f;
-                skv.normal[0] = sv.normal[0];
-                skv.normal[1] = sv.normal[1];
-                skv.normal[2] = sv.normal[2];
-                skv.uv[0] = sv.uv[0];
-                skv.uv[1] = sv.uv[1];
-                skv.textureLayer = gv.textureLayer;
+                skv.normal[0] = src.normal[0];
+                skv.normal[1] = src.normal[1];
+                skv.normal[2] = src.normal[2];
+                skv.uv[0] = src.uv[0];
+                skv.uv[1] = src.uv[1];
+                skv.textureLayer = textureLayer;
                 for (int b = 0; b < 3; ++b)
                 {
                     skv.bones[b] = meshBoneBase + static_cast<std::uint32_t>(sv.bones[b]);
@@ -669,12 +812,16 @@ namespace phoenix::character
                 }
                 next.skinnedBind.push_back(skv);
 
-                minX = std::min(minX, gv.position[0]);
-                minY = std::min(minY, gv.position[1]);
-                minZ = std::min(minZ, gv.position[2]);
-                maxX = std::max(maxX, gv.position[0]);
-                maxY = std::max(maxY, gv.position[1]);
-                maxZ = std::max(maxZ, gv.position[2]);
+                // Bounds use the scaled bind pose (kMonsterBaseScale in the basis).
+                const float sx = src.position[0] * kMonsterBaseScale;
+                const float sy = src.position[1] * kMonsterBaseScale;
+                const float sz = src.position[2] * kMonsterBaseScale;
+                minX = std::min(minX, sx);
+                minY = std::min(minY, sy);
+                minZ = std::min(minZ, sz);
+                maxX = std::max(maxX, sx);
+                maxY = std::max(maxY, sy);
+                maxZ = std::max(maxZ, sz);
             }
 
             phoenix::renderer::ObjectBatch batch{};
@@ -696,7 +843,7 @@ namespace phoenix::character
         const auto loadAnimation = [&](const std::string& name) -> std::size_t {
             if (is_load_placeholder(name))
                 return kInvalidAnimation;
-            const auto aniPath = resolve_ci(animationRoot / name);
+            const auto aniPath = resolve_ci(plan.animationRoot / name);
             if (aniPath.empty())
                 return kInvalidAnimation;
             const auto key = phoenix::assets::lower_ascii(aniPath.generic_string());
@@ -717,9 +864,11 @@ namespace phoenix::character
             return next.animations.size() - 1;
         };
 
-        const auto& firstPart = rowsIt->second.front();
-        next.breathAnimation = loadAnimation(firstPart.breathAni);
-        next.idleAnimation = loadAnimation(firstPart.idleAni);
+        next.breathAnimation = loadAnimation(plan.breathAni);
+        next.idleAnimation = loadAnimation(plan.idleAni);
+        // Walk + run drive wandering mobs.
+        next.walkAnimation = loadAnimation(plan.walkAni);
+        next.runAnimation = loadAnimation(plan.runAni);
         if (next.breathAnimation == kInvalidAnimation)
             next.breathAnimation = next.idleAnimation;
         if (next.idleAnimation == kInvalidAnimation)
@@ -727,9 +876,9 @@ namespace phoenix::character
         if (next.breathAnimation == kInvalidAnimation)
         {
             const std::string fallbackCandidates[] = {
-                firstPart.walkAni,
-                firstPart.runAni,
-                firstPart.attack1Ani,
+                plan.walkAni,
+                plan.runAni,
+                plan.attack1Ani,
             };
             for (const auto& name : fallbackCandidates)
             {
@@ -743,15 +892,34 @@ namespace phoenix::character
         }
 
         if (parsedParts == 0 || next.animations.empty() || next.breathAnimation == kInvalidAnimation)
-        {
-            status_ = "monster visual load failed: no mesh parts or animation.";
             return nullptr;
-        }
 
-        for (const auto& [slot, texture] : newTextures)
+        // Precompute the static skinning plan (referenced bones + transposed bind
+        // matrices) so per-frame skinning walks bones, not vertices.
         {
-            std::vector<phoenix::renderer::DdsTexture> single{ texture };
-            renderer.upload_terrain_texture_layers(textureBaseSlot + slot, single);
+            const std::size_t boneCount = next.meshBones.size();
+            std::vector<std::uint8_t> seen(boneCount, 0u);
+            for (const auto& src : sourceVertices)
+            {
+                for (int influence = 0; influence < 3; ++influence)
+                {
+                    if (src.weights[influence] <= 0.0001f)
+                        continue;
+                    const auto local = static_cast<std::uint32_t>(src.bones[influence]);
+                    if (local >= src.meshBoneCount)
+                        continue;
+                    const std::uint32_t global = src.meshBoneBase + local;
+                    if (global >= boneCount || seen[global])
+                        continue;
+                    seen[global] = 1u;
+                    next.paletteGlobalBone.push_back(global);
+                    next.paletteLocalBone.push_back(local);
+                    const auto bind = mat4_from_shaiya_transposed(next.meshBones[global].matrix);
+                    const auto base = next.paletteMeshBind.size();
+                    next.paletteMeshBind.resize(base + 16);
+                    std::memcpy(&next.paletteMeshBind[base], &bind.m[0][0], 16 * sizeof(float));
+                }
+            }
         }
 
         next.localGroundY = std::isfinite(minY) ? minY : 0.0f;
@@ -765,13 +933,386 @@ namespace phoenix::character
             const float ey = maxY - cy;
             const float ez = maxZ - cz;
             next.boundsRadius = std::max(0.5f, std::sqrt(ex * ex + ey * ey + ez * ez));
+            next.modelTopY = maxY;
         }
-        next.ready = true;
+        next.ready = false;   // finalize_visual flips this after uploading textures
+        return visualPtr;
+    }
 
-        auto [it, inserted] = visuals_.emplace(entry.modelIndex, std::move(next));
-        status_ = std::format("monster visual cached: model {}, {} parts, {} textures used",
-            entry.modelIndex, parsedParts, textureSlotByPath_.size());
-        return &it->second;
+    bool MonsterManager::pump_visual_loads(phoenix::renderer::VulkanRenderer& renderer)
+    {
+        for (auto it = visualLoads_.begin(); it != visualLoads_.end(); ++it)
+        {
+            if (it->second.wait_for(std::chrono::seconds(0)) != std::future_status::ready)
+                continue;
+            const std::uint32_t model = it->first;
+            std::shared_ptr<Visual> parsed = it->second.get();
+            visualLoads_.erase(it);
+            if (!parsed)
+            {
+                failedModels_.insert(model);
+                status_ = "monster visual load failed: no mesh parts or animation.";
+                return false;
+            }
+            if (!visuals_.contains(model))
+                finalize_visual(model, std::move(parsed), mapTextureBaseSlot_, renderer);
+            return true;
+        }
+        return false;
+    }
+
+    bool MonsterManager::load_map_monsters(
+        const std::filesystem::path& dataRoot,
+        const std::filesystem::path& svmapPath,
+        float halfMap,
+        std::uint32_t textureBaseSlot,
+        std::uint32_t textureSlotReserve,
+        phoenix::renderer::VulkanRenderer& renderer)
+    {
+        placements_.clear();
+        streamedPlacements_ = 0;
+        mapDataRoot_ = dataRoot;
+        mapTextureBaseSlot_ = textureBaseSlot;
+        mapTextureReserve_ = textureSlotReserve;
+
+        // The renderer recreates the whole texture array on each map load, wiping
+        // the monster slots; drop cached visuals/slots so they re-upload fresh
+        // (otherwise reused models render green). Cheap now that loads are async.
+        visuals_.clear();
+        visualLoads_.clear();
+        failedModels_.clear();
+        modelIndexOffset_.clear();
+        textureSlotByPath_.clear();
+        slotRefcount_.clear();
+        textureKeyBySlot_.clear();
+        freeTextureSlots_.clear();
+        modelLastUsedFrame_.clear();
+        nextTextureSlot_ = 0;
+
+        if (!load_catalog(dataRoot))
+            return false;
+
+        const auto resolved = resolve_ci(svmapPath);
+        if (resolved.empty())
+        {
+            status_ = "svmap not found for this map.";
+            return false;
+        }
+
+        const auto data = phoenix::world::load_svmap_monsters(resolved);
+        if (!data.parsed)
+        {
+            status_ = "svmap parse failed.";
+            return false;
+        }
+
+        std::size_t unresolved = 0;
+        for (const auto& area : data.areas)
+        {
+            // Raw map-space box -> engine/world space (matches WLD instances). The
+            // box floor (min Y) is the spawn height; mobs keep it as they wander.
+            const float minX = std::min(area.minX, area.maxX) - halfMap;
+            const float maxX = std::max(area.minX, area.maxX) - halfMap;
+            const float minZ = std::min(area.minZ, area.maxZ) - halfMap;
+            const float maxZ = std::max(area.minZ, area.maxZ) - halfMap;
+            const float groundY = std::min(area.minY, area.maxY);
+            for (const auto& mob : area.mobs)
+            {
+                const auto it = catalogByMobId_.find(mob.mobId);
+                if (it == catalogByMobId_.end())
+                {
+                    ++unresolved;
+                    continue;
+                }
+                MapSpawn sp{};
+                sp.catalogIndex = it->second;
+                sp.modelIndex = catalog_[it->second].modelIndex;
+                sp.minX = minX;
+                sp.maxX = maxX;
+                sp.minZ = minZ;
+                sp.maxZ = maxZ;
+                sp.groundY = groundY;
+                sp.count = std::max<std::uint32_t>(1u, mob.count);
+                placements_.push_back(sp);
+            }
+        }
+
+        renderer.set_monster_character_visible(active() && visibleCount_ > 0);
+        status_ = std::format("svmap mobs: {} groups placed{}", placements_.size(),
+            unresolved ? std::format(", {} unresolved", unresolved) : std::string{});
+        return !placements_.empty();
+    }
+
+    void MonsterManager::stream_map_monsters(
+        const phoenix::renderer::CameraView& view,
+        phoenix::renderer::VulkanRenderer& renderer,
+        phoenix::app::LoadingScheduler* workerPool)
+    {
+        pump_visual_loads(renderer);
+
+        if (placements_.empty() || streamedPlacements_ >= placements_.size())
+            return;
+
+        constexpr float kStreamCenterY = 1.5f;
+
+        bool newModel = false;
+        for (auto& sp : placements_)
+        {
+            if (sp.spawned)
+                continue;
+            const float cx = (sp.minX + sp.maxX) * 0.5f;
+            const float cz = (sp.minZ + sp.maxZ) * 0.5f;
+            const float halfX = (sp.maxX - sp.minX) * 0.5f;
+            const float halfZ = (sp.maxZ - sp.minZ) * 0.5f;
+            const float areaRadius = std::sqrt(halfX * halfX + halfZ * halfZ) + 3.0f;
+            if (!phoenix::renderer::sphere_visible(view, cx, sp.groundY + kStreamCenterY, cz, areaRadius))
+                continue;
+
+            const auto& entry = catalog_[sp.catalogIndex];
+            const std::uint32_t model = entry.modelIndex;
+
+            if (failedModels_.contains(model))
+            {
+                sp.spawned = true;
+                ++streamedPlacements_;
+                continue;
+            }
+
+            auto visualIt = visuals_.find(model);
+            if (visualIt == visuals_.end())
+            {
+                if (!visualLoads_.contains(model))
+                {
+                    VisualLoadPlan plan;
+                    if (!plan_visual(mapDataRoot_, entry, mapTextureBaseSlot_, mapTextureReserve_, plan))
+                    {
+                        failedModels_.insert(model);
+                        sp.spawned = true;
+                        ++streamedPlacements_;
+                        continue;
+                    }
+                    if (workerPool)
+                    {
+                        visualLoads_.emplace(model,
+                            workerPool->submit([plan = std::move(plan)]() { return parse_visual(plan); }));
+                    }
+                    else
+                    {
+                        auto parsed = parse_visual(plan);
+                        if (!parsed)
+                        {
+                            failedModels_.insert(model);
+                            sp.spawned = true;
+                            ++streamedPlacements_;
+                            continue;
+                        }
+                        finalize_visual(model, std::move(parsed), mapTextureBaseSlot_, renderer);
+                        visualIt = visuals_.find(model);
+                    }
+                }
+                if (visualIt == visuals_.end())
+                    continue;   // still loading on the worker — spawn a later frame
+            }
+
+            Visual* visual = &visualIt->second;
+            sp.spawned = true;
+            ++streamedPlacements_;
+
+            // size% -> scale (same curve as the manual spawn path).
+            const float sizePct = static_cast<float>(entry.size);
+            const float sizeScale = (sizePct >= 100.0f)
+                ? 1.0f + (sizePct - 100.0f) * 0.001f
+                : sizePct / 100.0f;
+            const float scale = std::max(0.1f, sizeScale);
+
+            const bool canWander = visual->walkAnimation != kInvalidAnimation
+                && visual->walkAnimation < visual->animations.size();
+            const bool firstOfModel = !modelIndexOffset_.contains(model);
+
+            std::uniform_real_distribution<float> ux(sp.minX, sp.maxX);
+            std::uniform_real_distribution<float> uz(sp.minZ, sp.maxZ);
+            std::uniform_real_distribution<float> uyaw(0.0f, 6.2831853f);
+            for (std::uint32_t n = 0; n < sp.count; ++n)
+            {
+                ActiveMonster monster{};
+                monster.modelIndex = model;
+                monster.catalogIndex = sp.catalogIndex;
+                monster.placementIndex = static_cast<std::size_t>(&sp - placements_.data());
+                monster.fromMap = true;
+                monster.scale = scale;
+                monster.x = ux(wanderRng_);
+                monster.z = uz(wanderRng_);
+                // Follow the terrain/floor at the spawn point (fall back to the
+                // svmap area Y if no sampler is set).
+                const float groundY = heightSampler_
+                    ? heightSampler_(monster.x, monster.z, heightSamplerCtx_)
+                    : sp.groundY;
+                monster.y = groundY - visual->localGroundY * scale;
+                monster.yaw = uyaw(wanderRng_);
+                monster.activeAnimation = visual->breathAnimation;
+                monster.previousAnimation = visual->breathAnimation;
+                monster.idleGesturePick = static_cast<std::uint32_t>(active_.size() * 13u + model);
+                if (canWander)
+                {
+                    monster.wander = true;
+                    monster.areaMinX = sp.minX;
+                    monster.areaMaxX = sp.maxX;
+                    monster.areaMinZ = sp.minZ;
+                    monster.areaMaxZ = sp.maxZ;
+                    monster.wanderWaitInterval =
+                        std::uniform_real_distribution<float>(5.0f, 14.0f)(wanderRng_);
+                    monster.wanderWaitTimer = std::uniform_real_distribution<float>(
+                        0.0f, monster.wanderWaitInterval)(wanderRng_);
+                }
+                active_.push_back(monster);
+            }
+            if (firstOfModel)
+                newModel = true;
+        }
+
+        if (newModel)
+            rebuild_render_mesh(renderer);
+    }
+
+    void MonsterManager::update_wander(float deltaSeconds, ActiveMonster& monster, const Visual& visual)
+    {
+        (void)visual;
+        if (!monster.wander)
+            return;
+
+        constexpr float kPi = 3.14159265358979323846f;
+        constexpr float kWalkSpeed = 2.0f;
+        constexpr float kRunSpeed = 5.0f;
+        constexpr float kRunChance = 0.12f;     // very occasionally run instead of walk
+        constexpr float kRunDistance = 6.0f;    // a short dash ("un poco")
+
+        if (!monster.wanderMoving)
+        {
+            monster.wanderWaitTimer += deltaSeconds;
+            if (monster.wanderWaitTimer < monster.wanderWaitInterval)
+                return;
+            monster.wanderWaitTimer = 0.0f;
+            monster.wanderMoving = true;
+            monster.wanderRunning =
+                std::uniform_real_distribution<float>(0.0f, 1.0f)(wanderRng_) < kRunChance;
+            if (monster.wanderRunning)
+            {
+                // Short dash in a random direction, clamped to the spawn area.
+                const float ang = std::uniform_real_distribution<float>(0.0f, 6.2831853f)(wanderRng_);
+                monster.targetX = std::clamp(monster.x + std::sin(ang) * kRunDistance,
+                    monster.areaMinX, monster.areaMaxX);
+                monster.targetZ = std::clamp(monster.z + std::cos(ang) * kRunDistance,
+                    monster.areaMinZ, monster.areaMaxZ);
+            }
+            else
+            {
+                monster.targetX = std::uniform_real_distribution<float>(
+                    monster.areaMinX, monster.areaMaxX)(wanderRng_);
+                monster.targetZ = std::uniform_real_distribution<float>(
+                    monster.areaMinZ, monster.areaMaxZ)(wanderRng_);
+            }
+            return;
+        }
+
+        const float dx = monster.targetX - monster.x;
+        const float dz = monster.targetZ - monster.z;
+        const float dist = std::sqrt(dx * dx + dz * dz);
+        const float step = (monster.wanderRunning ? kRunSpeed : kWalkSpeed) * deltaSeconds;
+        if (dist <= step || dist < 1e-4f)
+        {
+            monster.x = monster.targetX;
+            monster.z = monster.targetZ;
+            monster.wanderMoving = false;
+            monster.wanderRunning = false;
+            monster.wanderWaitInterval =
+                std::uniform_real_distribution<float>(5.0f, 14.0f)(wanderRng_);
+        }
+        else
+        {
+            const float inv = 1.0f / dist;
+            monster.x += dx * inv * step;
+            monster.z += dz * inv * step;
+            monster.yaw = std::atan2(dx, dz) + kPi;
+        }
+
+        // Keep feet on the terrain/floor at the new position.
+        if (heightSampler_)
+            monster.y = heightSampler_(monster.x, monster.z, heightSamplerCtx_)
+                - visual.localGroundY * monster.scale;
+    }
+
+    void MonsterManager::clear_manual(phoenix::renderer::VulkanRenderer& renderer)
+    {
+        const auto before = active_.size();
+        active_.erase(std::remove_if(active_.begin(), active_.end(),
+            [](const ActiveMonster& m) { return !m.fromMap; }), active_.end());
+        if (active_.size() == before)
+            return;
+
+        labels_.clear();
+        visibleCount_ = 0;
+        rebuild_render_mesh(renderer);
+        renderer.update_monster_character_instances(instances_, instanceBatches_);
+        renderer.set_monster_character_visible(false);
+    }
+
+    void MonsterManager::despawn_distant(const phoenix::renderer::CameraView& view)
+    {
+        if (active_.empty())
+            return;
+        // Despawn by spawn-area: all mobs of an area go together (so the area can
+        // re-stream as a unit). Hysteresis past view.distance avoids thrashing; a
+        // hard budget caps the number of active areas.
+        constexpr std::size_t kMaxAreas = 96;
+        const float despawn = view.distance * 1.4f;
+        float despawnSq = despawn * despawn;
+
+        const auto centerDistSq = [&](const MapSpawn& sp) {
+            const float cx = (sp.minX + sp.maxX) * 0.5f - view.x;
+            const float cy = sp.groundY - view.y;
+            const float cz = (sp.minZ + sp.maxZ) * 0.5f - view.z;
+            return cx * cx + cy * cy + cz * cz;
+        };
+        const auto liveArea = [&](const MapSpawn& sp) {
+            return sp.spawned && !failedModels_.contains(sp.modelIndex);
+        };
+
+        std::size_t areaCount = 0;
+        for (const auto& sp : placements_)
+            if (liveArea(sp))
+                ++areaCount;
+        if (areaCount > kMaxAreas)
+        {
+            static std::vector<float> dists;
+            dists.clear();
+            dists.reserve(areaCount);
+            for (const auto& sp : placements_)
+                if (liveArea(sp))
+                    dists.push_back(centerDistSq(sp));
+            std::nth_element(dists.begin(), dists.begin() + kMaxAreas, dists.end());
+            despawnSq = std::min(despawnSq, dists[kMaxAreas]);
+        }
+
+        std::size_t despawnedAreas = 0;
+        for (auto& sp : placements_)
+        {
+            if (!liveArea(sp))
+                continue;
+            if (centerDistSq(sp) > despawnSq)
+            {
+                sp.spawned = false;
+                ++despawnedAreas;
+            }
+        }
+        if (despawnedAreas == 0)
+            return;
+
+        active_.erase(std::remove_if(active_.begin(), active_.end(), [&](const ActiveMonster& m) {
+            return m.fromMap && m.placementIndex < placements_.size()
+                && !placements_[m.placementIndex].spawned;
+        }), active_.end());
+        streamedPlacements_ =
+            (despawnedAreas <= streamedPlacements_) ? streamedPlacements_ - despawnedAreas : 0;
     }
 
     void MonsterManager::rebuild_render_mesh(phoenix::renderer::VulkanRenderer& renderer)
@@ -820,22 +1361,45 @@ namespace phoenix::character
         if (visual.animations.empty())
             return;
 
-        const bool hasSeparateIdle = visual.idleAnimation != kInvalidAnimation
-            && visual.idleAnimation != visual.breathAnimation
-            && visual.idleAnimation < visual.animations.size();
-        if (!monster.playingIdle && hasSeparateIdle)
+        std::size_t desiredAnimation;
+        if (monster.wander)
         {
-            monster.idleGestureTimer += deltaSeconds;
-            const float interval = 8.0f + static_cast<float>((monster.idleGesturePick * 37u) % 60u) * 0.1f;
-            if (monster.idleGestureTimer >= interval)
+            // Wandering mobs don't play idle gestures: walk/run while moving
+            // (update_wander set the flags), breathe at rest.
+            monster.playingIdle = false;
+            if (monster.wanderMoving)
             {
-                monster.playingIdle = true;
-                monster.idleGestureTimer = 0.0f;
-                ++monster.idleGesturePick;
+                const bool canRun = monster.wanderRunning
+                    && visual.runAnimation != kInvalidAnimation
+                    && visual.runAnimation < visual.animations.size();
+                const bool canWalk = visual.walkAnimation != kInvalidAnimation
+                    && visual.walkAnimation < visual.animations.size();
+                desiredAnimation = canRun ? visual.runAnimation
+                    : (canWalk ? visual.walkAnimation : visual.breathAnimation);
+            }
+            else
+            {
+                desiredAnimation = visual.breathAnimation;
             }
         }
-
-        const auto desiredAnimation = monster.playingIdle ? visual.idleAnimation : visual.breathAnimation;
+        else
+        {
+            const bool hasSeparateIdle = visual.idleAnimation != kInvalidAnimation
+                && visual.idleAnimation != visual.breathAnimation
+                && visual.idleAnimation < visual.animations.size();
+            if (!monster.playingIdle && hasSeparateIdle)
+            {
+                monster.idleGestureTimer += deltaSeconds;
+                const float interval = 8.0f + static_cast<float>((monster.idleGesturePick * 37u) % 60u) * 0.1f;
+                if (monster.idleGestureTimer >= interval)
+                {
+                    monster.playingIdle = true;
+                    monster.idleGestureTimer = 0.0f;
+                    ++monster.idleGesturePick;
+                }
+            }
+            desiredAnimation = monster.playingIdle ? visual.idleAnimation : visual.breathAnimation;
+        }
         if (desiredAnimation != monster.activeAnimation && desiredAnimation < visual.animations.size())
         {
             const bool canBlend = monster.activeAnimation < visual.animations.size()
@@ -881,15 +1445,14 @@ namespace phoenix::character
         }
     }
 
-    void MonsterManager::append_palette(const ActiveMonster& monster, const Visual& visual)
+    void MonsterManager::write_palette_at(const PaletteJob& job)
     {
-        // Append this entity's model-space bone palette (16 floats / bone, the 4
-        // rows of meshBind * animatedFinal) to paletteFloats_. The GPU applies it
-        // to the static bind mesh. Bones not referenced by any vertex stay
-        // identity (harmless — no vertex indexes them).
+        // Write this pose's model-space bone palette into paletteFloats_ at
+        // job.baseBone (the vector is pre-sized; jobs own disjoint regions, so
+        // this runs on worker threads — matrix scratch + stamp are thread-local).
+        const Visual& visual = *job.visual;
         const std::size_t boneCount = visual.meshBones.size();
-        const std::size_t baseFloat = paletteFloats_.size();
-        paletteFloats_.resize(baseFloat + boneCount * 16);
+        const std::size_t baseFloat = static_cast<std::size_t>(job.baseBone) * 16u;
         for (std::size_t b = 0; b < boneCount; ++b)
         {
             float* dst = &paletteFloats_[baseFloat + b * 16];
@@ -897,65 +1460,54 @@ namespace phoenix::character
             dst[0] = dst[5] = dst[10] = dst[15] = 1.0f;
         }
         if (!visual.ready || visual.animations.empty()
-            || monster.activeAnimation >= visual.animations.size() || boneCount == 0)
+            || job.activeAnimation >= visual.animations.size() || boneCount == 0)
             return;
 
-        const auto& activeChoice = visual.animations[monster.activeAnimation];
+        const auto& activeChoice = visual.animations[job.activeAnimation];
         static thread_local std::vector<Mat4> clientFinals;
         compute_client_finals(
             activeChoice.animation,
             activeChoice.bindLocals,
-            sample_animation_frame(activeChoice.animation, monster.animationSeconds),
+            sample_animation_frame(activeChoice.animation, job.animationSeconds),
             clientFinals);
 
-        if (monster.animationBlendDuration > 0.0f
-            && monster.previousAnimation < visual.animations.size()
-            && visual.animations[monster.previousAnimation].animation.parsed
-            && visual.animations[monster.previousAnimation].animation.bones.size() == clientFinals.size())
+        if (job.blend && job.animationBlendDuration > 0.0f
+            && job.previousAnimation < visual.animations.size()
+            && visual.animations[job.previousAnimation].animation.parsed
+            && visual.animations[job.previousAnimation].animation.bones.size() == clientFinals.size())
         {
-            const auto& previousChoice = visual.animations[monster.previousAnimation];
+            const auto& previousChoice = visual.animations[job.previousAnimation];
             const auto& previousAnim = previousChoice.animation;
-            const float previousFrame = monster.previousAnimationHoldEnd
+            const float previousFrame = job.previousAnimationHoldEnd
                 ? static_cast<float>(previousAnim.endKeyframe)
-                : sample_animation_frame(previousAnim, monster.previousAnimationSeconds);
+                : sample_animation_frame(previousAnim, job.previousAnimationSeconds);
             static thread_local std::vector<Mat4> previousFinals;
             compute_client_finals(previousAnim, previousChoice.bindLocals, previousFrame, previousFinals);
-            const float rawT = std::clamp(monster.animationBlendSeconds / monster.animationBlendDuration, 0.0f, 1.0f);
+            const float rawT = std::clamp(job.animationBlendSeconds / job.animationBlendDuration, 0.0f, 1.0f);
             const float t = rawT * rawT * (3.0f - 2.0f * rawT);
             for (std::size_t i = 0; i < clientFinals.size(); ++i)
                 clientFinals[i] = blend_mat4(previousFinals[i], clientFinals[i], t);
         }
 
-        // Fill each referenced mesh bone once (a vertex carries the local bone +
-        // its part's meshBoneBase; the global index is the palette slot).
-        static thread_local std::vector<std::uint32_t> stampTbl;
-        static thread_local std::uint32_t stampCtr = 0;
-        const std::uint32_t stamp = ++stampCtr;
-        if (stampTbl.size() < boneCount)
-            stampTbl.resize(boneCount, 0u);
-        for (const auto& source : visual.sourceVertices)
+        // Walk only the referenced bones (precomputed): meshBind * animatedFinal
+        // into each palette slot.
+        const std::size_t referenced = visual.paletteGlobalBone.size();
+        for (std::size_t e = 0; e < referenced; ++e)
         {
-            for (int influence = 0; influence < 3; ++influence)
+            const std::size_t localBone = visual.paletteLocalBone[e];
+            if (localBone >= clientFinals.size())
+                continue;
+            const std::size_t meshBoneIdx = visual.paletteGlobalBone[e];
+            Mat4 meshBone;
+            std::memcpy(&meshBone.m[0][0], &visual.paletteMeshBind[e * 16], 16 * sizeof(float));
+            const auto m = mat4_multiply(meshBone, clientFinals[localBone]);
+            float* dst = &paletteFloats_[baseFloat + meshBoneIdx * 16];
+            for (int r = 0; r < 4; ++r)
             {
-                const auto boneIndex = static_cast<std::size_t>(source.bones[influence]);
-                if (boneIndex >= source.meshBoneCount || boneIndex >= clientFinals.size())
-                    continue;
-                if (source.weights[influence] <= 0.0001f)
-                    continue;
-                const auto meshBoneIdx = static_cast<std::size_t>(source.meshBoneBase) + boneIndex;
-                if (meshBoneIdx >= boneCount || stampTbl[meshBoneIdx] == stamp)
-                    continue;
-                stampTbl[meshBoneIdx] = stamp;
-                const auto meshBone = mat4_from_shaiya_transposed(visual.meshBones[meshBoneIdx].matrix);
-                const auto m = mat4_multiply(meshBone, clientFinals[boneIndex]);
-                float* dst = &paletteFloats_[baseFloat + meshBoneIdx * 16];
-                for (int r = 0; r < 4; ++r)
-                {
-                    dst[r * 4 + 0] = m.m[r][0];
-                    dst[r * 4 + 1] = m.m[r][1];
-                    dst[r * 4 + 2] = m.m[r][2];
-                    dst[r * 4 + 3] = m.m[r][3];
-                }
+                dst[r * 4 + 0] = m.m[r][0];
+                dst[r * 4 + 1] = m.m[r][1];
+                dst[r * 4 + 2] = m.m[r][2];
+                dst[r * 4 + 3] = m.m[r][3];
             }
         }
     }
@@ -966,17 +1518,25 @@ namespace phoenix::character
         phoenix::renderer::VulkanRenderer& renderer,
         phoenix::app::LoadingScheduler* workerPool)
     {
+        // Stream in map (.svmap) mobs that entered camera range, loading visuals
+        // asynchronously so a new mob type's first sighting doesn't hitch.
+        stream_map_monsters(view, renderer, workerPool);
+        // Free mobs whose spawn area moved out of range (bounds active count/CPU).
+        despawn_distant(view);
+        // Under texture-slot pressure, drop idle visuals to reclaim slots.
+        evict_visuals_if_needed(renderer);
+
         if (!active())
         {
             renderer.set_monster_character_visible(false);
             return;
         }
 
-        (void)workerPool;
         ++frameCounter_;
         instances_.clear();
         instanceBatches_.clear();
         paletteFloats_.clear();
+        labels_.clear();
         visibleCount_ = 0;
 
         // GPU skinning: one pass — cull, advance animation, compute each unique
@@ -985,7 +1545,7 @@ namespace phoenix::character
         // palette base bone index is bit-packed into right.w) + draw batches.
         // The bind mesh is static on the GPU; only the palette + instances are
         // uploaded per frame, and the GPU does all per-vertex skinning.
-        struct PoseKey { std::uint32_t model; std::size_t anim; std::int32_t bucket; std::uint32_t baseBone; };
+        struct PoseKey { std::uint32_t model; std::size_t anim; std::int32_t tier; std::int32_t bucket; std::uint32_t baseBone; };
         static std::vector<PoseKey> poseKeys;
         poseKeys.clear();
         // Visible entities with their built instance, kept per-entity so they can
@@ -993,6 +1553,11 @@ namespace phoenix::character
         struct VisInst { std::uint32_t model; phoenix::renderer::ObjectInstance inst; };
         static std::vector<VisInst> vis;
         vis.clear();
+        // Pass 1 (serial): cull, advance animation, dedup poses; the heavy bone
+        // skinning happens afterwards, in parallel.
+        static std::vector<PaletteJob> jobs;
+        jobs.clear();
+        std::uint32_t runningBones = 0;
 
         for (auto& monster : active_)
         {
@@ -1009,28 +1574,60 @@ namespace phoenix::character
                 visual.boundsRadius * monster.scale))
                 continue;
 
+            update_wander(deltaSeconds, monster, visual);
             update_animation(deltaSeconds, monster, visual);
             monster.visible = true;
             ++visibleCount_;
+            modelLastUsedFrame_[monster.modelIndex] = frameCounter_;   // LRU for eviction
+
+            // Floating name label above the mob's head (scaled).
+            if (monster.catalogIndex < catalog_.size())
+            {
+                const auto& entry = catalog_[monster.catalogIndex];
+                labels_.push_back({ monster.x,
+                    monster.y + visual.modelTopY * monster.scale, monster.z, &entry.name });
+            }
 
             // Palette dedup: reuse an identical pose's palette base; otherwise
-            // append this entity's palette. Skipped while blending (transient).
-            std::uint32_t baseBone = static_cast<std::uint32_t>(paletteFloats_.size() / 16u);
+            // reserve a new region + job. Skipped while blending (transient).
+            std::uint32_t baseBone = runningBones;
             bool reused = false;
             std::int32_t bucket = 0;
+            std::int32_t tier = 0;
             const bool dedup = monster.animationBlendDuration <= 0.0f;
             if (dedup)
             {
-                bucket = static_cast<std::int32_t>(std::lround(monster.animationSeconds * 60.0f));
+                // Animation LOD: distant mobs quantize their pose to a coarser
+                // rate so many more share one skinning job. tier keeps near/far
+                // buckets from colliding.
+                const float dx = monster.x - view.x, dy = monster.y - view.y, dz = monster.z - view.z;
+                const float d2 = dx * dx + dy * dy + dz * dz;
+                const float rate = d2 < kAnimLodNearSq ? 60.0f
+                    : (d2 < kAnimLodMidSq ? 30.0f : 15.0f);
+                tier = d2 < kAnimLodNearSq ? 0 : (d2 < kAnimLodMidSq ? 1 : 2);
+                bucket = static_cast<std::int32_t>(std::lround(monster.animationSeconds * rate));
                 for (const auto& k : poseKeys)
-                    if (k.model == monster.modelIndex && k.anim == monster.activeAnimation && k.bucket == bucket)
+                    if (k.model == monster.modelIndex && k.anim == monster.activeAnimation
+                        && k.tier == tier && k.bucket == bucket)
                     { baseBone = k.baseBone; reused = true; break; }
             }
             if (!reused)
             {
-                append_palette(monster, visual);
+                PaletteJob job{};
+                job.visual = &visual;
+                job.baseBone = baseBone;
+                job.activeAnimation = monster.activeAnimation;
+                job.animationSeconds = monster.animationSeconds;
+                job.blend = monster.animationBlendDuration > 0.0f;
+                job.previousAnimation = monster.previousAnimation;
+                job.previousAnimationSeconds = monster.previousAnimationSeconds;
+                job.animationBlendSeconds = monster.animationBlendSeconds;
+                job.animationBlendDuration = monster.animationBlendDuration;
+                job.previousAnimationHoldEnd = monster.previousAnimationHoldEnd;
+                jobs.push_back(job);
+                runningBones += static_cast<std::uint32_t>(visual.meshBones.size());
                 if (dedup)
-                    poseKeys.push_back({ monster.modelIndex, monster.activeAnimation, bucket, baseBone });
+                    poseKeys.push_back({ monster.modelIndex, monster.activeAnimation, tier, bucket, baseBone });
             }
 
             // Placement transform; kMonsterBaseScale folded into the basis (the
@@ -1050,6 +1647,18 @@ namespace phoenix::character
             inst.right[3] = static_cast<float>(baseBone);  // palette base (exact int in float)
             vis.push_back({ monster.modelIndex, inst });
         }
+
+        // Pass 2: skin every unique pose into its reserved palette region. Serial
+        // by default — waking the sleeping worker pool per frame costs ~1ms of
+        // sync that dwarfs the (now cheap) skinning; only fan out for big crowds.
+        paletteFloats_.resize(static_cast<std::size_t>(runningBones) * 16u);
+        constexpr std::size_t kParallelSkinThreshold = 192;
+        if (workerPool && jobs.size() >= kParallelSkinThreshold)
+            phoenix::app::parallel_for_loading(*workerPool, jobs.size(),
+                [&](std::size_t i) { write_palette_at(jobs[i]); });
+        else
+            for (const auto& job : jobs)
+                write_palette_at(job);
 
         // Group visible entities by model into contiguous instance blocks, and
         // emit one instanced batch per (model, part): a single draw covers all

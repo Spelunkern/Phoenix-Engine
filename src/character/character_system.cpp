@@ -957,7 +957,8 @@ namespace phoenix::character
         // Apply per-character default attach bones (ranged weapons on archer/hunter
         // classes use a different bone). Still overridable live from the UI.
         apply_default_attach_bones(appearance.prefix, appearance.weaponType,
-                                   weaponBoneIndex, shieldBoneIndex, dualWeaponBoneIndex);
+                                   weaponBoneIndex, shieldBoneIndex, dualWeaponBoneIndex,
+                                   dualOffsetPos, dualOffsetRotDeg);
 
         struct Part
         {

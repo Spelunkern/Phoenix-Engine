@@ -252,6 +252,10 @@ namespace phoenix::runtime
         // Returns the highest walkable surface below or at characterY + stepHeight.
         // If no walkable surface is found, returns belowY (pass a very low default).
         float floor_height_at(float worldX, float worldZ, float characterY, float stepHeight) const;
+
+        // True if collision geometry blocks the segment a->b strictly between its
+        // endpoints. Used to occlude in-world NPC labels behind buildings/assets.
+        bool segment_occluded(const float a[3], const float b[3]) const;
     };
 
     class PhoenixRuntime

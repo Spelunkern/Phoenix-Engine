@@ -102,6 +102,7 @@
     <ClCompile Include="src\runtime\playable_spawn.cpp" />
     <ClCompile Include="src\world\dg_loader.cpp" />
     <ClCompile Include="src\world\smod_loader.cpp" />
+    <ClCompile Include="src\world\svmap_loader.cpp" />
     <ClCompile Include="src\world\vani_loader.cpp" />
     <ClCompile Include="src\world\mani_loader.cpp" />
     <ClCompile Include="src\world\wld_loader.cpp" />
@@ -149,6 +150,7 @@
     <ClInclude Include="src\renderer\vulkan_renderer_internal.h" />
     <ClInclude Include="src\world\dg_loader.h" />
     <ClInclude Include="src\world\smod_loader.h" />
+    <ClInclude Include="src\world\svmap_loader.h" />
     <ClInclude Include="src\world\vani_loader.h" />
     <ClInclude Include="src\world\water_constants.h" />
     <ClInclude Include="src\world\mani_loader.h" />

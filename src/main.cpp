@@ -284,6 +284,8 @@ int main(int, char**)
     phoenix::runtime::AnimatedObjectScene animatedObjectScene;
     phoenix::runtime::WorldCollisionMesh worldCollisionMesh;
     HeightSamplerContext heightSamplerCtx{ &runtime, &worldCollisionMesh };
+    // Map mobs follow the terrain/floor as they spawn and wander.
+    monsterManager.set_height_sampler(character_height_sampler, &heightSamplerCtx);
     MapAudioScene mapAudioScene;
     bool forceVisibilityUpdate = true;
     std::optional<std::size_t> pendingMapLoad;
@@ -937,6 +939,29 @@ int main(int, char**)
             }
         }
 
+        // Load the NPCs authored in this map's .svmap (same stem as the .wld).
+        // They stream in lazily as they enter camera range and keep their
+        // authored Y (no terrain clamp).
+        {
+            const auto& mapPaths = runtime.state().worldMapPaths;
+            const auto sel = runtime.selected_world_map();
+            if (sel < mapPaths.size())
+            {
+                auto svmapPath = mapPaths[sel];
+                svmapPath.replace_extension(".svmap");
+                const float mapSize = static_cast<float>(runtime.state().world.mapSize);
+                const float halfMap = runtime.state().world.isDungeon ? 0.0f : mapSize * 0.5f;
+                npcManager.load_map_npcs(
+                    runtime.state().assets.root, svmapPath, halfMap,
+                    static_cast<std::uint32_t>(npcTextureBaseSlot),
+                    static_cast<std::uint32_t>(kNpcTextureSlotReserve), renderer);
+                monsterManager.load_map_monsters(
+                    runtime.state().assets.root, svmapPath, halfMap,
+                    static_cast<std::uint32_t>(monsterTextureBaseSlot),
+                    static_cast<std::uint32_t>(kMonsterTextureSlotReserve), renderer);
+            }
+        }
+
         forceVisibilityUpdate = true;
         showLoading(1.0f, "Ready");
 
@@ -1232,13 +1257,19 @@ int main(int, char**)
             / static_cast<float>(std::max(1u, renderer.surface_height()));
         currentView.distance = fogCullDistance;
 
-        if (npcManager.active())
+        // Also update when map (.svmap) NPCs are still waiting to stream in —
+        // active() is false until the first one enters range, but update() is
+        // what runs the streaming gate.
+        if (npcManager.active() || npcManager.map_npc_streamed() < npcManager.map_npc_total())
         {
             auto npcView = currentView;
             npcView.distance = std::min(npcViewDistance, fogCullDistance);
             npcManager.update(deltaSeconds, npcView, renderer, &cpuLoader);
         }
-        if (monsterManager.active())
+        // Also update while map mobs are still waiting to stream in (active() is
+        // false until the first enters range, but update() runs the streaming).
+        if (monsterManager.active()
+            || monsterManager.map_monster_streamed() < monsterManager.map_monster_total())
         {
             auto monsterView = currentView;
             monsterView.distance = std::min(monsterViewDistance, fogCullDistance);
@@ -1433,7 +1464,7 @@ int main(int, char**)
                 }
             }
             if (panelResult.clearNpcs)
-                npcManager.clear(renderer);
+                npcManager.clear_manual(renderer);   // keep the map's .svmap NPCs
             if (panelResult.monsterSpawnCatalogIndex >= 0 || panelResult.monsterSpawnRandom)
             {
                 const int spawnCount = std::max(1, panelResult.monsterSpawnCount);
@@ -1453,7 +1484,7 @@ int main(int, char**)
                 }
             }
             if (panelResult.clearMonsters)
-                monsterManager.clear(renderer);
+                monsterManager.clear_manual(renderer);   // keep the map's .svmap mobs
             if (botEffectsWereEnabled && !botManager.effectsEnabled)
                 effectManager.clear();
 
@@ -1564,6 +1595,100 @@ int main(int, char**)
         {
             particleScratch.clear();
             renderer.set_particle_instances(particleScratch, 0);
+        }
+
+        // In-world labels: NPC name (yellow) over type (light blue/celeste), and
+        // monster name (yellow, no type). Small Arial, black outline, anchored
+        // just above each visible head, occluded by world geometry.
+        if (imguiAvailable && (npcManager.active() || monsterManager.active()))
+        {
+            const float w = static_cast<float>(std::max(1u, renderer.surface_width()));
+            const float h = static_cast<float>(std::max(1u, renderer.surface_height()));
+            ImFont* labelFont = renderer.npc_label_font();
+            constexpr float labelFontSize = 14.0f;
+            // Fixed screen gap between the NPC's head and the label: keeping this in
+            // pixels (not world units) makes the label sit at a consistent spot
+            // regardless of camera distance, instead of drifting up when close.
+            constexpr float labelPixelGap = 5.0f;
+            // Names show closer than the NPC render cull to avoid distant clutter.
+            constexpr float labelMaxDistance = 50.0f;
+            const float labelMaxDistSq = labelMaxDistance * labelMaxDistance;
+            auto* drawList = ImGui::GetForegroundDrawList();
+            const ImU32 outlineCol = IM_COL32(0, 0, 0, 235);
+            const ImU32 nameCol = IM_COL32(255, 226, 0, 255);    // yellow
+            const ImU32 typeCol = IM_COL32(90, 200, 255, 255);   // celeste
+            const auto drawCentered = [&](float cx, float top, const char* text, ImU32 col) {
+                const ImVec2 ts = labelFont
+                    ? labelFont->CalcTextSizeA(labelFontSize, 1e30f, 0.0f, text)
+                    : ImGui::CalcTextSize(text);
+                const float x = cx - ts.x * 0.5f;
+                // Thin 4-way (cardinal) outline rather than a full 8-way ring.
+                static constexpr int kOutline[4][2] = { { -1, 0 }, { 1, 0 }, { 0, -1 }, { 0, 1 } };
+                for (const auto& o : kOutline)
+                {
+                    const ImVec2 op(x + static_cast<float>(o[0]), top + static_cast<float>(o[1]));
+                    if (labelFont) drawList->AddText(labelFont, labelFontSize, op, outlineCol, text);
+                    else drawList->AddText(op, outlineCol, text);
+                }
+                const ImVec2 p(x, top);
+                if (labelFont) drawList->AddText(labelFont, labelFontSize, p, col, text);
+                else drawList->AddText(p, col, text);
+            };
+            // Case-insensitive match for the generic types whose label is hidden.
+            const auto iequals = [](const std::string& a, const char* b) {
+                const auto lc = [](char c) { return (c >= 'A' && c <= 'Z') ? char(c + 32) : c; };
+                std::size_t i = 0;
+                for (; i < a.size() && b[i]; ++i)
+                    if (lc(a[i]) != lc(b[i]))
+                        return false;
+                return i == a.size() && b[i] == '\0';
+            };
+            for (const auto& label : npcManager.labels())
+            {
+                const float ddx = label.x - currentView.x;
+                const float ddy = label.y - currentView.y;
+                const float ddz = label.z - currentView.z;
+                if (ddx * ddx + ddy * ddy + ddz * ddz > labelMaxDistSq)
+                    continue;
+                // Hidden behind world geometry (buildings/assets): don't draw.
+                const float eye[3] = { currentView.x, currentView.y, currentView.z };
+                const float anchor[3] = { label.x, label.y, label.z };
+                if (worldCollisionMesh.segment_occluded(eye, anchor))
+                    continue;
+                phoenix::renderer::ScreenPoint sp{};
+                if (!project_world_to_screen(currentView, label.x, label.y, label.z, w, h, sp))
+                    continue;
+                // sp is the NPC's head; stack the text upward from a fixed pixel
+                // gap above it. Name is the bottom line (just above the head);
+                // type sits above it. 'Normal'/'Animal' types are hidden.
+                const float lineHeight = labelFontSize + 1.0f;
+                const float nameTop = sp.y - labelPixelGap - labelFontSize;
+                const bool showType = label.typeName && !label.typeName->empty()
+                    && !iequals(*label.typeName, "Normal") && !iequals(*label.typeName, "Animal")
+                    && !iequals(*label.typeName, "DeadNpc") && !iequals(*label.typeName, "GamblingHouse");
+                if (showType)
+                    drawCentered(sp.x, nameTop - lineHeight, label.typeName->c_str(), typeCol);
+                if (label.name && !label.name->empty())
+                    drawCentered(sp.x, nameTop, label.name->c_str(), nameCol);
+            }
+            // Monster labels: name only (no type).
+            for (const auto& label : monsterManager.labels())
+            {
+                const float ddx = label.x - currentView.x;
+                const float ddy = label.y - currentView.y;
+                const float ddz = label.z - currentView.z;
+                if (ddx * ddx + ddy * ddy + ddz * ddz > labelMaxDistSq)
+                    continue;
+                const float eye[3] = { currentView.x, currentView.y, currentView.z };
+                const float anchor[3] = { label.x, label.y, label.z };
+                if (worldCollisionMesh.segment_occluded(eye, anchor))
+                    continue;
+                phoenix::renderer::ScreenPoint sp{};
+                if (!project_world_to_screen(currentView, label.x, label.y, label.z, w, h, sp))
+                    continue;
+                if (label.name && !label.name->empty())
+                    drawCentered(sp.x, sp.y - labelPixelGap - labelFontSize, label.name->c_str(), nameCol);
+            }
         }
 
         renderer.render_frame();

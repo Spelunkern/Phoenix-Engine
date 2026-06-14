@@ -9,6 +9,7 @@
 #include <vector>
 
 struct SDL_Window;
+struct ImFont;
 
 namespace phoenix::renderer
 {
@@ -104,6 +105,9 @@ namespace phoenix::renderer
 
         bool initialize(SDL_Window* window, std::uint32_t width, std::uint32_t height);
         bool initialize_imgui(SDL_Window* window);
+        // Small Arial font for in-world NPC labels (nullptr if Arial wasn't found,
+        // in which case the caller should use the default ImGui font).
+        ImFont* npc_label_font() const { return npcLabelFont_; }
         void begin_imgui_frame();
         std::uint64_t upload_imgui_icon_rgba(
             const std::uint8_t* rgba,
@@ -281,6 +285,7 @@ namespace phoenix::renderer
         bool ready_{};
         bool imguiReady_{};
         bool imguiFrameStarted_{};
+        ImFont* npcLabelFont_{};
         std::string adapterName_;
         std::uint32_t graphicsQueueFamily_{ UINT32_MAX };
         std::uint32_t frameIndex_{};
