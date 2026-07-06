@@ -6,6 +6,14 @@
 
 namespace phoenix::renderer
 {
+    // DdsTexture::vkFormat values (kept numerically identical to the old
+    // VkFormat enum so on-disk/in-memory data didn't need to change when the
+    // renderer moved from Vulkan to OpenGL).
+    inline constexpr std::uint32_t kDdsFormatR8G8B8A8Unorm = 37;
+    inline constexpr std::uint32_t kDdsFormatBc1RgbaUnormBlock = 133;
+    inline constexpr std::uint32_t kDdsFormatBc2UnormBlock = 135;
+    inline constexpr std::uint32_t kDdsFormatBc3UnormBlock = 137;
+
     struct DdsTexture
     {
         std::uint32_t width{};

@@ -1,7 +1,7 @@
 #pragma once
 
 #include "renderer/dds_loader.h"
-#include "renderer/vulkan_renderer.h"
+#include "renderer/opengl_renderer.h"
 #include "world/character_loader.h"
 
 #include <cstdint>
@@ -510,6 +510,11 @@ namespace phoenix::character
         float weaponBladeEnd_{ 0.9f };
         CharacterData data_;
         std::vector<CharacterGpuVertex> worldVertices_;
+        // Persistent local-space skin buffer, reused across frames instead of
+        // copying data_.bindVertices every call; re-seeded from bindVertices
+        // only when localSkinnedValid_ is false (set on load()).
+        std::vector<CharacterGpuVertex> localSkinned_;
+        bool localSkinnedValid_{ false };
         std::uint32_t textureLayerBase_{};
         bool cacheReady_{};
         std::filesystem::path cachedDataRoot_;
@@ -602,6 +607,7 @@ namespace phoenix::character
         // bind grid spacing. Solved with position-based Verlet each frame.
         std::vector<float> clothWorld_;     // 3*N current world positions
         std::vector<float> clothPrev_;      // 3*N previous world positions (Verlet)
+        std::vector<float> clothRefNormals_; // 3*N scratch: pre-recompute normals, reused instead of a fresh per-frame vector
         std::vector<float> clothRestUp_;    // per-vertex rest length to row above (world units)
         std::vector<float> clothRestLeft_;  // per-vertex rest length to col to the left
         std::vector<std::uint32_t> clothPinBody_;  // per-column: skinned body vertex the top row follows

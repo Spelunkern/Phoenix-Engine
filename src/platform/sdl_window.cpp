@@ -6,6 +6,8 @@ namespace phoenix::platform
 {
     SdlWindow::~SdlWindow()
     {
+        if (glContext_)
+            SDL_GL_DeleteContext(glContext_);
         if (window_)
             SDL_DestroyWindow(window_);
         SDL_Quit();
@@ -16,15 +18,48 @@ namespace phoenix::platform
         if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_EVENTS) != 0)
             return false;
 
+        SDL_GL_SetAttribute(SDL_GL_CONTEXT_PROFILE_MASK, SDL_GL_CONTEXT_PROFILE_CORE);
+        SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, 4);
+        SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, 5);
+        SDL_GL_SetAttribute(SDL_GL_DOUBLEBUFFER, 1);
+        SDL_GL_SetAttribute(SDL_GL_DEPTH_SIZE, 24);
+        SDL_GL_SetAttribute(SDL_GL_STENCIL_SIZE, 8);
+        SDL_GL_SetAttribute(SDL_GL_RED_SIZE, 8);
+        SDL_GL_SetAttribute(SDL_GL_GREEN_SIZE, 8);
+        SDL_GL_SetAttribute(SDL_GL_BLUE_SIZE, 8);
+        SDL_GL_SetAttribute(SDL_GL_ALPHA_SIZE, 8);
+#if !defined(NDEBUG)
+        SDL_GL_SetAttribute(SDL_GL_CONTEXT_FLAGS, SDL_GL_CONTEXT_DEBUG_FLAG);
+#endif
+
         window_ = SDL_CreateWindow(
             title.c_str(),
             SDL_WINDOWPOS_CENTERED,
             SDL_WINDOWPOS_CENTERED,
             width,
             height,
-            SDL_WINDOW_VULKAN | SDL_WINDOW_RESIZABLE | SDL_WINDOW_MAXIMIZED);
+            SDL_WINDOW_OPENGL | SDL_WINDOW_RESIZABLE | SDL_WINDOW_MAXIMIZED);
+        if (!window_)
+            return false;
 
-        return window_ != nullptr;
+        glContext_ = SDL_GL_CreateContext(window_);
+        if (!glContext_)
+            return false;
+
+        // 4.5 core may not be available on older/integrated drivers; retry at
+        // 4.3 (still covers compute shaders) before giving up entirely.
+        SDL_GL_MakeCurrent(window_, glContext_);
+
+        // The Vulkan renderer preferred VK_PRESENT_MODE_MAILBOX_KHR (present
+        // without blocking the loop on the display's refresh) and only fell
+        // back to FIFO (vsync-blocking) when mailbox wasn't available. Mirror
+        // that by leaving swap interval off here too: the render loop's own
+        // FPS Cap combo (perf_hud.cpp, up to 360) already paces frames via a
+        // sleep after render_frame(), same as the original design. Forcing
+        // SwapInterval(1) would block every SwapWindow() on vsync and cap
+        // everything at the monitor's refresh rate regardless of that combo.
+        SDL_GL_SetSwapInterval(0);
+        return true;
     }
 
     bool SdlWindow::pump_messages()
@@ -166,7 +201,7 @@ namespace phoenix::platform
     {
         int w = 0, h = 0;
         if (window_)
-            SDL_Vulkan_GetDrawableSize(window_, &w, &h);
+            SDL_GL_GetDrawableSize(window_, &w, &h);
         return { w, h };
     }
 
@@ -175,33 +210,5 @@ namespace phoenix::platform
         const bool value = restoredEvent_;
         restoredEvent_ = false;
         return value;
-    }
-
-    unsigned SdlWindow::vulkan_extension_count() const
-    {
-        if (!cachedExtCount_ && window_)
-            SDL_Vulkan_GetInstanceExtensions(window_, &cachedExtCount_, nullptr);
-        return cachedExtCount_;
-    }
-
-    const char* const* SdlWindow::vulkan_extensions() const
-    {
-        if (!cachedExts_ && window_)
-        {
-            unsigned count = 0;
-            SDL_Vulkan_GetInstanceExtensions(window_, &count, nullptr);
-            cachedExts_ = new const char*[count];
-            SDL_Vulkan_GetInstanceExtensions(window_, &count, cachedExts_);
-            cachedExtCount_ = count;
-        }
-        return cachedExts_;
-    }
-
-    bool SdlWindow::create_vulkan_surface(void* vkInstance, void* vkSurfaceOut) const
-    {
-        return window_ && SDL_Vulkan_CreateSurface(
-            window_,
-            static_cast<VkInstance>(vkInstance),
-            static_cast<VkSurfaceKHR*>(vkSurfaceOut)) == SDL_TRUE;
     }
 }

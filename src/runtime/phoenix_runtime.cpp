@@ -36,6 +36,9 @@ namespace phoenix::runtime
         constexpr std::uint32_t kAssetCutoutLayerBase = 2048;
         constexpr std::uint32_t kMaxAssetTextureLayers = 960;
         constexpr float kManiTicksPerSecond = 30.0f;
+        // VANI (vertex-animated decor) render cutoff: an extra distance rule on
+        // top of the universal fog/view distance, same as any other asset.
+        constexpr float kVaniRenderDistance = 200.0f;
 
         inline std::filesystem::path resolve_ci(const std::filesystem::path& path)
         {
@@ -982,6 +985,15 @@ namespace phoenix::runtime
                         for (std::size_t mi = 0; mi < model.meshes.size(); ++mi)
                         {
                             const auto& mesh = model.meshes[mi];
+                            // A blank texture name is the original data's own way of
+                            // marking a sub-mesh as non-visual (helper/proxy geometry
+                            // bundled into the same .smod as the real decor — the
+                            // client never renders these). Skip it entirely instead
+                            // of drawing it with the "no texture" vertex-color-only
+                            // fallback, which otherwise shows up as random floating
+                            // solid-colour shapes.
+                            if (mesh.textureName.empty())
+                                continue;
                             asset.vertices += static_cast<std::uint32_t>(mesh.vertices.size());
                             const auto materialHash = meshLayers[pi][mi].materialHash;
                             const auto textureLayer = meshLayers[pi][mi].textureLayer;
@@ -1025,6 +1037,10 @@ namespace phoenix::runtime
                         for (std::size_t mi = 0; mi < model.meshes.size(); ++mi)
                         {
                             const auto& mesh = model.meshes[mi];
+                            // See the matching skip in the .smod branch above: a
+                            // blank texture name marks non-visual helper geometry.
+                            if (mesh.textureName.empty())
+                                continue;
                             asset.vertices += static_cast<std::uint32_t>(mesh.vertices.size());
                             const auto materialHash = meshLayers[pi][mi].materialHash;
                             const auto textureLayer = meshLayers[pi][mi].textureLayer;
@@ -2136,10 +2152,11 @@ namespace phoenix::runtime
 
             const auto& asset = state_.worldAssets[assetSlot];
 
-            // VANI assets: distance-cullable; the vertex shader clamps to the
-            // universal render distance (fog cull).
+            // VANI assets get an extra fixed 200m render cutoff on top of the
+            // universal fog/view distance culling every other asset already
+            // gets (the vertex shader clamps this to whichever is smaller).
             const auto assetKey = phoenix::assets::lower_ascii(asset.name);
-            currentCullDistance = assetKey.ends_with(".vani") ? 1.0e8f : 0.0f;
+            currentCullDistance = assetKey.ends_with(".vani") ? kVaniRenderDistance : 0.0f;
 
             const auto baseVertex = static_cast<std::uint32_t>(scene.vertices.size());
             const auto firstIndex = static_cast<std::uint32_t>(scene.indices.size());
@@ -2239,10 +2256,10 @@ namespace phoenix::runtime
 
             const auto& asset = state_.worldAssets[assetSlot];
             const auto animKey = phoenix::assets::lower_ascii(asset.name);
-            // VANI instances are distance-cullable; the vertex shader clamps this
-            // to the universal render distance (fog cull), so a large sentinel
-            // means "follow the universal rule".
-            animCullDistance = animKey.ends_with(".vani") ? 1.0e8f : 0.0f;
+            // VANI assets get an extra fixed 200m render cutoff on top of the
+            // universal fog/view distance culling every other asset already
+            // gets (the vertex shader clamps this to whichever is smaller).
+            animCullDistance = animKey.ends_with(".vani") ? kVaniRenderDistance : 0.0f;
             const auto baseVertex = static_cast<std::uint32_t>(scene.vertices.size());
             const auto firstIndex = static_cast<std::uint32_t>(scene.indices.size());
             scene.vertices.insert(scene.vertices.end(), asset.previewVertices.begin(), asset.previewVertices.end());
@@ -2309,10 +2326,10 @@ namespace phoenix::runtime
         float cameraX, float cameraY, float cameraZ) const
     {
         constexpr float kDecorFps = 12.0f;
-        // Beyond this distance VANI assets stop animating and stay frozen on
-        // their last frame — no CPU skinning, no GPU vertex uploads.
-        constexpr float kAnimateDistance = 100.0f;
-        constexpr float kAnimateDistanceSq = kAnimateDistance * kAnimateDistance;
+        // Matches kVaniRenderDistance: beyond the render cutoff a VANI instance
+        // isn't drawn at all, so skip the CPU frame update too (no freeze —
+        // it simply isn't on screen past this distance).
+        constexpr float kAnimateDistanceSq = kVaniRenderDistance * kVaniRenderDistance;
 
         for (auto& animation : scene.vertexAnimations)
         {

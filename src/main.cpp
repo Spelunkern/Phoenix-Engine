@@ -11,20 +11,17 @@
 #include "character/character_options.h"
 #include "character/monster_manager.h"
 #include "character/npc_manager.h"
-#include "character/weapon_effect.h"
-#include "effects/effect_system.h"
-#include "effects/effect_placement.h"
 #include "runtime/playable_spawn.h"
 #include "runtime/phoenix_runtime.h"
 #include "platform/sdl_window.h"
 #include "renderer/dds_loader.h"
 #include "renderer/visibility_culling.h"
-#include "renderer/vulkan_renderer.h"
+#include "renderer/opengl_renderer.h"
+#include "ui/app_settings.h"
 #include "ui/editor_panel.h"
 #include "ui/loading_screen.h"
 #include "ui/perf_hud.h"
 #include "ui/weather_overlay.h"
-#include "world/portal_runtime.h"
 
 #include "imgui.h"
 
@@ -52,11 +49,9 @@ namespace
 {
     // UI types/functions live in ui/editor_panel.{h,cpp} and ui/perf_hud.{h,cpp}.
     using phoenix::ui::WeatherMode;
-    using phoenix::ui::WaterMode;
     using phoenix::ui::CharacterOption;
     using phoenix::ui::UnifiedPanelResult;
     using phoenix::ui::apply_renderer_fog;
-    using phoenix::ui::apply_renderer_water_style;
     using phoenix::ui::draw_editor_panel;
     using phoenix::ui::PerfHudState;
     using phoenix::ui::draw_perf_hud;
@@ -84,9 +79,6 @@ namespace
     using phoenix::character::NpcManager;
     using phoenix::character::scan_bot_equipment_pools;
     using phoenix::character::scan_character_options;
-    using phoenix::world::PendingTeleport;
-    using phoenix::world::check_portal_activation;
-    using phoenix::effects::place_portal_effects;
 
     constexpr const char* kAppTitle = "Phoenix Engine";
     constexpr std::size_t kSkyTextureLayer = 63;
@@ -111,13 +103,13 @@ int main(int, char**)
     }
 
     const auto [clientWidth, clientHeight] = window.client_size();
-    phoenix::renderer::VulkanRenderer renderer;
+    phoenix::renderer::OpenGLRenderer renderer;
     if (!renderer.initialize(
         window.handle(),
         static_cast<std::uint32_t>(clientWidth > 0 ? clientWidth : kWidth),
         static_cast<std::uint32_t>(clientHeight > 0 ? clientHeight : kHeight)))
     {
-        std::fprintf(stderr, "Could not initialize Vulkan.\n");
+        std::fprintf(stderr, "Could not initialize OpenGL.\n");
         return 1;
     }
 
@@ -129,8 +121,9 @@ int main(int, char**)
     perfHud.initialize_system_info();
     perfHud.gpuName = renderer.adapter_name();
     perfHud.renderer = &renderer;
-    perfHud.load_settings(executableDir);
-    auto displaySettings = phoenix::ui::load_display_settings(executableDir);
+    phoenix::ui::DisplaySettings displaySettings{};
+    if (imguiAvailable)
+        phoenix::ui::register_app_settings(displaySettings.characterShadow, perfHud.fpsCapIndex);
 
     // Closing the window must work even mid-load: skip all teardown and let
     // the OS reclaim the process — waiting on loaders/GPU only delays the user.
@@ -140,8 +133,7 @@ int main(int, char**)
             // Hide first so the close FEELS instant — the OS then reclaims the
             // process (potentially gigabytes) with no window on screen.
             window.hide();
-            perfHud.save_settings(executableDir);
-            phoenix::ui::save_display_settings(executableDir, displaySettings);
+            phoenix::ui::flush_app_settings();
             std::_Exit(0);
         }
     };
@@ -191,10 +183,6 @@ int main(int, char**)
     // is internally multithreaded, so they get full CPU cores rather than fighting
     // each other if overlapped).
     phoenix::character::CharacterSystem characterSystem;
-    phoenix::character::WeaponEffect weaponEffect;
-    phoenix::effects::EffectManager effectManager;
-    phoenix::renderer::ParticleBatch particleBatch;
-    std::vector<phoenix::renderer::ParticleInstance> particleScratch;
     phoenix::character::CharacterAppearance characterAppearance{};
     BotManager botManager;
     MonsterManager monsterManager;
@@ -254,10 +242,8 @@ int main(int, char**)
     float viewDistance = 300.0f;
     float npcViewDistance = 100.0f;
     float monsterViewDistance = 100.0f;
-    bool showCollisionDebug = false;
     std::vector<phoenix::renderer::TerrainVertex> characterShadowScratch;
     WeatherMode weatherMode = WeatherMode::Default;
-    WaterMode waterMode = WaterMode::Natural;
     // fogCullDistance is the actual cull boundary: nothing beyond the fog-end is
     // visible, so nothing beyond it should be rendered.
     float fogCullDistance = viewDistance;
@@ -265,7 +251,6 @@ int main(int, char**)
         fogCullDistance = apply_renderer_fog(renderer, runtime, fogEnabled, viewDistance, weatherMode);
     };
     applyFogSettings();
-    apply_renderer_water_style(renderer, waterMode);
     int pendingEmote = 0;   // emote triggered from ImGui, consumed next frame
     std::size_t pendingAnimation = 0; // animation test triggered from ImGui, consumed next frame
 
@@ -289,43 +274,7 @@ int main(int, char**)
     MapAudioScene mapAudioScene;
     bool forceVisibilityUpdate = true;
     std::optional<std::size_t> pendingMapLoad;
-    // Portal teleport: walking into a portal queues a destination map load here and
-    // remembers where to drop the character on arrival. A cooldown prevents
-    // re-triggering a portal immediately after spawning on/near one.
-    std::optional<PendingTeleport> pendingTeleportDestination;
-    float portalCooldown = 0.0f;
     CameraView lastCullView{};
-
-    const auto uploadDebugGizmos = [&]() {
-        std::vector<phoenix::renderer::TerrainVertex> debugVertices;
-        std::vector<std::uint32_t> debugIndices;
-
-        if (showCollisionDebug && !worldCollisionMesh.triangles.empty())
-        {
-            for (const auto& tri : worldCollisionMesh.triangles)
-            {
-                const auto base = static_cast<std::uint32_t>(debugVertices.size());
-                phoenix::renderer::TerrainVertex v{};
-                v.color[0] = 0.0f; v.color[1] = 1.0f; v.color[2] = 0.3f;
-                v.normal[1] = 1.0f;
-                v.textureLayer = 0xFFFFFFFFu;
-
-                v.position[0] = tri.v0[0]; v.position[1] = tri.v0[1]; v.position[2] = tri.v0[2];
-                debugVertices.push_back(v);
-                v.position[0] = tri.v1[0]; v.position[1] = tri.v1[1]; v.position[2] = tri.v1[2];
-                debugVertices.push_back(v);
-                v.position[0] = tri.v2[0]; v.position[1] = tri.v2[1]; v.position[2] = tri.v2[2];
-                debugVertices.push_back(v);
-
-                debugIndices.push_back(base + 0);
-                debugIndices.push_back(base + 1);
-                debugIndices.push_back(base + 2);
-            }
-        }
-
-        renderer.set_debug_mesh(debugVertices, debugIndices);
-        renderer.set_debug_visible(showCollisionDebug);
-    };
 
     const auto uploadCharacterMesh = [&]() {
         if (!characterLoaded || !characterSystem.ready())
@@ -378,9 +327,10 @@ int main(int, char**)
             static_cast<std::uint32_t>(std::max(1.0, std::log2(static_cast<double>(maxDim)) - 1.0)));
 
         // The data tree is pre-normalised to canonical BC3 + full mip chain
-        // (tools/dds_normalize), so conversion is the exception: collect only
-        // the non-canonical entries (foreign data, broken files, empty
-        // reserved slots that need a fallback fill) and convert just those.
+        // (via the standalone dds_normalize tool), so conversion is the
+        // exception: collect only the non-canonical entries (foreign data,
+        // broken files, empty reserved slots that need a fallback fill) and
+        // convert just those.
         std::vector<std::size_t> pending;
         for (std::size_t idx = 0; idx < textures.size(); ++idx)
         {
@@ -390,7 +340,7 @@ int main(int, char**)
             if (!t.valid)
                 continue;
             const bool canonical = t.compressed
-                && t.vkFormat == static_cast<std::uint32_t>(VK_FORMAT_BC3_UNORM_BLOCK)
+                && t.vkFormat == phoenix::renderer::kDdsFormatBc3UnormBlock
                 && t.width == targetW && t.height == targetH
                 && t.mipData.size() >= targetMips;
             if (!canonical)
@@ -482,8 +432,6 @@ int main(int, char**)
 
     const auto uploadCurrentWorld = [&]() {
         renderer.enter_loading_mode();
-        // Drop any looping effects (e.g. portals) carried over from the previous map.
-        effectManager.clear();
         showLoading(0.36f, "Preparing scene");
         applyFogSettings();
         mapAudioScene = build_map_audio_scene(runtime);
@@ -546,7 +494,6 @@ int main(int, char**)
                 future.get();
             showLoading(0.66f, "Textures ready");
         }
-
 
         {
             // Harmless workaround for broken terrain layers: a missing/corrupt
@@ -643,8 +590,8 @@ int main(int, char**)
                     if (!t.valid) { ++countInvalid; continue; }
                     auto sizeKey = std::to_string(t.width) + "x" + std::to_string(t.height);
                     sizeDistribution[sizeKey]++;
-                    if (t.compressed && t.vkFormat == VK_FORMAT_BC1_RGBA_UNORM_BLOCK) ++countBc1;
-                    else if (t.compressed && (t.vkFormat == VK_FORMAT_BC3_UNORM_BLOCK || t.vkFormat == VK_FORMAT_BC2_UNORM_BLOCK)) ++countBc3;
+                    if (t.compressed && t.vkFormat == phoenix::renderer::kDdsFormatBc1RgbaUnormBlock) ++countBc1;
+                    else if (t.compressed && (t.vkFormat == phoenix::renderer::kDdsFormatBc3UnormBlock || t.vkFormat == phoenix::renderer::kDdsFormatBc2UnormBlock)) ++countBc3;
                     else ++countRgba;
                 }
             }
@@ -801,7 +748,7 @@ int main(int, char**)
                                         tex = {};
                                         tex.valid = true;
                                         tex.compressed = true;
-                                        tex.vkFormat = VK_FORMAT_BC3_UNORM_BLOCK;
+                                        tex.vkFormat = phoenix::renderer::kDdsFormatBc3UnormBlock;
                                         tex.blockBytes = 16;
                                         tex.width = lmW;
                                         tex.height = lmH;
@@ -876,19 +823,20 @@ int main(int, char**)
         if (staticObjectsReady)
             renderer.upload_indirect_draw_data(staticObjectScene.batches, extract_gpu_bounds(staticObjectScene));
 
-        // Upload animated object mesh to GPU.
-        if (!animatedObjectScene.vertices.empty())
-        {
-            const bool animatedObjectsReady = renderer.set_animated_object_mesh(
-                animatedObjectScene.vertices,
-                animatedObjectScene.indices,
-                animatedObjectScene.instances,
-                animatedObjectScene.batches);
-            (void)animatedObjectsReady;
-        }
+        // Upload animated object mesh to GPU. Always called, even when this map has
+        // no vertex-animated (VANI) objects: set_animated_object_mesh() destroys the
+        // old GPU buffers and clears animatedObjectsReady itself before checking for
+        // empty input. Skipping this call when the new map's scene is empty used to
+        // leave the PREVIOUS map's animated buffers (geometry + instances + ready
+        // flag) untouched, so they kept rendering — stale foliage from whatever map
+        // was loaded before, floating at that map's old coordinates in the new one.
+        renderer.set_animated_object_mesh(
+            animatedObjectScene.vertices,
+            animatedObjectScene.indices,
+            animatedObjectScene.instances,
+            animatedObjectScene.batches);
 
         showLoading(0.90f, "Finalizing scene");
-        uploadDebugGizmos();
 
         worldCollisionMesh = runAsync([&]() { return runtime.build_collision_mesh(); }, 0.92f, "Building collision");
 
@@ -920,13 +868,8 @@ int main(int, char**)
         if (characterLoaded && characterSystem.ready())
             uploadCharacterMesh();
 
-        // ---- Spawn the fiery Portal effect at every gate on this map ----
-        {
-            place_portal_effects(effectManager, runtime);
-        }
         // ---- Initial playable spawn: centre of the map (valid interior point in
-        // dungeons), snapped to a walkable surface. A queued portal teleport, if
-        // any, overrides this afterwards in the pendingMapLoad handler.
+        // dungeons), snapped to a walkable surface.
         if (characterLoaded && characterSystem.ready())
         {
             const auto spawn = find_initial_playable_spawn(
@@ -1123,51 +1066,10 @@ int main(int, char**)
             characterSystem.update(deltaSeconds, pInput);
             characterSystem.camera_state(cameraX, cameraY, cameraZ, cameraYaw, cameraPitch);
 
-            // ---- Portal teleport ----
-            // Walking into a portal box queues a load of its destination map and
-            // remembers the destination position. A short cooldown (after spawn and
-            // after each teleport) avoids instant re-triggering on the arrival gate.
-            if (portalCooldown > 0.0f)
-                portalCooldown -= deltaSeconds;
-            if (!pendingMapLoad && portalCooldown <= 0.0f)
-            {
-                const auto activation = check_portal_activation(
-                    runtime,
-                    runtime.world_map_names(),
-                    characterSystem.world_x(),
-                    characterSystem.world_y(),
-                    characterSystem.world_z());
-                if (activation)
-                {
-                    if (!activation->destinationMapIndex)
-                    {
-                        portalCooldown = 1.0f;
-                    }
-                    else
-                    {
-                        pendingTeleportDestination = activation->teleport;
-                        pendingMapLoad = *activation->destinationMapIndex;
-                        portalCooldown = 2.0f;
-                    }
-                }
-            }
-
             if (!npcManager.active())
             {
                 botManager.update(deltaSeconds, cameraX, cameraZ, cameraYaw, fogCullDistance,
                     character_height_sampler, &heightSamplerCtx, &cpuLoader);
-
-                // Spawn one-shot effects queued by bots.
-                if (!botManager.pendingEffects.empty())
-                {
-                    const auto& catalog = phoenix::effects::preset_catalog();
-                    for (const auto& pe : botManager.pendingEffects)
-                    {
-                        if (pe.catalogIndex < catalog.size())
-                            effectManager.spawn(catalog[pe.catalogIndex],
-                                phoenix::effects::EffectAnchor::at(pe.x, pe.y + 1.0f, pe.z));
-                    }
-                }
             }
 
             phoenix::app::update_character_vertices(renderer, characterSystem,
@@ -1350,13 +1252,11 @@ int main(int, char**)
 
         if (imguiAvailable)
         {
-            const bool botEffectsWereEnabled = botManager.effectsEnabled;
             const bool prevCharacterShadow = displaySettings.characterShadow;
             const auto panelResult = draw_editor_panel(
                 runtime,
                 renderer,
                 fogEnabled,
-                showCollisionDebug,
                 displaySettings.characterShadow,
                 playMapSounds,
                 playMapMusic,
@@ -1364,17 +1264,12 @@ int main(int, char**)
                 selectedMapIndex,
                 viewDistance,
                 weatherMode,
-                waterMode,
                 characterOptions,
                 selectedCharacterOption,
                 characterAppearance,
                 characterSystem,
-                weaponEffect,
-                effectManager,
                 playableMode && characterLoaded && characterSystem.ready(),
                 botManager.bots.size(),
-                botManager.effectsEnabled,
-                botManager.weaponAurasEnabled,
                 botManager.viewDistance,
                 npcManager.catalog(),
                 npcManager.active_count(),
@@ -1384,11 +1279,7 @@ int main(int, char**)
                 monsterManager.active_count(),
                 monsterManager.status(),
                 monsterViewDistance,
-                assetsFullyLoaded.load(),
-                cameraX,
-                cameraY,
-                cameraZ,
-                cameraYaw);
+                assetsFullyLoaded.load());
 
             // The shadow toggle changes the character mesh topology (extra
             // flattened range), so rebuild the GPU buffers on change.
@@ -1406,10 +1297,6 @@ int main(int, char**)
             {
                 applyFogSettings();
             }
-            else if (panelResult.debugGizmosChanged)
-            {
-                uploadDebugGizmos();
-            }
 
             if (panelResult.characterChanged)
                 reloadCharacterIntoRenderer();
@@ -1426,7 +1313,6 @@ int main(int, char**)
             if (panelResult.clearBots)
             {
                 botManager.clear_bots();
-                effectManager.clear();
                 reloadCharacterIntoRenderer();
                 phoenix::app::release_memory_to_os();
             }
@@ -1485,8 +1371,6 @@ int main(int, char**)
             }
             if (panelResult.clearMonsters)
                 monsterManager.clear_manual(renderer);   // keep the map's .svmap mobs
-            if (botEffectsWereEnabled && !botManager.effectsEnabled)
-                effectManager.clear();
 
             draw_weather_overlay(
                 weatherMode,
@@ -1520,15 +1404,27 @@ int main(int, char**)
                 listenerZ = characterSystem.world_z();
             }
 
+            // Which zones/emitters are audible only needs to be re-evaluated a few
+            // times a second (sound sources don't move and the listener moves
+            // continuously but smoothly) — recomputing distances against every
+            // emitter and re-sorting candidates every single frame was pure
+            // wasted work between these checks. audioSystem.update() itself still
+            // runs every frame so volume fades stay smooth.
             static std::vector<phoenix::audio::AudibleTrack> audibleTracks;
-            audibleTracks.clear();
-            build_audible_tracks_into(audibleTracks,
-                mapAudioScene,
-                listenerX,
-                listenerY,
-                listenerZ,
-                playMapMusic,
-                playMapSounds);
+            static float audioSceneTimer = 1.0f; // force an immediate first evaluation
+            audioSceneTimer += deltaSeconds;
+            if (audioSceneTimer >= 0.15f)
+            {
+                audioSceneTimer = 0.0f;
+                audibleTracks.clear();
+                build_audible_tracks_into(audibleTracks,
+                    mapAudioScene,
+                    listenerX,
+                    listenerY,
+                    listenerZ,
+                    playMapMusic,
+                    playMapSounds);
+            }
             audioSystem.update(deltaSeconds, audibleTracks);
 
             // Footstep sounds based on terrain layer.
@@ -1572,29 +1468,6 @@ int main(int, char**)
                     footstepTimer = 0.0f;
                 }
             }
-        }
-
-        // Gather all scene particles (weapon aura + world/attack/portal effects)
-        // into one batch and upload once: alpha-blended first, then additive.
-        particleBatch.clear();
-        weaponEffect.update(deltaSeconds, characterSystem.weapon_attachment(), particleBatch,
-            &characterSystem.dual_weapon_attachment());
-        if (!npcManager.active())
-            botManager.emit_weapon_auras(deltaSeconds, particleBatch);
-        effectManager.update(deltaSeconds, particleBatch);
-        if (!particleBatch.alpha.empty() || !particleBatch.additive.empty())
-        {
-            particleScratch.clear();
-            particleScratch.reserve(particleBatch.alpha.size() + particleBatch.additive.size());
-            particleScratch.insert(particleScratch.end(), particleBatch.alpha.begin(), particleBatch.alpha.end());
-            const auto additiveStart = static_cast<std::uint32_t>(particleBatch.alpha.size());
-            particleScratch.insert(particleScratch.end(), particleBatch.additive.begin(), particleBatch.additive.end());
-            renderer.set_particle_instances(particleScratch, additiveStart);
-        }
-        else
-        {
-            particleScratch.clear();
-            renderer.set_particle_instances(particleScratch, 0);
         }
 
         // In-world labels: NPC name (yellow) over type (light blue/celeste), and
@@ -1738,30 +1611,7 @@ int main(int, char**)
             {
                 uploadCurrentWorld();
                 applyFogSettings();
-
-                // Apply a queued portal teleport: place the character at the portal
-                // destination (raw map space -> world via halfMap), snapped to the
-                // nearest walkable surface. This overrides the centre spawn that
-                // uploadCurrentWorld() applies by default.
-                if (pendingTeleportDestination && characterSystem.ready())
-                {
-                    const auto tp = *pendingTeleportDestination;
-                    if (tp.hasDestination)
-                    {
-                        const float mapSize = static_cast<float>(runtime.state().world.mapSize);
-                        const float halfMap = runtime.state().world.isDungeon ? 0.0f : mapSize * 0.5f;
-                        const float wx = tp.x - halfMap;
-                        const float wz = tp.z - halfMap;
-                        const auto spawn = find_dungeon_playable_spawn(worldCollisionMesh, wx, tp.y, wz);
-                        const float fy = spawn.valid ? spawn.y : tp.y;
-                        characterSystem.set_world_position(wx, fy, wz, 0.0f);
-                        heightSamplerCtx.lastCharacterY = fy;
-                        uploadCharacterMesh();
-                    }
-                    portalCooldown = 2.0f;
-                }
             }
-            pendingTeleportDestination.reset();
             lastFrame = clock::now();
         }
 
@@ -1773,7 +1623,6 @@ int main(int, char**)
     // preload thread and waiting on the GPU only delays the close.
     window.hide();
     audioSystem.shutdown();
-    perfHud.save_settings(executableDir);
-    phoenix::ui::save_display_settings(executableDir, displaySettings);
+    phoenix::ui::flush_app_settings();
     std::_Exit(0);
 }

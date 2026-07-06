@@ -6,7 +6,7 @@
 
 # Phoenix Engine
 
-Phoenix Engine is an open source MMO engine focused on high performance, modular features, and ease of use. It uses Vulkan as its graphics API and runs on Windows and Linux.
+Phoenix Engine is an open source MMO engine focused on high performance, modular features, and ease of use. It uses OpenGL 4.5 core as its graphics API and runs on Windows and Linux.
 
 The project is still in its infancy. Today it provides a gameplay/preview mode, not a full client and not a server component yet. The repository contains engine/source code only; game data and commercial assets are not included.
 
@@ -41,7 +41,7 @@ Phoenix Engine does not assume deep technical knowledge from final users. Everyo
 
 ## Current Features
 
-- Vulkan renderer with terrain, objects, water, fog, and procedural sky.
+- OpenGL 4.5 renderer with terrain, objects, water, fog, and procedural sky.
 - Runtime skinning for character animations with frame caching for high FPS (GPU compute path + CPU fallback).
 - WLD/DG map loading with free-camera viewer mode and playable character mode.
 - Field lightmaps with baked shadows and colour tones, alpha-mask terrain splatting ("tonality" maps), and full dungeon lightmap support (per-vertex page sampling).
@@ -52,14 +52,13 @@ Phoenix Engine does not assume deep technical knowledge from final users. Everyo
 - Mounts/vehicles: ride seated on a data-driven seat bone, mount animations, and faster-than-foot movement.
 - Ladder climbing: "Object"-section assets (ladders/ivy) latch the character into the climb animation up to the top instead of colliding.
 - Universal content-based transparency: cutout is decided by each texture's actual alpha channel, never by filename heuristics.
-- Canonical texture pipeline: all DDS data is pre-normalised to BC3 with full mip chains (`tools/dds_normalize`), so the renderer uploads GPU-native with zero load-time conversion.
-- Procedural weapon "aura" effects: fully shader-generated layered particles (no asset files) with birth-to-death colour gradients and element presets (fire, ice, holy, poison, shadow, arcane).
-- Bot stress-test system: GPU-instanced characters with randomized equipment, shared pose skinning, and one-shot effects.
+- Canonical texture pipeline: all DDS data is pre-normalised to BC3 with full mip chains (via the standalone `dds_normalize` tool, kept outside this repo), so the renderer uploads GPU-native with zero load-time conversion.
+- Bot stress-test system: GPU-instanced characters with randomized equipment and shared pose skinning.
 - Terrain-based footstep sounds (ground-only), map music/sound zones with distance fade, and full audio stop on map change (OGG Vorbis via miniaudio).
-- Water surface rendering, underwater tinting, swimming, floating, and camera-driven movement.
+- Water surface rendering (natural, static), underwater tinting, swimming, floating, and camera-driven movement.
 - Emote animations (one-shot, 10 slots) and occasional idle gestures between breathing cycles.
 - Double-tap dodges with full world collision, jump, sit, and swim states.
-- ImGui runtime controls for map selection, fog, render distance, actor distance, overlays, character/loadout selection, mount seat bone, weapon aura, and sky/weather styles, plus a CPU/RAM/VRAM performance HUD.
+- ImGui runtime controls for map selection, fog, render distance, actor distance, overlays, character/loadout selection, mount seat bone, and sky/weather styles, plus a CPU/RAM/VRAM performance HUD.
 - Procedural sky styles: default, storm, snowstorm, sunset, and night with stars/moon/meteors.
 - Instant window close at any moment, including mid-load (the whole loading pipeline stays responsive).
 
@@ -71,17 +70,15 @@ src/
   assets/    Data indexing and path resolution.
   audio/     Audio playback via miniaudio (OGG Vorbis).
   character/ Playable character controller, bots, NPC and monster managers, and character mesh assembly.
-  effects/   Particle effect placement.
   runtime/   Engine runtime state, map loading, terrain/object scene building.
   platform/  SDL2 window/input wrapper.
-  renderer/  Vulkan renderer (split by subsystem), texture loading, GPU resources.
+  renderer/  OpenGL 4.5 renderer (split by subsystem), texture loading, GPU resources.
   ui/        ImGui editor panel, performance HUD, loading screen.
   world/     File format loaders.
-tools/       Data tools (dds_normalize: one-shot DDS canonicalisation).
-shaders/     HLSL source and compiled SPIR-V used by the runtime.
-res/         Windows icon/resource files.
+shaders/gl/  GLSL source shaders loaded as text by the runtime at startup.
+res/         Windows icon/resource files, loose UI icon PNGs (res/icons/).
 external/    Vendored third-party dependencies.
-scripts/     Helper scripts for building and shader compilation.
+scripts/     Helper scripts for building.
 docs/        Public documentation and release notes.
 ```
 
@@ -91,9 +88,8 @@ docs/        Public documentation and release notes.
 |----------|--------|-------------|
 | Windows 10/11 | Primary | Visual Studio 2022 / MSBuild |
 | Linux (X11/Wayland) | Supported | CMake + GCC/Clang |
-| macOS (MoltenVK) | Experimental, structure ready — see [BUILD_MAC.md](BUILD_MAC.md) | CMake + AppleClang |
 
-All platforms share the same codebase. The platform layer uses SDL2, the renderer uses Vulkan through volk (MoltenVK on macOS), and the audio system uses miniaudio with stb_vorbis.
+Both platforms share the same codebase. The platform layer uses SDL2, the renderer uses OpenGL 4.5 core, and the audio system uses miniaudio with stb_vorbis.
 
 ## Requirements
 
@@ -102,7 +98,7 @@ All platforms share the same codebase. The platform layer uses SDL2, the rendere
 - Visual Studio 2022 Build Tools with MSVC v143.
 - Windows SDK.
 - CMake 3.20+ installed on `PATH`.
-- A Vulkan-capable GPU and current graphics driver.
+- An OpenGL 4.5 capable GPU and current graphics driver.
 
 SDL2 is vendored in the repository.
 
@@ -111,24 +107,24 @@ SDL2 is vendored in the repository.
 - GCC 13+ or Clang 17+ (C++23 required).
 - CMake 3.20+ installed on `PATH`.
 - SDL2 development libraries.
-- Vulkan-capable GPU and driver with ICD loader (Vulkan headers are vendored).
+- An OpenGL 4.5 capable GPU and driver.
 
 Install dependencies on Debian/Ubuntu:
 
 ```bash
-sudo apt install build-essential cmake pkg-config libsdl2-dev libvulkan1 mesa-vulkan-drivers
+sudo apt install build-essential cmake pkg-config libsdl2-dev
 ```
 
 On Fedora:
 
 ```bash
-sudo dnf install gcc-c++ cmake pkgconf SDL2-devel vulkan-loader mesa-vulkan-drivers
+sudo dnf install gcc-c++ cmake pkgconf SDL2-devel
 ```
 
 On Arch:
 
 ```bash
-sudo pacman -S base-devel cmake pkgconf sdl2 vulkan-icd-loader
+sudo pacman -S base-devel cmake pkgconf sdl2
 ```
 
 ## Build
@@ -153,26 +149,11 @@ cmake --build build/linux-release -j$(nproc)
 
 Output: `build/linux-release/PhoenixEngine`
 
-The repository vendors Vulkan Headers, volk, Dear ImGui, and DXC binaries used for shader compilation. A full Vulkan SDK install is not required for this project layout, but CMake must be installed separately.
+The repository vendors Dear ImGui and SDL2. No graphics SDK install is required beyond CMake and an OpenGL-capable driver.
 
-## Shader Compilation
+## Shaders
 
-Compiled shader binaries are stored in `shaders/compiled/` because the runtime loads SPIR-V at startup.
-
-To recompile shaders (Windows):
-
-```powershell
-.\scripts\compile_shaders.ps1
-```
-
-On Linux, use any HLSL-to-SPIR-V compiler (e.g. `dxc` from the Vulkan SDK):
-
-```bash
-dxc -spirv -T vs_6_0 -E VSMain -Fo shaders/compiled/sky.vert.spv shaders/sky.hlsl
-dxc -spirv -T ps_6_0 -E PSMain -Fo shaders/compiled/sky.frag.spv shaders/sky.hlsl
-```
-
-Pre-compiled SPIR-V is checked into the repository, so shader recompilation is only needed when modifying shader source.
+Shaders live as plain GLSL source under `shaders/gl/*.vert` and `*.frag`, compiled at runtime by the renderer — there is no offline compilation step; edit a shader and rebuild the engine to see the change.
 
 ## Runtime Data
 
@@ -225,7 +206,7 @@ See [docs/ASSETS.md](docs/ASSETS.md) for more details.
 - Mouse wheel: zoom in playable mode or move camera in viewer mode.
 - `Shift`: faster movement.
 - `P`: toggle playable mode.
-- ImGui panel: map loading, fog, distances, overlays, audio toggles, character/loadout selection, mount, weapon aura, and weather/sky style.
+- ImGui panel: map loading, fog, distances, overlays, audio toggles, character/loadout selection, mount, and weather/sky style.
 
 ## Data Formats
 
@@ -245,13 +226,14 @@ columns the engine consumes:
 | `monster/monsterdata.csv` | Monster catalog: `monster_id,name,model_id,size` — the svmap `MobId` resolves to `monster_id`; `size` is a percentage scale. |
 
 All textures are expected in the canonical format: **BC3 (DXT5) with a full mip
-chain** (256x256 for content textures, native dimensions for lightmaps). The
-`dds_normalize` tool (built alongside the engine, output in `bin/tools/`)
-converts any DDS tree to this format in one idempotent pass:
+chain** (256x256 for content textures, native dimensions for lightmaps).
+`dds_normalize` converts any DDS tree to this format in one idempotent pass;
+it's a standalone data tool (not part of this repo — build it separately) that
+uses the same decode/resize/encode logic the engine runs at load time:
 
 ```powershell
-bin\tools\Release\dds_normalize.exe data\entity 256 256   # resize + convert
-bin\tools\Release\dds_normalize.exe data\world 0 0        # convert only, keep dimensions
+dds_normalize.exe data\entity 256 256   # resize + convert
+dds_normalize.exe data\world 0 0        # convert only, keep dimensions
 ```
 
 Audio references (originally `.wav`) are resolved to `.ogg` (Vorbis) files on

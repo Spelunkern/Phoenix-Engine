@@ -2,7 +2,7 @@
 
 #include "renderer/dds_loader.h"
 #include "renderer/visibility_culling.h"
-#include "renderer/vulkan_renderer.h"
+#include "renderer/opengl_renderer.h"
 #include "world/character_loader.h"
 
 #include <cstddef>
@@ -45,7 +45,7 @@ namespace phoenix::character
             float yaw,
             std::uint32_t textureBaseSlot,
             std::uint32_t textureSlotReserve,
-            phoenix::renderer::VulkanRenderer& renderer);
+            phoenix::renderer::OpenGLRenderer& renderer);
 
         // Loads the monster spawn areas from a map's .svmap and queues them for
         // lazy streaming: an area only loads its model(s) and spawns its mobs once
@@ -58,7 +58,7 @@ namespace phoenix::character
             float halfMap,
             std::uint32_t textureBaseSlot,
             std::uint32_t textureSlotReserve,
-            phoenix::renderer::VulkanRenderer& renderer);
+            phoenix::renderer::OpenGLRenderer& renderer);
 
         std::size_t map_monster_total() const { return placements_.size(); }
         std::size_t map_monster_streamed() const { return streamedPlacements_; }
@@ -73,16 +73,16 @@ namespace phoenix::character
             heightSamplerCtx_ = userData;
         }
 
-        void clear(phoenix::renderer::VulkanRenderer& renderer);
+        void clear(phoenix::renderer::OpenGLRenderer& renderer);
         // Removes only manually-spawned monsters, leaving the map's .svmap mobs
         // intact. Used by the panel's "clear" command.
-        void clear_manual(phoenix::renderer::VulkanRenderer& renderer);
+        void clear_manual(phoenix::renderer::OpenGLRenderer& renderer);
         // workerPool (optional): parallelizes per-entity skinning across the
         // shared CPU pool. Serial fallback when null or few entities.
         void update(
             float deltaSeconds,
             const phoenix::renderer::CameraView& view,
-            phoenix::renderer::VulkanRenderer& renderer,
+            phoenix::renderer::OpenGLRenderer& renderer,
             phoenix::app::LoadingScheduler* workerPool = nullptr);
 
         // World-space floating name label for one on-screen monster (no type).
@@ -239,7 +239,7 @@ namespace phoenix::character
             const MonsterCatalogEntry& entry,
             std::uint32_t textureBaseSlot,
             std::uint32_t textureSlotReserve,
-            phoenix::renderer::VulkanRenderer& renderer);
+            phoenix::renderer::OpenGLRenderer& renderer);
         // Main thread: resolve paths + assign texture slots for a model.
         bool plan_visual(
             const std::filesystem::path& dataRoot,
@@ -254,15 +254,15 @@ namespace phoenix::character
             std::uint32_t modelIndex,
             std::shared_ptr<Visual> visual,
             std::uint32_t textureBaseSlot,
-            phoenix::renderer::VulkanRenderer& renderer);
+            phoenix::renderer::OpenGLRenderer& renderer);
         // Promotes one finished async visual load to ready per call.
-        bool pump_visual_loads(phoenix::renderer::VulkanRenderer& renderer);
+        bool pump_visual_loads(phoenix::renderer::OpenGLRenderer& renderer);
         // Spawns areas that have entered camera range (loading visuals async).
         void stream_map_monsters(
             const phoenix::renderer::CameraView& view,
-            phoenix::renderer::VulkanRenderer& renderer,
+            phoenix::renderer::OpenGLRenderer& renderer,
             phoenix::app::LoadingScheduler* workerPool);
-        void rebuild_render_mesh(phoenix::renderer::VulkanRenderer& renderer);
+        void rebuild_render_mesh(phoenix::renderer::OpenGLRenderer& renderer);
         // Advances a wandering mob: rests, then walks/runs to a random in-area
         // target, updating position/yaw. Sets wanderMoving/wanderRunning, which
         // drive the move-vs-idle and walk-vs-run choices in update_animation.
@@ -273,7 +273,7 @@ namespace phoenix::character
         void despawn_distant(const phoenix::renderer::CameraView& view);
         // Under texture-slot pressure, evicts the least-recently-used visuals that
         // no active mob references, freeing their texture slots for reuse.
-        void evict_visuals_if_needed(phoenix::renderer::VulkanRenderer& renderer);
+        void evict_visuals_if_needed(phoenix::renderer::OpenGLRenderer& renderer);
         void evict_visual(std::uint32_t modelIndex);
 
         // One unique pose to skin this frame (a snapshot of an entity's animation

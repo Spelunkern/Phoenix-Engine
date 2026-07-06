@@ -4,6 +4,187 @@ All notable changes to Phoenix Engine are documented here. Dates are ISO-8601.
 
 ## [Unreleased]
 
+### Changed
+- **Perf HUD icons moved from hardcoded arrays to PNG files.** The Windows/
+  Linux/Nvidia/AMD/Intel icons in `src/ui/perf_hud_icons.h` (raw RGBA byte
+  arrays baked into the source) are now loose `res/icons/*.png` files loaded
+  through the new `png_loader`, resolved with the same repo-root/build-dir
+  candidate search already used for shaders. Verified byte-for-byte identical
+  to the original embedded pixel data before switching over;
+  `perf_hud_icons.h` is deleted.
+
+### Added
+- **PNG loading via stb_image.** Vendored `external/stb_image.h` (same
+  nothings/stb family already used for `stb_vorbis.c`), built PNG-only
+  (`STBI_ONLY_PNG`) with file I/O going through the existing
+  `read_file_binary`/case-insensitive path resolution instead of stb's own
+  `fopen` path, for consistency with every other asset loader. New
+  `src/renderer/png_loader.{h,cpp}` (`PngImage load_png(path)`) decodes to
+  8-bit RGBA, ready to feed into `upload_imgui_icon_rgba` — this is the
+  intended path for future UI/interface icon art.
+
+### Performance
+- **CPU skinning: skin matrices hoisted out of the per-vertex loop.**
+  `CharacterSystem::skin_and_transform()` recomputed the combined skin matrix
+  (`mat4_from_shaiya_transposed` + `mat4_multiply`) for every influence of
+  every vertex, even though it only depends on the palette entry — roughly
+  vertices×3 redundant 4x4 matrix ops per frame instead of one per distinct
+  bone (~two orders of magnitude more math than needed on a fully equipped
+  character). Both the rider and mount loops now memoise the matrix per
+  palette entry (bit-identical results — same operations, computed once). The
+  cache is `thread_local` because bot pose skinning runs this method
+  concurrently on the loading worker pool.
+
+- **`compute_client_finals()`: 2 of its 3 per-call heap allocations removed.**
+  Called up to 3x per frame per character (base animation, blend-out
+  animation, mount) it built 3 fresh `std::vector<Mat4>` every call
+  (`rawMatrices`, `locals`, `finals`). `rawMatrices`/`locals` are pure
+  scratch — never returned, never visible outside the function — so they're
+  now `thread_local` reused buffers (same reasoning/pattern as the skin-matrix
+  cache above: bot pose skinning calls this concurrently on the loading
+  worker pool, one call at a time per thread). `finals` still allocates
+  fresh on each call since two results (current + previous animation) are
+  kept alive at once for blending — removing that one safely would need an
+  out-parameter per call site, left for later.
+
+- **A few small per-frame allocations/lookups removed** (low-risk, mechanical
+  cleanups):
+  - `CharacterSystem`'s cloak cloth-normal recompute allocated a fresh
+    `std::vector<float>` every frame it ran; now a reused instance member
+    (`clothRefNormals_`).
+  - `BotManager`'s pose-refresh tick (~30x/s) allocated a fresh
+    `std::vector<PoseSkinWork>` every tick; now a reused instance member
+    (`skinWork`).
+  - `BotManager::update()` looked up `visualPresets[pi]` three separate times
+    per visible bot per frame; now cached once as a pointer
+    (`presetForBot`) and reused.
+
+- **Redundant GL state changes in `render_frame()` removed.** Every draw call
+  used to unconditionally re-issue `glUseProgram`/re-upload the 60-float
+  camera UBO even when the previous draw already used the identical program
+  and constants blob (most notably monster→NPC, both on
+  `skinnedCharacterProgram` with the same camera data). `OpenGLRenderer::render_frame`
+  now tracks the last-bound program and last-uploaded constants pointer and
+  skips the call when unchanged.
+- **Per-frame audio scene re-evaluation throttled.** `build_audible_tracks_into()`
+  (distance checks + a full sort of every ambient sound emitter against the
+  listener) ran unconditionally every frame in `main.cpp`. Sound sources don't
+  move and don't need frame-perfect updates, so it's now throttled to ~150ms;
+  `AudioSystem::update()` still runs every frame so volume fades stay smooth.
+
+- **CPU skinning: the full per-frame bind-pose copy removed.**
+  `CharacterSystem::skin_and_transform()` started every call with
+  `animated = data_.bindVertices` — a full vertex-buffer copy, every frame,
+  per character, even though skinning only ever touches a subset (the
+  equipped-part ranges). The local-space working buffer (`localSkinned_`) is
+  now a persistent member re-seeded from `bindVertices` only when it's
+  actually stale (on `load()`, tracked by `localSkinnedValid_`) instead of
+  every frame. This required separating the function's local-space and
+  world-space data, which used to alias the same buffer (the world-transform
+  step rewrote position/normal/color/textureLayer in place): the
+  world-transform loop now reads from `localSkinned_` and writes into the
+  existing `worldVertices_` member instead, so untouched vertices can never
+  be transformed to world space twice. Verified by full read-through of every
+  downstream use of the buffer (weapon-attach math reads bone matrices
+  directly and is unaffected; the cloak cloth simulation already correctly
+  expected world-space data and now reads/writes `worldVertices_`).
+
+- **NPC/monster instance grouping: O(models) rescan removed.**
+  `NpcManager`/`MonsterManager` grouped visible instances by model for
+  batched instanced draws by deduplicating models with a `std::find` scan,
+  then re-scanning the *entire* visible list once per unique model to collect
+  its instances — O(visible × unique models) instead of O(visible). Both now
+  bucket by model in a single pass (`unordered_map<model, vector<instance>>`,
+  built while iterating the visible list once), then append each bucket
+  contiguously in first-seen order. Same output ordering and batch layout,
+  fewer comparisons per frame in scenes with many NPCs/monsters of few
+  distinct models.
+
+### Changed
+- **Renamed the renderer from Vulkan-branded to OpenGL-branded naming.**
+  `VulkanRenderer` → `OpenGLRenderer`, `src/renderer/vulkan_renderer.{h,cpp}` →
+  `opengl_renderer.{h,cpp}`, `vulkan_renderer_internal.h` →
+  `opengl_renderer_internal.h`. Naming only — no logic changed. The engine has
+  been an OpenGL 4.5 renderer since it was ported from the original Vulkan
+  implementation; keeping the old "Vulkan" name in the class/files was
+  confusing for a backend that hasn't used Vulkan in a long time.
+
+### Fixed
+- **Stale VANI geometry leaking between maps (the real cause of the green
+  "phantom" shapes in dungeons).** `uploadCurrentWorld()` in `main.cpp` only
+  called `set_animated_object_mesh()` when the new map's animated-object scene
+  was non-empty. `set_animated_object_mesh()` itself destroys the old GPU
+  buffers and clears `animatedObjectsReady` unconditionally before checking
+  for empty input — but skipping the call entirely (as most dungeons do,
+  since they have zero VANI/vertex-animated decor) left the **previous**
+  map's animated buffers, instance transforms, and ready flag untouched, so
+  its foliage/decor kept rendering at its old coordinates inside the new map.
+  This explains why the shapes' layout depended on whichever map was loaded
+  right before, and why loading a dungeon directly (no prior map) never
+  showed them. Fixed by always calling `set_animated_object_mesh()`, letting
+  it clear stale state even when the new scene has nothing to upload.
+
+### Removed
+- **Collision debug visualization.** Removed the "Collision" checkbox from
+  the Display panel and its whole rendering path: `OpenGLRenderer::set_debug_mesh`/
+  `set_debug_visible`, the debug VAO/vertex/index buffers, the debug draw
+  call in `render_frame`, and the `uploadDebugGizmos()` wireframe-mesh builder
+  in `main.cpp`. Real world collision (`WorldCollisionMesh`, used for character
+  movement blocking, spawn placement, and line-of-sight checks) is untouched —
+  only the green debug overlay that visualized it is gone.
+
+### Fixed
+- **Stray solid-colour shapes in some interiors/dungeons.** Several `.smod`
+  building/shape/furniture models bundle a small non-visual helper sub-mesh
+  with a blank texture name (e.g. `b1_guildhouse_01.smod`, `table_a_*.smod`)
+  — a leftover from the original data, never meant to be drawn. The renderer
+  was drawing it anyway via the "no texture" vertex-colour-only fallback,
+  which showed up as small floating solid-colour shapes in incoherent
+  positions. `PhoenixRuntime::load_world_assets()` (`src/runtime/phoenix_runtime.cpp`)
+  now skips any `.smod`/`.dg` sub-mesh with an empty texture name entirely,
+  matching how the original client treats them.
+
+### Removed
+- **`dds_normalize` moved out of this repo.** It's a one-shot data-prep tool,
+  not engine code, so mixing it into the engine's source tree/build didn't
+  make sense. Moved to its own standalone project (`tools/dds_normalize.cpp`,
+  `src/renderer/dds_loader.*`, `src/assets/data_index.*` copies + its own
+  `CMakeLists.txt`) outside this repo; removed the `dds_normalize` CMake
+  target and the `tools/` directory from here entirely. Usage docs in
+  README.md/`docs/ASSETS.md` now just reference the standalone tool by name.
+
+### Changed
+- **Settings consolidated into imgui.ini.** `display.ini` (character shadow
+  toggle) and `perf_hud.ini` (FPS cap) are gone; both are now a custom
+  `[PhoenixSettings][Config]` section inside the existing `imgui.ini`, wired
+  up via a real `ImGuiSettingsHandler` (`src/ui/app_settings.*`). One file
+  next to the executable instead of three. Values load synchronously right
+  after `initialize_imgui()` (before the loading screen needs them) and are
+  force-flushed on both hard-exit paths (`std::_Exit` on window close),
+  since those bypass ImGui's own on-shutdown save.
+
+### Removed
+- **Client-side portal teleportation.** Removed `src/world/portal_runtime.*`
+  (`check_portal_activation`) and all the map-load/teleport-queue wiring in
+  `main.cpp`. Portal-triggered map transitions will be server-authoritative
+  going forward, not something the client decides on its own.
+- **macOS detection/icon in the performance HUD.** The engine only targets
+  Windows and Linux, so the Mac icon asset and OS-name sniffing for it are
+  gone from `src/ui/perf_hud.*`/`perf_hud_icons.h`; unrecognized OS names now
+  just fall back to the Linux icon.
+- **Particle/effects system.** Removed `src/effects/` (`EffectManager`, the
+  procedural effect catalog, and portal placement), the weapon-aura system
+  (`src/character/weapon_effect.*`), the bot one-shot effects and weapon auras
+  in `BotManager`, and the shared particle rendering path
+  (`ParticleInstance`/`ParticleBatch`, `vulkan_renderer_particles.cpp`,
+  `shaders/gl/particle.vert`/`.frag`). The ImGui "Effects" section, the weapon
+  aura controls, and the bot "Bot Effects"/"Weapon Auras" checkboxes are gone
+  from the editor panel.
+- **Water variants.** Removed the `WaterMode` selector (Ocean, Tropical, River,
+  Lake, Cold, Swamp) and its ImGui "Water" combo. Water rendering is now a
+  single static "natural" tint baked into the renderer, matching the previous
+  default.
+
 ## [v0.8] - 2026-06-14
 
 ### Added

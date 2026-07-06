@@ -75,7 +75,7 @@ namespace phoenix::app
     }
 
     void configure_water_renderer(
-        phoenix::renderer::VulkanRenderer& renderer,
+        phoenix::renderer::OpenGLRenderer& renderer,
         const std::filesystem::path& stillTexturePath,
         const phoenix::runtime::WaterAnimation& animation,
         const WaterResourceLayout& layout)

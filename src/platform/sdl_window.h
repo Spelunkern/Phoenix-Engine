@@ -1,7 +1,6 @@
 #pragma once
 
 #include <SDL.h>
-#include <SDL_vulkan.h>
 
 #include <array>
 #include <string>
@@ -34,13 +33,11 @@ namespace phoenix::platform
         bool consume_restore_event();
 
         SDL_Window* handle() const { return window_; }
-
-        unsigned vulkan_extension_count() const;
-        const char* const* vulkan_extensions() const;
-        bool create_vulkan_surface(void* vkInstance, void* vkSurfaceOut) const;
+        SDL_GLContext gl_context() const { return glContext_; }
 
     private:
         SDL_Window* window_{};
+        SDL_GLContext glContext_{};
         std::array<bool, SDL_NUM_SCANCODES> keys_{};
         std::array<bool, 5> mouseButtons_{};
         int lastMouseX_{};
@@ -51,7 +48,5 @@ namespace phoenix::platform
         int mouseWheelDelta_{};
         bool minimized_{};
         bool restoredEvent_{};
-        mutable unsigned cachedExtCount_{};
-        mutable const char** cachedExts_{};
     };
 }

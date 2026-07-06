@@ -1,6 +1,6 @@
 #pragma once
 
-#include "renderer/vulkan_renderer.h"
+#include "renderer/opengl_renderer.h"
 #include "runtime/phoenix_runtime.h"
 #include "world/water_constants.h"
 
@@ -40,7 +40,7 @@ namespace phoenix::app
         std::vector<std::uint32_t>& indices);
 
     void configure_water_renderer(
-        phoenix::renderer::VulkanRenderer& renderer,
+        phoenix::renderer::OpenGLRenderer& renderer,
         const std::filesystem::path& stillTexturePath,
         const phoenix::runtime::WaterAnimation& animation,
         const WaterResourceLayout& layout);

@@ -8,8 +8,7 @@
 | CMake >= 3.20 | Build system | `cmake` | `cmake` | `cmake` |
 | pkg-config | Locate SDL2 | `pkg-config` | `pkgconf` | `pkgconf` |
 | SDL2 dev files | Window/input | `libsdl2-dev` | `SDL2-devel` | `sdl2` |
-| Vulkan loader | Runtime graphics | `libvulkan1` | `vulkan-loader` | `vulkan-icd-loader` |
-| Vulkan driver | GPU ICD | `mesa-vulkan-drivers` or vendor driver | `mesa-vulkan-drivers` or vendor driver | `vulkan-radeon` / `nvidia-utils` / vendor driver |
+| OpenGL driver | GPU rendering (4.5 core) | mesa or vendor driver | mesa or vendor driver | mesa or vendor driver |
 
 GCC 13+ or Clang 17+ is recommended.
 
@@ -18,19 +17,19 @@ GCC 13+ or Clang 17+ is recommended.
 Debian/Ubuntu:
 
 ```bash
-sudo apt install -y build-essential cmake pkg-config libsdl2-dev libvulkan1 mesa-vulkan-drivers
+sudo apt install -y build-essential cmake pkg-config libsdl2-dev
 ```
 
 Fedora:
 
 ```bash
-sudo dnf install -y gcc-c++ cmake pkgconf SDL2-devel vulkan-loader mesa-vulkan-drivers
+sudo dnf install -y gcc-c++ cmake pkgconf SDL2-devel
 ```
 
 Arch:
 
 ```bash
-sudo pacman -S --needed base-devel cmake pkgconf sdl2 vulkan-icd-loader
+sudo pacman -S --needed base-devel cmake pkgconf sdl2
 ```
 
 ## Build
@@ -56,9 +55,7 @@ PHOENIX_ENGINE_DATA=/path/to/Data ./build/linux-release/PhoenixEngine
 
 ## Troubleshooting
 
-- `Could not initialize Vulkan`: install a Vulkan driver for your GPU and check
-  with `vulkaninfo` from `vulkan-tools`.
-- Shaders fail to load: confirm `shaders/compiled/` exists next to the executable
-  or in the working directory.
+- `Could not create OpenGL context`: install/update the OpenGL driver for your
+  GPU (mesa or vendor) and confirm 4.5 core support with `glxinfo | grep "OpenGL version"`.
 - Wrong or missing models on Linux: keep the `Data/` tree intact. The engine has
   case-insensitive path resolution, but it cannot recover from missing files.

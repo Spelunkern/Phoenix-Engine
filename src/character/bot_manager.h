@@ -3,10 +3,8 @@
 #include "app/loading_scheduler.h"
 #include "assets/data_index.h"
 #include "character/character_system.h"
-#include "character/weapon_effect.h"
-#include "effects/effect_system.h"
 #include "renderer/dds_loader.h"
-#include "renderer/vulkan_renderer.h"
+#include "renderer/opengl_renderer.h"
 #include "ui/editor_panel.h"
 
 #include <algorithm>
@@ -180,14 +178,12 @@ namespace phoenix::character
         float targetX{}, targetZ{};
         float moveTimer{};
         float actionTimer{};
-        float effectTimer{};
         float moveSpeed{};
         std::uint16_t currentAction{};
         std::uint16_t pose{};
         std::uint16_t preset{};
         std::uint8_t fastMove{};
         std::uint8_t visible{};   // set during update, reused for instance building
-        std::uint8_t auraPreset{};   // WeaponEffect::Element (fire/wind/earth/water)
     };
     
     // Pose IDs shared across all presets. Each preset may have a subset loaded.
@@ -232,26 +228,14 @@ namespace phoenix::character
         std::mt19937 rng{ std::random_device{}() };
     
         std::vector<BotVisualPreset> visualPresets;
-        std::vector<phoenix::character::WeaponEffect> botAuras;
         bool presetsBuilt{};
-        bool effectsEnabled{ true };
-        bool weaponAurasEnabled{ true };
         // Bot visibility range (world units ~ metres): bots farther than this
-        // from the camera are fully culled (no AI, skinning, draw or aura),
+        // from the camera are fully culled (no AI, skinning, draw or instance),
         // independently of the fog distance. Adjustable from the UI.
         float viewDistance{ 100.0f };
         std::size_t lastBotCount{};
         std::uint32_t frameCounter{};
-    
-        // Pending effect spawns from bot update (processed by main loop).
-        struct PendingEffect
-        {
-            float x, y, z;
-            std::uint16_t catalogIndex;
-        };
-        std::vector<PendingEffect> pendingEffects;
-        std::vector<std::size_t> oneShotEffectIndices;
-    
+
         static std::size_t poseAnimIndex(BotPose pose, const phoenix::character::CharacterData& d)
         {
             auto first = [](std::initializer_list<std::size_t> anims) -> std::size_t {
@@ -319,17 +303,16 @@ namespace phoenix::character
             }
         }
     
-        void cacheOneShotEffects()
+        // Active poses to skin this refresh tick (built fresh each tick, but the
+        // backing vector is a member so it's reused instead of a fresh heap
+        // allocation every ~33ms).
+        struct PoseSkinWork
         {
-            if (!oneShotEffectIndices.empty()) return;
-            const auto& catalog = phoenix::effects::preset_catalog();
-            for (std::size_t i = 0; i < catalog.size(); ++i)
-            {
-                if (!catalog[i].loop && !catalog[i].projectile)
-                    oneShotEffectIndices.push_back(i);
-            }
-        }
-    
+            phoenix::character::CharacterSystem* pose;
+            std::size_t animIdx;
+        };
+        std::vector<PoseSkinWork> skinWork;
+
         std::vector<phoenix::renderer::TerrainVertex> poseVertices;
         std::vector<std::uint32_t> poseIndices;
         std::vector<phoenix::renderer::ObjectInstance> poseInstances;
@@ -641,7 +624,6 @@ namespace phoenix::character
             if (!presetsBuilt || visualPresets.empty())
                 return;
             bots.reserve(bots.size() + count);
-            botAuras.reserve(botAuras.size() + static_cast<std::size_t>(std::max(0, count)));
             for (int i = 0; i < count; ++i)
             {
                 BotCharacter bot{};
@@ -658,32 +640,24 @@ namespace phoenix::character
                 bot.cosYaw = std::cos(bot.yaw);
                 bot.moveTimer = randomFloat(1.0f, 4.0f);
                 bot.actionTimer = randomFloat(4.0f, 12.0f);
-                bot.effectTimer = randomFloat(0.5f, 6.0f);
                 bot.moveSpeed = 0.0f;
                 bot.currentAction = 1;
                 bot.pose = 1;
                 bot.preset = random_preset_index(randomInt(1, 10) == 1);
                 bot.fastMove = randomInt(0, 2) == 0 ? 1 : 0;
-                bot.auraPreset = static_cast<std::uint8_t>(randomInt(0, 3));
                 bots.push_back(bot);
-
-                phoenix::character::WeaponEffect aura;
-                aura.enabled() = true;
-                aura.set_element(static_cast<phoenix::character::WeaponEffect::Element>(bot.auraPreset));
-                botAuras.push_back(std::move(aura));
             }
         }
-    
+
         void clear_bots()
         {
             bots.clear(); bots.shrink_to_fit();
-            botAuras.clear(); botAuras.shrink_to_fit();
             lastBotCount = 0;
             poseInstances.clear(); poseInstances.shrink_to_fit();
             poseBatches.clear(); poseBatches.shrink_to_fit();
             poseInstanceBuckets.clear(); poseInstanceBuckets.shrink_to_fit();
             activePoseMask.clear(); activePoseMask.shrink_to_fit();
-            pendingEffects.clear(); pendingEffects.shrink_to_fit();
+            skinWork.clear(); skinWork.shrink_to_fit();
             poseUpdateAccumulator = 0.0f;
             poseVerticesDirty = true;
         }
@@ -713,7 +687,6 @@ namespace phoenix::character
             phoenix::character::HeightSampleFn heightFn, void* heightUserData,
             phoenix::app::LoadingScheduler* workerPool = nullptr)
         {
-            pendingEffects.clear();
             if (bots.empty())
                 return;
             if (!presetsBuilt || visualPresets.empty())
@@ -726,11 +699,10 @@ namespace phoenix::character
             // Bots cull at their own view distance, never past the fog.
             const float effectiveCull = std::min(cullDist, std::max(10.0f, viewDistance));
             const float cullDistSq = effectiveCull * effectiveCull;
-            cacheOneShotEffects();
             activePoseMask.assign(visualPresets.size() * kPoseCount, 0);
 
             // View-cone culling: bots clearly behind the camera consume nothing
-            // (no AI, no pose skinning contribution, no instance, no aura). The
+            // (no AI, no pose skinning contribution, no instance). The
             // threshold is generous — only past ~100 degrees off the view axis —
             // and a no-cull radius keeps nearby bots alive so fast camera spins
             // don't reveal frozen poses.
@@ -762,8 +734,9 @@ namespace phoenix::character
     
                 const auto pi = std::min<std::uint16_t>(bot.preset,
                     visualPresets.empty() ? 0 : static_cast<std::uint16_t>(visualPresets.size() - 1));
-                const bool isMounted = !visualPresets.empty() && visualPresets[pi].mounted;
-    
+                const BotVisualPreset* presetForBot = visualPresets.empty() ? nullptr : &visualPresets[pi];
+                const bool isMounted = presetForBot && presetForBot->mounted;
+
                 if (bot.currentAction == 0)
                     bot.moveTimer -= dt;
 
@@ -832,24 +805,10 @@ namespace phoenix::character
                 default: break;
                 }
                 // Fall back to idle if the chosen pose isn't available for this preset.
-                if (!visualPresets.empty() && !visualPresets[pi].poseValid[bot.pose])
+                if (presetForBot && !presetForBot->poseValid[bot.pose])
                     bot.pose = isMounted ? kPoseMountIdle : kPoseIdle;
     
-                // Random one-shot effect (only near bots, capped per frame).
-                bot.effectTimer -= dt;
-                if (effectsEnabled && bot.effectTimer <= 0.0f && distSq < 6400.0f
-                    && !oneShotEffectIndices.empty() && pendingEffects.size() < 8)
-                {
-                    bot.effectTimer = randomFloat(1.5f, 8.0f);
-                    PendingEffect pe{};
-                    pe.x = bot.x; pe.y = bot.y; pe.z = bot.z;
-                    pe.catalogIndex = static_cast<std::uint16_t>(
-                        oneShotEffectIndices[static_cast<std::size_t>(
-                            randomInt(0, static_cast<int>(oneShotEffectIndices.size()) - 1))]);
-                    pendingEffects.push_back(pe);
-                }
-    
-                if (!visualPresets.empty())
+                if (presetForBot)
                 {
                     const auto poseIdx = std::min<std::uint16_t>(bot.pose, kPoseCount - 1);
                     activePoseMask[static_cast<std::size_t>(pi) * kPoseCount + poseIdx] = 1;
@@ -868,14 +827,8 @@ namespace phoenix::character
                     poseUpdateAccumulator = 0.0f;
     
                     // Collect active poses to skin.
-                    struct PoseSkinWork
-                    {
-                        phoenix::character::CharacterSystem* pose;
-                        std::size_t animIdx;
-                    };
-                    std::vector<PoseSkinWork> skinWork;
-                    skinWork.reserve(32);
-    
+                    skinWork.clear();
+
                     for (std::size_t presetIndex = 0; presetIndex < visualPresets.size(); ++presetIndex)
                     {
                         auto& preset = visualPresets[presetIndex];
@@ -913,7 +866,7 @@ namespace phoenix::character
             }
         }
     
-        bool updatePoseMesh(phoenix::renderer::VulkanRenderer& renderer)
+        bool updatePoseMesh(phoenix::renderer::OpenGLRenderer& renderer)
         {
             if (visualPresets.empty())
                 return false;
@@ -1008,7 +961,7 @@ namespace phoenix::character
         }
     
         bool updatePoseInstances(
-            phoenix::renderer::VulkanRenderer& renderer)
+            phoenix::renderer::OpenGLRenderer& renderer)
         {
             if (!poseMeshUploaded || visualPresets.empty())
                 return false;
@@ -1069,76 +1022,6 @@ namespace phoenix::character
             }
     
             return renderer.update_bot_character_instances(poseInstances, poseBatches);
-        }
-
-        static phoenix::character::CharacterSystem::WeaponAttachment transform_bot_attachment(
-            const phoenix::character::CharacterSystem::WeaponAttachment& localAttach,
-            const BotCharacter& bot)
-        {
-            phoenix::character::CharacterSystem::WeaponAttachment worldAttach = localAttach;
-            worldAttach.position[0] = bot.x + bot.cosYaw * localAttach.position[0] + bot.sinYaw * localAttach.position[2];
-            worldAttach.position[1] = bot.y + localAttach.position[1];
-            worldAttach.position[2] = bot.z - bot.sinYaw * localAttach.position[0] + bot.cosYaw * localAttach.position[2];
-
-            for (int axis = 0; axis < 3; ++axis)
-            {
-                const float x = localAttach.basis[axis * 3 + 0];
-                const float y = localAttach.basis[axis * 3 + 1];
-                const float z = localAttach.basis[axis * 3 + 2];
-                worldAttach.basis[axis * 3 + 0] = bot.cosYaw * x + bot.sinYaw * z;
-                worldAttach.basis[axis * 3 + 1] = y;
-                worldAttach.basis[axis * 3 + 2] = -bot.sinYaw * x + bot.cosYaw * z;
-            }
-            return worldAttach;
-        }
-
-        void emit_weapon_auras(float dt, phoenix::renderer::ParticleBatch& batch)
-        {
-            if (!presetsBuilt || visualPresets.empty() || botAuras.empty())
-                return;
-
-            phoenix::character::CharacterSystem::WeaponAttachment invalidAttach{};
-            if (!weaponAurasEnabled)
-            {
-                for (auto& aura : botAuras)
-                {
-                    aura.enabled() = false;
-                    aura.update(0.0f, invalidAttach, batch);
-                }
-                return;
-            }
-
-            const auto auraCount = std::min(botAuras.size(), bots.size());
-            for (std::size_t bi = 0; bi < auraCount; ++bi)
-            {
-                const auto& bot = bots[bi];
-                if (!bot.visible)
-                    continue;
-                const auto presetIndex = static_cast<std::size_t>(std::min<std::uint16_t>(
-                    bot.preset, static_cast<std::uint16_t>(visualPresets.size() - 1)));
-                const auto& preset = visualPresets[presetIndex];
-                if (preset.mounted)
-                    continue;
-
-                const auto poseIndex = static_cast<std::size_t>(std::min<std::uint16_t>(bot.pose, kPoseCount - 1));
-                if (!preset.poseValid[poseIndex])
-                    continue;
-                const auto& localAttach = preset.poses[poseIndex].weapon_attachment();
-                if (!localAttach.valid)
-                    continue;
-
-                auto worldAttach = transform_bot_attachment(localAttach, bot);
-
-                // Dual-wield bots emit the aura on both weapons.
-                const auto& localDual = preset.poses[poseIndex].dual_weapon_attachment();
-                phoenix::character::CharacterSystem::WeaponAttachment worldDual{};
-                if (localDual.valid)
-                    worldDual = transform_bot_attachment(localDual, bot);
-
-                auto& aura = botAuras[bi];
-                aura.enabled() = true;
-                aura.update(dt, worldAttach, batch, localDual.valid ? &worldDual : nullptr);
-            }
         }
     };
     

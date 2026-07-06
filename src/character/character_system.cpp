@@ -9,6 +9,7 @@
 #include <atomic>
 #include <cmath>
 #include <cctype>
+#include <cstdint>
 #include <cwctype>
 #include <fstream>
 #include <limits>
@@ -293,11 +294,21 @@ namespace phoenix::character
         std::vector<Mat4> compute_client_finals(const world::CharacterAnimation& animation, float frame)
         {
             const auto boneCount = animation.bones.size();
-            std::vector<Mat4> rawMatrices(boneCount);
+            // rawMatrices/locals are pure scratch — never returned, never seen
+            // outside this function — so they're safe to keep as reused buffers
+            // across the up-to-3 calls per skin_and_transform() (base anim, blend
+            // anim, mount). thread_local (not a member/static) because bot pose
+            // skinning calls this concurrently on the loading worker pool, one
+            // call at a time per thread. `finals` still has to be a fresh vector:
+            // callers keep two of them (current + previous) alive at once for
+            // blending.
+            thread_local std::vector<Mat4> rawMatrices;
+            rawMatrices.resize(boneCount);
             for (std::size_t i = 0; i < boneCount; ++i)
                 rawMatrices[i] = mat4_from_shaiya_transposed(animation.bones[i].matrix);
 
-            std::vector<Mat4> locals(boneCount);
+            thread_local std::vector<Mat4> locals;
+            locals.resize(boneCount);
             for (std::size_t i = 0; i < boneCount; ++i)
             {
                 const auto& bone = animation.bones[i];
@@ -938,6 +949,8 @@ namespace phoenix::character
 
         data_ = {};
         worldVertices_.clear();
+        localSkinned_.clear();
+        localSkinnedValid_ = false;
         animationSeconds_ = 0.0f;
         pendingHoldPreviousAtEnd_ = false;
         previousAnimationHoldEnd_ = false;
@@ -2576,14 +2589,37 @@ namespace phoenix::character
             }
         }
 
-        // Skin into local-space animated vertices.
-        std::vector<CharacterGpuVertex> animated = data_.bindVertices;
+        // Skin into local-space animated vertices. localSkinned_ persists across
+        // frames (only re-seeded from bindVertices on load(), via
+        // localSkinnedValid_) instead of copying the full bind pose every call;
+        // every vertex here gets overwritten below by skinning/attachment passes
+        // or, for untouched vertices, simply keeps last frame's bind-space value,
+        // which is what a fresh copy would have given anyway.
+        if (!localSkinnedValid_ || localSkinned_.size() != data_.bindVertices.size())
+        {
+            localSkinned_ = data_.bindVertices;
+            localSkinnedValid_ = true;
+        }
+        auto& localAnimated = localSkinned_;
+
+        // The combined skin matrix (meshBone * clientFinals[bone]) only depends
+        // on the palette entry, not the vertex — but it used to be recomputed
+        // per influence per vertex (a 4x4 transpose + multiply, thousands of
+        // times per frame for ~dozens of distinct bones). Memoise per palette
+        // entry instead; the stored boneIndex makes a stale entry impossible
+        // even if a palette slot were ever reached with a different skeleton
+        // bone. thread_local (not static): bot pose skinning runs this method
+        // concurrently on different instances via the loading worker pool.
+        thread_local std::vector<Mat4> skinMatrixCache;
+        thread_local std::vector<std::int32_t> skinMatrixCacheBone;
+        skinMatrixCache.resize(data_.meshBones.size());
+        skinMatrixCacheBone.assign(data_.meshBones.size(), -1);
 
         for (std::size_t i = 0; i < data_.sourceVertices.size(); ++i)
         {
             const auto& source = data_.sourceVertices[i];
             const auto vi = static_cast<std::size_t>(source.gpuIndex);
-            if (vi >= animated.size())
+            if (vi >= localAnimated.size())
                 continue;
             Vec3 position{};
             Vec3 normal{};
@@ -2601,8 +2637,13 @@ namespace phoenix::character
                 if (meshBoneIdx >= data_.meshBones.size())
                     continue;
 
-                const auto meshBone = mat4_from_shaiya_transposed(data_.meshBones[meshBoneIdx].matrix);
-                const auto skinMatrix = mat4_multiply(meshBone, clientFinals[boneIndex]);
+                if (skinMatrixCacheBone[meshBoneIdx] != static_cast<std::int32_t>(boneIndex))
+                {
+                    const auto meshBone = mat4_from_shaiya_transposed(data_.meshBones[meshBoneIdx].matrix);
+                    skinMatrixCache[meshBoneIdx] = mat4_multiply(meshBone, clientFinals[boneIndex]);
+                    skinMatrixCacheBone[meshBoneIdx] = static_cast<std::int32_t>(boneIndex);
+                }
+                const auto& skinMatrix = skinMatrixCache[meshBoneIdx];
                 const Vec3 srcPos{ source.position[0], source.position[1], source.position[2] };
                 const Vec3 srcNrm{ source.normal[0], source.normal[1], source.normal[2] };
                 const auto p = transform_point(skinMatrix, srcPos);
@@ -2624,12 +2665,12 @@ namespace phoenix::character
             position.z /= totalWeight;
             normal = normalize_vec3({ normal.x / totalWeight, normal.y / totalWeight, normal.z / totalWeight });
 
-            animated[vi].position[0] = position.x * kCharacterScale;
-            animated[vi].position[1] = position.y * kCharacterScale;
-            animated[vi].position[2] = position.z * kCharacterScale;
-            animated[vi].normal[0] = normal.x;
-            animated[vi].normal[1] = normal.y;
-            animated[vi].normal[2] = normal.z;
+            localAnimated[vi].position[0] = position.x * kCharacterScale;
+            localAnimated[vi].position[1] = position.y * kCharacterScale;
+            localAnimated[vi].position[2] = position.z * kCharacterScale;
+            localAnimated[vi].normal[0] = normal.x;
+            localAnimated[vi].normal[1] = normal.y;
+            localAnimated[vi].normal[2] = normal.z;
 
         }
 
@@ -2659,7 +2700,7 @@ namespace phoenix::character
             for (std::uint32_t i = 0; i < part.vertexCount; ++i)
             {
                 const auto vi = static_cast<std::size_t>(part.vertexOffset) + i;
-                if (vi >= animated.size()) break;
+                if (vi >= localAnimated.size()) break;
                 const auto& sv = part.vertices[i];
                 Vec3 srcPos{ sv.position[0], sv.position[1], sv.position[2] };
                 Vec3 srcNrm{ sv.normal[0], sv.normal[1], sv.normal[2] };
@@ -2676,12 +2717,12 @@ namespace phoenix::character
                 }
                 const auto p = transform_point(boneMatrix, srcPos);
                 const auto n = normalize_vec3(transform_normal(boneMatrix, srcNrm));
-                animated[vi].position[0] = p.x * kCharacterScale;
-                animated[vi].position[1] = p.y * kCharacterScale;
-                animated[vi].position[2] = p.z * kCharacterScale;
-                animated[vi].normal[0] = n.x;
-                animated[vi].normal[1] = n.y;
-                animated[vi].normal[2] = n.z;
+                localAnimated[vi].position[0] = p.x * kCharacterScale;
+                localAnimated[vi].position[1] = p.y * kCharacterScale;
+                localAnimated[vi].position[2] = p.z * kCharacterScale;
+                localAnimated[vi].normal[0] = n.x;
+                localAnimated[vi].normal[1] = n.y;
+                localAnimated[vi].normal[2] = n.z;
             }
         };
         if (data_.hasWeapon && weaponBoneIndex >= 0)
@@ -2733,10 +2774,16 @@ namespace phoenix::character
                 }
                 mountFinals = compute_client_finals(mountAnim, mFrame);
 
+                // Same per-palette-entry memoisation as the rider loop above;
+                // the character pass is done with the buffers, so reuse them
+                // for the mount's own palette.
+                skinMatrixCache.resize(data_.mount.meshBones.size());
+                skinMatrixCacheBone.assign(data_.mount.meshBones.size(), -1);
+
                 for (const auto& source : data_.mount.sourceVertices)
                 {
                     const auto vi = static_cast<std::size_t>(source.gpuIndex);
-                    if (vi >= animated.size())
+                    if (vi >= localAnimated.size())
                         continue;
                     Vec3 position{};
                     Vec3 normal{};
@@ -2752,8 +2799,13 @@ namespace phoenix::character
                         const auto meshBoneIdx = static_cast<std::size_t>(source.meshBoneBase) + boneIndex;
                         if (meshBoneIdx >= data_.mount.meshBones.size())
                             continue;
-                        const auto meshBone = mat4_from_shaiya_transposed(data_.mount.meshBones[meshBoneIdx].matrix);
-                        const auto skinMatrix = mat4_multiply(meshBone, mountFinals[boneIndex]);
+                        if (skinMatrixCacheBone[meshBoneIdx] != static_cast<std::int32_t>(boneIndex))
+                        {
+                            const auto meshBone = mat4_from_shaiya_transposed(data_.mount.meshBones[meshBoneIdx].matrix);
+                            skinMatrixCache[meshBoneIdx] = mat4_multiply(meshBone, mountFinals[boneIndex]);
+                            skinMatrixCacheBone[meshBoneIdx] = static_cast<std::int32_t>(boneIndex);
+                        }
+                        const auto& skinMatrix = skinMatrixCache[meshBoneIdx];
                         const Vec3 srcPos{ source.position[0], source.position[1], source.position[2] };
                         const Vec3 srcNrm{ source.normal[0], source.normal[1], source.normal[2] };
                         const auto p = transform_point(skinMatrix, srcPos);
@@ -2766,12 +2818,12 @@ namespace phoenix::character
                         continue;
                     position.x /= totalWeight; position.y /= totalWeight; position.z /= totalWeight;
                     normal = normalize_vec3({ normal.x / totalWeight, normal.y / totalWeight, normal.z / totalWeight });
-                    animated[vi].position[0] = position.x * mountScale;
-                    animated[vi].position[1] = position.y * mountScale;
-                    animated[vi].position[2] = position.z * mountScale;
-                    animated[vi].normal[0] = normal.x;
-                    animated[vi].normal[1] = normal.y;
-                    animated[vi].normal[2] = normal.z;
+                    localAnimated[vi].position[0] = position.x * mountScale;
+                    localAnimated[vi].position[1] = position.y * mountScale;
+                    localAnimated[vi].position[2] = position.z * mountScale;
+                    localAnimated[vi].normal[0] = normal.x;
+                    localAnimated[vi].normal[1] = normal.y;
+                    localAnimated[vi].normal[2] = normal.z;
                 }
             }
 
@@ -2787,11 +2839,11 @@ namespace phoenix::character
                 }
             }
             riderSaddleOffset = saddle;
-            for (std::size_t i = 0; i < static_cast<std::size_t>(data_.mount.vertexOffset) && i < animated.size(); ++i)
+            for (std::size_t i = 0; i < static_cast<std::size_t>(data_.mount.vertexOffset) && i < localAnimated.size(); ++i)
             {
-                animated[i].position[0] += saddle.x;
-                animated[i].position[1] += saddle.y;
-                animated[i].position[2] += saddle.z;
+                localAnimated[i].position[0] += saddle.x;
+                localAnimated[i].position[1] += saddle.y;
+                localAnimated[i].position[2] += saddle.z;
             }
 
         }
@@ -2805,30 +2857,35 @@ namespace phoenix::character
         const float cosYaw = std::cos(yaw);
         const float sinYaw = std::sin(yaw);
 
-        for (std::size_t i = 0; i < animated.size(); ++i)
+        // World-space output buffer: written here, never read back into
+        // localAnimated, so localAnimated can persist bind-space state across
+        // frames without ever picking up a world transform twice.
+        worldVertices_.resize(localAnimated.size());
+        for (std::size_t i = 0; i < localAnimated.size(); ++i)
         {
-            const float lx = animated[i].position[0];
-            const float ly = animated[i].position[1];
-            const float lz = animated[i].position[2];
-            animated[i].position[0] = lx * cosYaw + lz * sinYaw + smoothX_;
-            animated[i].position[1] = ly - localGroundY + smoothY_ + kGroundClearance;
-            animated[i].position[2] = -lx * sinYaw + lz * cosYaw + smoothZ_;
+            const float lx = localAnimated[i].position[0];
+            const float ly = localAnimated[i].position[1];
+            const float lz = localAnimated[i].position[2];
+            worldVertices_[i].position[0] = lx * cosYaw + lz * sinYaw + smoothX_;
+            worldVertices_[i].position[1] = ly - localGroundY + smoothY_ + kGroundClearance;
+            worldVertices_[i].position[2] = -lx * sinYaw + lz * cosYaw + smoothZ_;
 
-            const float nx = animated[i].normal[0];
-            const float nz = animated[i].normal[2];
-            animated[i].normal[0] = nx * cosYaw + nz * sinYaw;
-            animated[i].normal[2] = -nx * sinYaw + nz * cosYaw;
+            const float nx = localAnimated[i].normal[0];
+            const float nz = localAnimated[i].normal[2];
+            worldVertices_[i].normal[0] = nx * cosYaw + nz * sinYaw;
+            worldVertices_[i].normal[1] = localAnimated[i].normal[1];
+            worldVertices_[i].normal[2] = -nx * sinYaw + nz * cosYaw;
 
             // Mark as character vertex (color=0 signals Shaiya lighting in shader).
-            animated[i].color[0] = 0.0f;
-            animated[i].color[1] = 0.0f;
-            animated[i].color[2] = 0.0f;
+            worldVertices_[i].color[0] = 0.0f;
+            worldVertices_[i].color[1] = 0.0f;
+            worldVertices_[i].color[2] = 0.0f;
 
             // Apply texture layer base offset.
             const auto rawLayer = data_.bindVertices[i].textureLayer;
             const bool isCutout = rawLayer >= 2048u;
             const auto baseLayer = isCutout ? (rawLayer - 2048u) : rawLayer;
-            animated[i].textureLayer = (baseLayer + textureLayerBase_) + (isCutout ? 2048u : 0u);
+            worldVertices_[i].textureLayer = (baseLayer + textureLayerBase_) + (isCutout ? 2048u : 0u);
         }
 
         // Cloak pieces get flat lighting in the shader (color.b sentinel): the
@@ -2841,8 +2898,8 @@ namespace phoenix::character
                 for (std::uint32_t i = 0; i < part.vertexCount; ++i)
                 {
                     const auto vi = static_cast<std::size_t>(part.vertexOffset) + i;
-                    if (vi < animated.size())
-                        animated[vi].color[2] = 0.02f;
+                    if (vi < worldVertices_.size())
+                        worldVertices_[vi].color[2] = 0.02f;
                 }
             };
             markFlatLit(data_.cloakBody);
@@ -2924,7 +2981,7 @@ namespace phoenix::character
         }
 
         // ---- Cloak cloth simulation (Verlet, world space) ----
-        // At this point `animated` holds final world-space positions for every
+        // At this point `worldVertices_` holds final world-space positions for every
         // vertex, including the cloak body sitting at its rest (bind) world pose.
         // We treat the cloak body as a 5xR grid: row 0 (top) is pinned to its
         // rest world position (so it rides with the body), rows 1..R-1 are free
@@ -2954,8 +3011,8 @@ namespace phoenix::character
                 {
                     for (int a = 0; a < 3; ++a)
                     {
-                        clothWorld_[i * 3 + a] = animated[off + i].position[a];
-                        clothPrev_[i * 3 + a]  = animated[off + i].position[a];
+                        clothWorld_[i * 3 + a] = worldVertices_[off + i].position[a];
+                        clothPrev_[i * 3 + a]  = worldVertices_[off + i].position[a];
                     }
                 }
                 // Rest lengths are invariant (rigid bind shape), so compute them
@@ -2963,9 +3020,9 @@ namespace phoenix::character
                 // not stable across frames; use the current rest world pose, which
                 // equals the bind shape rigidly transformed (distances preserved).
                 auto restDist = [&](std::uint32_t ia, std::uint32_t ib) {
-                    const float dx = animated[off + ia].position[0] - animated[off + ib].position[0];
-                    const float dy = animated[off + ia].position[1] - animated[off + ib].position[1];
-                    const float dz = animated[off + ia].position[2] - animated[off + ib].position[2];
+                    const float dx = worldVertices_[off + ia].position[0] - worldVertices_[off + ib].position[0];
+                    const float dy = worldVertices_[off + ia].position[1] - worldVertices_[off + ib].position[1];
+                    const float dz = worldVertices_[off + ia].position[2] - worldVertices_[off + ib].position[2];
                     return std::sqrt(dx * dx + dy * dy + dz * dz);
                 };
                 for (std::uint32_t r = 0; r < rows; ++r)
@@ -3036,20 +3093,20 @@ namespace phoenix::character
                 const std::uint32_t i = idx(0, c);
                 const std::uint32_t slot = (c < clothPinBody_.size()) ? clothPinBody_[c] : UINT32_MAX;
                 float px, py, pz;
-                if (slot != UINT32_MAX && slot < animated.size())
+                if (slot != UINT32_MAX && slot < worldVertices_.size())
                 {
                     const float ox = clothPinOffset_[c * 3 + 0];
                     const float oy = clothPinOffset_[c * 3 + 1];
                     const float oz = clothPinOffset_[c * 3 + 2];
-                    px = animated[slot].position[0] + (ox * pinCos + oz * pinSin);
-                    py = animated[slot].position[1] + oy;
-                    pz = animated[slot].position[2] + (-ox * pinSin + oz * pinCos);
+                    px = worldVertices_[slot].position[0] + (ox * pinCos + oz * pinSin);
+                    py = worldVertices_[slot].position[1] + oy;
+                    pz = worldVertices_[slot].position[2] + (-ox * pinSin + oz * pinCos);
                 }
                 else
                 {
-                    px = animated[off + i].position[0];
-                    py = animated[off + i].position[1];
-                    pz = animated[off + i].position[2];
+                    px = worldVertices_[off + i].position[0];
+                    py = worldVertices_[off + i].position[1];
+                    pz = worldVertices_[off + i].position[2];
                 }
                 clothWorld_[i * 3 + 0] = px; clothPrev_[i * 3 + 0] = px;
                 clothWorld_[i * 3 + 1] = py; clothPrev_[i * 3 + 1] = py;
@@ -3167,9 +3224,9 @@ namespace phoenix::character
             // Write simulated positions back into the render buffer.
             for (std::uint32_t i = 0; i < n; ++i)
             {
-                animated[off + i].position[0] = clothWorld_[i * 3 + 0];
-                animated[off + i].position[1] = clothWorld_[i * 3 + 1];
-                animated[off + i].position[2] = clothWorld_[i * 3 + 2];
+                worldVertices_[off + i].position[0] = clothWorld_[i * 3 + 0];
+                worldVertices_[off + i].position[1] = clothWorld_[i * 3 + 1];
+                worldVertices_[off + i].position[2] = clothWorld_[i * 3 + 2];
             }
 
             // Recompute normals from the actual triangle winding of the cloak mesh
@@ -3178,15 +3235,15 @@ namespace phoenix::character
             // Reference direction (the world-transformed bind normals) lets us
             // globally flip if the winding points the opposite way.
             float refDot = 0.0f;
-            std::vector<float> refNrm(static_cast<std::size_t>(n) * 3u);
+            clothRefNormals_.resize(static_cast<std::size_t>(n) * 3u);
             for (std::uint32_t i = 0; i < n; ++i)
             {
-                refNrm[i * 3 + 0] = animated[off + i].normal[0];
-                refNrm[i * 3 + 1] = animated[off + i].normal[1];
-                refNrm[i * 3 + 2] = animated[off + i].normal[2];
-                animated[off + i].normal[0] = 0.0f;
-                animated[off + i].normal[1] = 0.0f;
-                animated[off + i].normal[2] = 0.0f;
+                clothRefNormals_[i * 3 + 0] = worldVertices_[off + i].normal[0];
+                clothRefNormals_[i * 3 + 1] = worldVertices_[off + i].normal[1];
+                clothRefNormals_[i * 3 + 2] = worldVertices_[off + i].normal[2];
+                worldVertices_[off + i].normal[0] = 0.0f;
+                worldVertices_[off + i].normal[1] = 0.0f;
+                worldVertices_[off + i].normal[2] = 0.0f;
             }
             for (const auto& face : data_.cloakBody.faces)
             {
@@ -3208,29 +3265,27 @@ namespace phoenix::character
                     e1.x * e2.y - e1.y * e2.x };
                 for (std::uint32_t k : { a, b, cI })
                 {
-                    animated[off + k].normal[0] += fn.x;
-                    animated[off + k].normal[1] += fn.y;
-                    animated[off + k].normal[2] += fn.z;
+                    worldVertices_[off + k].normal[0] += fn.x;
+                    worldVertices_[off + k].normal[1] += fn.y;
+                    worldVertices_[off + k].normal[2] += fn.z;
                 }
             }
             for (std::uint32_t i = 0; i < n; ++i)
-                refDot += animated[off + i].normal[0] * refNrm[i * 3 + 0]
-                        + animated[off + i].normal[1] * refNrm[i * 3 + 1]
-                        + animated[off + i].normal[2] * refNrm[i * 3 + 2];
+                refDot += worldVertices_[off + i].normal[0] * clothRefNormals_[i * 3 + 0]
+                        + worldVertices_[off + i].normal[1] * clothRefNormals_[i * 3 + 1]
+                        + worldVertices_[off + i].normal[2] * clothRefNormals_[i * 3 + 2];
             const float gsign = (refDot < 0.0f) ? -1.0f : 1.0f;
             for (std::uint32_t i = 0; i < n; ++i)
             {
                 const Vec3 nn = normalize_vec3({
-                    animated[off + i].normal[0] * gsign,
-                    animated[off + i].normal[1] * gsign,
-                    animated[off + i].normal[2] * gsign });
-                animated[off + i].normal[0] = nn.x;
-                animated[off + i].normal[1] = nn.y;
-                animated[off + i].normal[2] = nn.z;
+                    worldVertices_[off + i].normal[0] * gsign,
+                    worldVertices_[off + i].normal[1] * gsign,
+                    worldVertices_[off + i].normal[2] * gsign });
+                worldVertices_[off + i].normal[0] = nn.x;
+                worldVertices_[off + i].normal[1] = nn.y;
+                worldVertices_[off + i].normal[2] = nn.z;
             }
         }
-
-        worldVertices_ = std::move(animated);
     }
 
     float CharacterSystem::render_ground_y() const

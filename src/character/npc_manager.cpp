@@ -504,7 +504,7 @@ namespace phoenix::character
         float yaw,
         std::uint32_t textureBaseSlot,
         std::uint32_t textureSlotReserve,
-        phoenix::renderer::VulkanRenderer& renderer)
+        phoenix::renderer::OpenGLRenderer& renderer)
     {
         if (!load_catalog(dataRoot) || catalogIndex >= catalog_.size())
             return false;
@@ -539,7 +539,7 @@ namespace phoenix::character
         float halfMap,
         std::uint32_t textureBaseSlot,
         std::uint32_t textureSlotReserve,
-        phoenix::renderer::VulkanRenderer& renderer)
+        phoenix::renderer::OpenGLRenderer& renderer)
     {
         placements_.clear();
         streamedPlacements_ = 0;
@@ -624,7 +624,7 @@ namespace phoenix::character
 
     void NpcManager::stream_map_npcs(
         const phoenix::renderer::CameraView& view,
-        phoenix::renderer::VulkanRenderer& renderer,
+        phoenix::renderer::OpenGLRenderer& renderer,
         phoenix::app::LoadingScheduler* workerPool)
     {
         // Promote finished async loads first so their placements can spawn below.
@@ -759,7 +759,7 @@ namespace phoenix::character
             rebuild_render_mesh(renderer);
     }
 
-    void NpcManager::clear(phoenix::renderer::VulkanRenderer& renderer)
+    void NpcManager::clear(phoenix::renderer::OpenGLRenderer& renderer)
     {
         placements_.clear();
         streamedPlacements_ = 0;
@@ -777,7 +777,7 @@ namespace phoenix::character
         renderer.set_npc_skinned_visible(false);
     }
 
-    void NpcManager::clear_manual(phoenix::renderer::VulkanRenderer& renderer)
+    void NpcManager::clear_manual(phoenix::renderer::OpenGLRenderer& renderer)
     {
         const auto before = active_.size();
         active_.erase(std::remove_if(active_.begin(), active_.end(),
@@ -878,7 +878,7 @@ namespace phoenix::character
         std::uint32_t modelIndex,
         std::shared_ptr<Visual> visual,
         std::uint32_t textureBaseSlot,
-        phoenix::renderer::VulkanRenderer& renderer)
+        phoenix::renderer::OpenGLRenderer& renderer)
     {
         for (auto& [slot, texture] : visual->pendingTextureUploads)
         {
@@ -923,7 +923,7 @@ namespace phoenix::character
         modelLastUsedFrame_.erase(modelIndex);
     }
 
-    void NpcManager::evict_visuals_if_needed(phoenix::renderer::VulkanRenderer& renderer)
+    void NpcManager::evict_visuals_if_needed(phoenix::renderer::OpenGLRenderer& renderer)
     {
         if (mapTextureReserve_ == 0 || visuals_.empty())
             return;
@@ -971,7 +971,7 @@ namespace phoenix::character
         const NpcCatalogEntry& entry,
         std::uint32_t textureBaseSlot,
         std::uint32_t textureSlotReserve,
-        phoenix::renderer::VulkanRenderer& renderer)
+        phoenix::renderer::OpenGLRenderer& renderer)
     {
         if (auto it = visuals_.find(entry.modelIndex); it != visuals_.end())
             return &it->second;
@@ -1185,7 +1185,7 @@ namespace phoenix::character
         return visualPtr;
     }
 
-    bool NpcManager::pump_visual_loads(phoenix::renderer::VulkanRenderer& renderer)
+    bool NpcManager::pump_visual_loads(phoenix::renderer::OpenGLRenderer& renderer)
     {
         // Promote at most one finished async load per call: the finalize does a
         // GPU texture upload (and the spawn it enables triggers a mesh rebuild),
@@ -1210,7 +1210,7 @@ namespace phoenix::character
         return false;
     }
 
-    void NpcManager::rebuild_render_mesh(phoenix::renderer::VulkanRenderer& renderer)
+    void NpcManager::rebuild_render_mesh(phoenix::renderer::OpenGLRenderer& renderer)
     {
         renderVertices_.clear();
         renderIndices_.clear();
@@ -1509,7 +1509,7 @@ namespace phoenix::character
     void NpcManager::update(
         float deltaSeconds,
         const phoenix::renderer::CameraView& view,
-        phoenix::renderer::VulkanRenderer& renderer,
+        phoenix::renderer::OpenGLRenderer& renderer,
         phoenix::app::LoadingScheduler* workerPool)
     {
         // Stream in any map (.svmap) NPCs that have come into camera range,
@@ -1654,11 +1654,19 @@ namespace phoenix::character
 
         // Group by model into contiguous instance blocks; one instanced batch
         // per (model, part) draws all entities of that model in a single call.
+        // Single pass: bucket by model while iterating vis once, instead of a
+        // dedup scan followed by an O(models) rescan of the whole vis list.
         static std::vector<std::uint32_t> modelOrder;
+        static std::unordered_map<std::uint32_t, std::vector<phoenix::renderer::ObjectInstance>> modelBuckets;
         modelOrder.clear();
+        modelBuckets.clear();
         for (const auto& v : vis)
-            if (std::find(modelOrder.begin(), modelOrder.end(), v.model) == modelOrder.end())
+        {
+            auto [it, inserted] = modelBuckets.try_emplace(v.model);
+            if (inserted)
                 modelOrder.push_back(v.model);
+            it->second.push_back(v.inst);
+        }
         for (const std::uint32_t model : modelOrder)
         {
             const auto geomIt = modelIndexOffset_.find(model);
@@ -1666,11 +1674,10 @@ namespace phoenix::character
             if (geomIt == modelIndexOffset_.end() || visualIt == visuals_.end())
                 continue;
             const std::uint32_t indexOffset = geomIt->second;
+            const auto& bucket = modelBuckets[model];
             const auto firstInstance = static_cast<std::uint32_t>(instances_.size());
-            for (const auto& v : vis)
-                if (v.model == model)
-                    instances_.push_back(v.inst);
-            const auto count = static_cast<std::uint32_t>(instances_.size()) - firstInstance;
+            instances_.insert(instances_.end(), bucket.begin(), bucket.end());
+            const auto count = static_cast<std::uint32_t>(bucket.size());
             for (auto batch : visualIt->second.batches)
             {
                 batch.firstIndex += indexOffset;

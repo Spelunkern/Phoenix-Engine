@@ -37,7 +37,3 @@ Desktop.ini
 *.bak
 *.old
 *~
-
-# Keep runtime shader binaries, ignore stray SPIR-V elsewhere.
-*.spv
-!shaders/compiled/*.spv

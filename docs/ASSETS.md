@@ -77,11 +77,12 @@ data/
 Every `.dds` is expected as **BC3 (DXT5) with a full mip chain** — 256x256 for
 content textures, native dimensions under `world/`. The renderer then uploads
 GPU-native with no load-time conversion. New or imported textures should be run
-through the bundled tool once (idempotent):
+through the standalone `dds_normalize` tool once (idempotent) — it's not part
+of this repo; build it separately:
 
 ```text
-bin/tools/Release/dds_normalize <directory> 256 256   # resize + convert
-bin/tools/Release/dds_normalize <directory> 0 0       # convert only, keep dimensions
+dds_normalize <directory> 256 256   # resize + convert
+dds_normalize <directory> 0 0       # convert only, keep dimensions
 ```
 
 Transparency is decided by each texture's actual alpha content (cutout

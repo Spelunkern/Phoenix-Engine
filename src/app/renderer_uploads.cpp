@@ -54,7 +54,7 @@ namespace phoenix::app
     }
 
     void set_character_mesh(
-        phoenix::renderer::VulkanRenderer& renderer,
+        phoenix::renderer::OpenGLRenderer& renderer,
         phoenix::character::CharacterSystem& characterSystem,
         bool visible,
         bool shadowVisible)
@@ -79,7 +79,7 @@ namespace phoenix::app
     }
 
     void update_character_mesh(
-        phoenix::renderer::VulkanRenderer& renderer,
+        phoenix::renderer::OpenGLRenderer& renderer,
         phoenix::character::CharacterSystem& characterSystem,
         bool visible,
         bool shadowVisible)
@@ -104,7 +104,7 @@ namespace phoenix::app
     }
 
     void update_character_vertices(
-        phoenix::renderer::VulkanRenderer& renderer,
+        phoenix::renderer::OpenGLRenderer& renderer,
         const phoenix::character::CharacterSystem& characterSystem,
         std::vector<phoenix::renderer::TerrainVertex>& scratch,
         bool shadowVisible)

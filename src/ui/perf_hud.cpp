@@ -1,6 +1,8 @@
 #include "ui/perf_hud.h"
 
-#include "ui/perf_hud_icons.h"
+#include "app/bootstrap.h"
+#include "renderer/png_loader.h"
+#include "ui/app_settings.h"
 
 #include "imgui.h"
 
@@ -9,6 +11,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <filesystem>
 #include <fstream>
 #include <string>
 #include <string_view>
@@ -62,22 +65,52 @@ namespace phoenix::ui
             return false;
         }
 
+        // Resolve a path under res/ regardless of whether the binary is launched
+        // from the repo root, the build folder, or an install dir (same
+        // candidate-search pattern used for shaders in opengl_renderer.cpp).
+        std::filesystem::path resolve_res_path(const std::filesystem::path& relativePath)
+        {
+            const auto cwd = std::filesystem::current_path();
+            const auto exeDir = phoenix::app::executable_directory();
+            const std::filesystem::path candidates[] = {
+                cwd / relativePath,
+                cwd.parent_path() / relativePath,
+                cwd.parent_path().parent_path().parent_path() / relativePath,
+                exeDir / relativePath,
+                exeDir.parent_path() / relativePath,
+            };
+            for (const auto& candidate : candidates)
+            {
+                std::error_code ec;
+                if (std::filesystem::exists(candidate, ec))
+                    return candidate;
+            }
+            return relativePath;
+        }
+
+        std::uint64_t load_icon(PerfHudState& hud, const char* fileName)
+        {
+            const auto path = resolve_res_path(std::filesystem::path("res/icons") / fileName);
+            const auto image = phoenix::renderer::load_png(path);
+            if (!image.valid)
+                return 0;
+            return hud.renderer->upload_imgui_icon_rgba(image.rgba.data(), image.width, image.height);
+        }
+
         void upload_icons_if_needed(PerfHudState& hud)
         {
             if (hud.iconsUploaded || !hud.renderer) return;
-            hud.windowsIcon = hud.renderer->upload_imgui_icon_rgba(kIconWindowsRgba, kIconWindowsWidth, kIconWindowsHeight);
-            hud.linuxIcon = hud.renderer->upload_imgui_icon_rgba(kIconLinuxRgba, kIconLinuxWidth, kIconLinuxHeight);
-            hud.macIcon = hud.renderer->upload_imgui_icon_rgba(kIconMacRgba, kIconMacWidth, kIconMacHeight);
-            hud.nvidiaIcon = hud.renderer->upload_imgui_icon_rgba(kIconNvidiaRgba, kIconNvidiaWidth, kIconNvidiaHeight);
-            hud.amdIcon = hud.renderer->upload_imgui_icon_rgba(kIconAmdRgba, kIconAmdWidth, kIconAmdHeight);
-            hud.intelIcon = hud.renderer->upload_imgui_icon_rgba(kIconIntelRgba, kIconIntelWidth, kIconIntelHeight);
+            hud.windowsIcon = load_icon(hud, "windows.png");
+            hud.linuxIcon = load_icon(hud, "linux.png");
+            hud.nvidiaIcon = load_icon(hud, "nvidia.png");
+            hud.amdIcon = load_icon(hud, "amd.png");
+            hud.intelIcon = load_icon(hud, "intel.png");
             hud.iconsUploaded = true;
 
             // Cache icon lookups once so draw never does string ops.
             const auto& os = hud.osName;
             if (contains_ci(os, "windows")) hud.cachedOsIcon = hud.windowsIcon;
-            else if (contains_ci(os, "mac") || contains_ci(os, "darwin")) hud.cachedOsIcon = hud.macIcon;
-            else hud.cachedOsIcon = hud.linuxIcon; // Everything not Windows/Mac shows Tux
+            else hud.cachedOsIcon = hud.linuxIcon; // Everything not Windows shows Tux
 
             auto resolve_vendor = [&](const std::string& name) -> std::uint64_t {
                 if (contains_ci(name, "nvidia") || contains_ci(name, "geforce") || contains_ci(name, "rtx") || contains_ci(name, "gtx"))
@@ -102,8 +135,6 @@ namespace phoenix::ui
             if (disabled) ImGui::TextDisabled("%s", text);
             else ImGui::TextUnformatted(text);
         }
-
-        constexpr const char* kSettingsFile = "perf_hud.ini";
     }
 
     float PerfHudState::fps_cap_seconds() const
@@ -113,19 +144,6 @@ namespace phoenix::ui
             1.0f/120.0f, 1.0f/144.0f, 1.0f/165.0f, 1.0f/240.0f, 1.0f/360.0f };
         constexpr int kCapCount = static_cast<int>(sizeof(caps) / sizeof(caps[0]));
         return (fpsCapIndex >= 0 && fpsCapIndex < kCapCount) ? caps[fpsCapIndex] : 0.0f;
-    }
-
-    void PerfHudState::load_settings(const std::filesystem::path& executableDir)
-    {
-        std::ifstream f(executableDir / kSettingsFile);
-        if (f) f >> fpsCapIndex;
-        fpsCapIndex = std::clamp(fpsCapIndex, 0, 9);
-    }
-
-    void PerfHudState::save_settings(const std::filesystem::path& executableDir) const
-    {
-        std::ofstream f(executableDir / kSettingsFile);
-        if (f) f << fpsCapIndex;
     }
 
     void PerfHudState::initialize_system_info()
@@ -361,7 +379,7 @@ namespace phoenix::ui
             ImGui::SetNextItemWidth(80.0f);
             if (ImGui::Combo("FPS Cap", &hud.fpsCapIndex, caps, static_cast<int>(sizeof(caps) / sizeof(caps[0])))
                 && hud.fpsCapIndex != prev && hud.renderer)
-                hud.save_settings(std::filesystem::current_path());
+                flush_app_settings();
         }
 
         ImGui::End();

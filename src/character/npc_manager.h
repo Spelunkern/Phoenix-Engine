@@ -2,7 +2,7 @@
 
 #include "renderer/dds_loader.h"
 #include "renderer/visibility_culling.h"
-#include "renderer/vulkan_renderer.h"
+#include "renderer/opengl_renderer.h"
 #include "world/character_loader.h"
 
 #include <cstddef>
@@ -48,7 +48,7 @@ namespace phoenix::character
             float yaw,
             std::uint32_t textureBaseSlot,
             std::uint32_t textureSlotReserve,
-            phoenix::renderer::VulkanRenderer& renderer);
+            phoenix::renderer::OpenGLRenderer& renderer);
 
         // Loads the NPC placements authored in a map's .svmap and queues them for
         // lazy streaming: each placement only loads its model and starts
@@ -62,21 +62,21 @@ namespace phoenix::character
             float halfMap,
             std::uint32_t textureBaseSlot,
             std::uint32_t textureSlotReserve,
-            phoenix::renderer::VulkanRenderer& renderer);
+            phoenix::renderer::OpenGLRenderer& renderer);
 
         std::size_t map_npc_total() const { return placements_.size(); }
         std::size_t map_npc_streamed() const { return streamedPlacements_; }
 
-        void clear(phoenix::renderer::VulkanRenderer& renderer);
+        void clear(phoenix::renderer::OpenGLRenderer& renderer);
         // Removes only manually-spawned NPCs, leaving the map's .svmap NPCs (which
         // are always present) intact. Used by the panel's "clear" command.
-        void clear_manual(phoenix::renderer::VulkanRenderer& renderer);
+        void clear_manual(phoenix::renderer::OpenGLRenderer& renderer);
         // workerPool (optional): parallelizes per-entity skinning across the
         // shared CPU pool. Serial fallback when null or few entities.
         void update(
             float deltaSeconds,
             const phoenix::renderer::CameraView& view,
-            phoenix::renderer::VulkanRenderer& renderer,
+            phoenix::renderer::OpenGLRenderer& renderer,
             phoenix::app::LoadingScheduler* workerPool = nullptr);
 
         // World-space floating label for one on-screen NPC: the head anchor and
@@ -245,7 +245,7 @@ namespace phoenix::character
             const NpcCatalogEntry& entry,
             std::uint32_t textureBaseSlot,
             std::uint32_t textureSlotReserve,
-            phoenix::renderer::VulkanRenderer& renderer);
+            phoenix::renderer::OpenGLRenderer& renderer);
         // Main thread: resolves paths and assigns texture slots for a model.
         // Returns false if the model has no rows or the texture reserve is full.
         bool plan_visual(
@@ -263,19 +263,19 @@ namespace phoenix::character
             std::uint32_t modelIndex,
             std::shared_ptr<Visual> visual,
             std::uint32_t textureBaseSlot,
-            phoenix::renderer::VulkanRenderer& renderer);
-        void rebuild_render_mesh(phoenix::renderer::VulkanRenderer& renderer);
+            phoenix::renderer::OpenGLRenderer& renderer);
+        void rebuild_render_mesh(phoenix::renderer::OpenGLRenderer& renderer);
         // Spawns any not-yet-streamed map placements that have entered camera
         // range. Visuals load asynchronously on workerPool (when provided) so the
         // first sighting of a new NPC type doesn't hitch the render thread; the
         // NPC appears a moment later once its visual is ready. Runs in update().
         void stream_map_npcs(
             const phoenix::renderer::CameraView& view,
-            phoenix::renderer::VulkanRenderer& renderer,
+            phoenix::renderer::OpenGLRenderer& renderer,
             phoenix::app::LoadingScheduler* workerPool);
         // Promotes any finished async visual loads to ready (main-thread GPU
         // upload). Returns true if a new model became ready this call.
-        bool pump_visual_loads(phoenix::renderer::VulkanRenderer& renderer);
+        bool pump_visual_loads(phoenix::renderer::OpenGLRenderer& renderer);
         void update_animation(float deltaSeconds, ActiveNpc& npc, const Visual& visual);
         // Advances a patrolling NPC: rests at a waypoint, then occasionally walks
         // to the next, updating position/yaw. Sets npc.patrolMoving, which drives
@@ -286,7 +286,7 @@ namespace phoenix::character
         void despawn_distant(const phoenix::renderer::CameraView& view);
         // Under texture-slot pressure, evicts the least-recently-used visuals that
         // no active NPC references, freeing their texture slots for reuse.
-        void evict_visuals_if_needed(phoenix::renderer::VulkanRenderer& renderer);
+        void evict_visuals_if_needed(phoenix::renderer::OpenGLRenderer& renderer);
         // Frees one cached visual: returns its texture slots (refcounted) to the
         // free list and drops it from visuals_/modelIndexOffset_. Caller rebuilds.
         void evict_visual(std::uint32_t modelIndex);

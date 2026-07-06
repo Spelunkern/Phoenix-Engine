@@ -25,16 +25,15 @@ set(ENGINE_SOURCES
     src/character/monster_manager.cpp
     src/character/npc_manager.cpp
     src/character/weapon_bone_map.cpp
-    src/character/weapon_effect.cpp
-    src/effects/effect_placement.cpp
-    src/effects/effect_system.cpp
     src/platform/sdl_window.cpp
     src/renderer/dds_loader.cpp
+    src/renderer/png_loader.cpp
     src/renderer/visibility_culling.cpp
-    src/renderer/vulkan_renderer.cpp
-    src/renderer/vulkan_renderer_particles.cpp
+    src/renderer/opengl_renderer.cpp
+    src/renderer/gl/gl_loader.cpp
     src/runtime/playable_spawn.cpp
     src/runtime/phoenix_runtime.cpp
+    src/ui/app_settings.cpp
     src/ui/editor_panel.cpp
     src/ui/loading_screen.cpp
     src/ui/cpu_profiler.cpp
@@ -43,18 +42,16 @@ set(ENGINE_SOURCES
     src/world/character_loader.cpp
     src/world/dg_loader.cpp
     src/world/mani_loader.cpp
-    src/world/portal_runtime.cpp
     src/world/smod_loader.cpp
     src/world/svmap_loader.cpp
     src/world/vani_loader.cpp
     src/world/wld_loader.cpp
-    external/volk/volk.c
     external/imgui/imgui.cpp
     external/imgui/imgui_draw.cpp
     external/imgui/imgui_tables.cpp
     external/imgui/imgui_widgets.cpp
     external/imgui/backends/imgui_impl_sdl2.cpp
-    external/imgui/backends/imgui_impl_vulkan.cpp
+    external/imgui/backends/imgui_impl_opengl3.cpp
 )
 
 if(WIN32)
@@ -63,31 +60,12 @@ endif()
 
 add_executable(PhoenixEngine ${ENGINE_SOURCES})
 
-# Data tool: normalise every .dds to the engine's canonical BC3+mips format
-# using the engine's own codecs (same output the runtime conversion produced).
-add_executable(dds_normalize
-    tools/dds_normalize.cpp
-    src/renderer/dds_loader.cpp
-    src/assets/data_index.cpp
-)
-target_include_directories(dds_normalize PRIVATE src)
-set_target_properties(dds_normalize PROPERTIES
-    RUNTIME_OUTPUT_DIRECTORY "${CMAKE_SOURCE_DIR}/bin/tools"
-)
-if(MSVC)
-    target_compile_definitions(dds_normalize PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX)
-endif()
-
 target_include_directories(PhoenixEngine PRIVATE
     src
     external
     external/imgui
     external/imgui/backends
-    external/volk
-    external/Vulkan-Headers/include
 )
-
-target_compile_definitions(PhoenixEngine PRIVATE VK_NO_PROTOTYPES)
 
 # --- Platform-specific configuration ---
 
@@ -105,15 +83,16 @@ if(WIN32)
     target_link_libraries(PhoenixEngine PRIVATE
         SDL2::SDL2
         SDL2::SDL2main
+        opengl32
         dbghelp
         user32
         gdi32
+        ws2_32
     )
 
     target_compile_definitions(PhoenixEngine PRIVATE
         WIN32_LEAN_AND_MEAN
         NOMINMAX
-        IMGUI_IMPL_VULKAN_USE_VOLK
     )
 
     # Match the vcxproj warning level and suppression.
@@ -144,28 +123,6 @@ if(WIN32)
                 "$<TARGET_FILE_DIR:PhoenixEngine>/SDL2.dll"
         )
     endif()
-
-elseif(APPLE)
-    # macOS (experimental, untested in CI yet): SDL2 via Homebrew pkg-config,
-    # Vulkan via the LunarG SDK loader + MoltenVK ICD resolved at runtime by
-    # volk. The renderer auto-enables VK_KHR_portability_enumeration/_subset.
-    find_package(PkgConfig REQUIRED)
-    find_package(Threads REQUIRED)
-    pkg_check_modules(SDL2 REQUIRED IMPORTED_TARGET sdl2)
-
-    target_link_libraries(PhoenixEngine PRIVATE
-        PkgConfig::SDL2
-        Threads::Threads
-        ${CMAKE_DL_LIBS}
-    )
-
-    target_compile_options(PhoenixEngine PRIVATE -Wno-missing-field-initializers)
-
-    # Find libvulkan.dylib next to the executable or via the Vulkan SDK rpath.
-    set_target_properties(PhoenixEngine PROPERTIES
-        BUILD_RPATH "@executable_path;@executable_path/lib"
-        INSTALL_RPATH "@executable_path;@executable_path/lib"
-    )
 
 else()
     # Linux / other POSIX: SDL2 via pkg-config.

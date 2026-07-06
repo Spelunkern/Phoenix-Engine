@@ -1,7 +1,7 @@
 #pragma once
 
 #include "assets/data_index.h"
-#include "renderer/vulkan_renderer.h"
+#include "renderer/opengl_renderer.h"
 #include "world/wld_loader.h"
 
 #include <algorithm>

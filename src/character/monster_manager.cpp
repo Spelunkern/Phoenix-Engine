@@ -501,7 +501,7 @@ namespace phoenix::character
         float yaw,
         std::uint32_t textureBaseSlot,
         std::uint32_t textureSlotReserve,
-        phoenix::renderer::VulkanRenderer& renderer)
+        phoenix::renderer::OpenGLRenderer& renderer)
     {
         if (!load_catalog(dataRoot) || catalogIndex >= catalog_.size())
             return false;
@@ -540,7 +540,7 @@ namespace phoenix::character
         return true;
     }
 
-    void MonsterManager::clear(phoenix::renderer::VulkanRenderer& renderer)
+    void MonsterManager::clear(phoenix::renderer::OpenGLRenderer& renderer)
     {
         placements_.clear();
         streamedPlacements_ = 0;
@@ -640,7 +640,7 @@ namespace phoenix::character
         std::uint32_t modelIndex,
         std::shared_ptr<Visual> visual,
         std::uint32_t textureBaseSlot,
-        phoenix::renderer::VulkanRenderer& renderer)
+        phoenix::renderer::OpenGLRenderer& renderer)
     {
         for (auto& [slot, texture] : visual->pendingTextureUploads)
         {
@@ -681,7 +681,7 @@ namespace phoenix::character
         modelLastUsedFrame_.erase(modelIndex);
     }
 
-    void MonsterManager::evict_visuals_if_needed(phoenix::renderer::VulkanRenderer& renderer)
+    void MonsterManager::evict_visuals_if_needed(phoenix::renderer::OpenGLRenderer& renderer)
     {
         if (mapTextureReserve_ == 0 || visuals_.empty())
             return;
@@ -725,7 +725,7 @@ namespace phoenix::character
         const MonsterCatalogEntry& entry,
         std::uint32_t textureBaseSlot,
         std::uint32_t textureSlotReserve,
-        phoenix::renderer::VulkanRenderer& renderer)
+        phoenix::renderer::OpenGLRenderer& renderer)
     {
         if (auto it = visuals_.find(entry.modelIndex); it != visuals_.end())
             return &it->second;
@@ -939,7 +939,7 @@ namespace phoenix::character
         return visualPtr;
     }
 
-    bool MonsterManager::pump_visual_loads(phoenix::renderer::VulkanRenderer& renderer)
+    bool MonsterManager::pump_visual_loads(phoenix::renderer::OpenGLRenderer& renderer)
     {
         for (auto it = visualLoads_.begin(); it != visualLoads_.end(); ++it)
         {
@@ -967,7 +967,7 @@ namespace phoenix::character
         float halfMap,
         std::uint32_t textureBaseSlot,
         std::uint32_t textureSlotReserve,
-        phoenix::renderer::VulkanRenderer& renderer)
+        phoenix::renderer::OpenGLRenderer& renderer)
     {
         placements_.clear();
         streamedPlacements_ = 0;
@@ -1045,7 +1045,7 @@ namespace phoenix::character
 
     void MonsterManager::stream_map_monsters(
         const phoenix::renderer::CameraView& view,
-        phoenix::renderer::VulkanRenderer& renderer,
+        phoenix::renderer::OpenGLRenderer& renderer,
         phoenix::app::LoadingScheduler* workerPool)
     {
         pump_visual_loads(renderer);
@@ -1241,7 +1241,7 @@ namespace phoenix::character
                 - visual.localGroundY * monster.scale;
     }
 
-    void MonsterManager::clear_manual(phoenix::renderer::VulkanRenderer& renderer)
+    void MonsterManager::clear_manual(phoenix::renderer::OpenGLRenderer& renderer)
     {
         const auto before = active_.size();
         active_.erase(std::remove_if(active_.begin(), active_.end(),
@@ -1315,7 +1315,7 @@ namespace phoenix::character
             (despawnedAreas <= streamedPlacements_) ? streamedPlacements_ - despawnedAreas : 0;
     }
 
-    void MonsterManager::rebuild_render_mesh(phoenix::renderer::VulkanRenderer& renderer)
+    void MonsterManager::rebuild_render_mesh(phoenix::renderer::OpenGLRenderer& renderer)
     {
         // ONE shared bind mesh per unique model (not per entity). Every monster
         // of a model draws this geometry, instanced — so memory and draw calls
@@ -1515,7 +1515,7 @@ namespace phoenix::character
     void MonsterManager::update(
         float deltaSeconds,
         const phoenix::renderer::CameraView& view,
-        phoenix::renderer::VulkanRenderer& renderer,
+        phoenix::renderer::OpenGLRenderer& renderer,
         phoenix::app::LoadingScheduler* workerPool)
     {
         // Stream in map (.svmap) mobs that entered camera range, loading visuals
@@ -1663,11 +1663,19 @@ namespace phoenix::character
         // Group visible entities by model into contiguous instance blocks, and
         // emit one instanced batch per (model, part): a single draw covers all
         // entities of a model, each reading its own transform + palette base.
+        // Single pass: bucket by model while iterating vis once, instead of a
+        // dedup scan followed by an O(models) rescan of the whole vis list.
         static std::vector<std::uint32_t> modelOrder;
+        static std::unordered_map<std::uint32_t, std::vector<phoenix::renderer::ObjectInstance>> modelBuckets;
         modelOrder.clear();
+        modelBuckets.clear();
         for (const auto& v : vis)
-            if (std::find(modelOrder.begin(), modelOrder.end(), v.model) == modelOrder.end())
+        {
+            auto [it, inserted] = modelBuckets.try_emplace(v.model);
+            if (inserted)
                 modelOrder.push_back(v.model);
+            it->second.push_back(v.inst);
+        }
         for (const std::uint32_t model : modelOrder)
         {
             const auto geomIt = modelIndexOffset_.find(model);
@@ -1675,11 +1683,10 @@ namespace phoenix::character
             if (geomIt == modelIndexOffset_.end() || visualIt == visuals_.end())
                 continue;
             const std::uint32_t indexOffset = geomIt->second;
+            const auto& bucket = modelBuckets[model];
             const auto firstInstance = static_cast<std::uint32_t>(instances_.size());
-            for (const auto& v : vis)
-                if (v.model == model)
-                    instances_.push_back(v.inst);
-            const auto count = static_cast<std::uint32_t>(instances_.size()) - firstInstance;
+            instances_.insert(instances_.end(), bucket.begin(), bucket.end());
+            const auto count = static_cast<std::uint32_t>(bucket.size());
             for (auto batch : visualIt->second.batches)
             {
                 batch.firstIndex += indexOffset;

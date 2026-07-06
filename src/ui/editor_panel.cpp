@@ -9,7 +9,6 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
-#include <fstream>
 #include <string>
 #include <utility>
 #include <vector>
@@ -24,7 +23,7 @@ namespace phoenix::ui
 
 // === moved bodies appended below by build step ===
     float apply_renderer_fog(
-        phoenix::renderer::VulkanRenderer& renderer,
+        phoenix::renderer::OpenGLRenderer& renderer,
         const phoenix::runtime::PhoenixRuntime& runtime,
         bool fogEnabled,
         float viewDistance,
@@ -158,59 +157,10 @@ namespace phoenix::ui
         return best;
     }
 
-    void apply_renderer_water_style(
-        phoenix::renderer::VulkanRenderer& renderer,
-        WaterMode waterMode)
-    {
-        const float* rgba = nullptr;
-        static constexpr float natural[4]{ 0.10f, 0.18f, 0.22f, 0.62f };
-        static constexpr float ocean[4]{ 0.02f, 0.20f, 0.42f, 0.66f };
-        static constexpr float tropical[4]{ 0.02f, 0.48f, 0.62f, 0.54f };
-        static constexpr float river[4]{ 0.07f, 0.25f, 0.30f, 0.58f };
-        static constexpr float lake[4]{ 0.03f, 0.24f, 0.36f, 0.60f };
-        static constexpr float cold[4]{ 0.14f, 0.34f, 0.46f, 0.54f };
-        static constexpr float swamp[4]{ 0.12f, 0.24f, 0.14f, 0.62f };
-
-        switch (waterMode)
-        {
-        case WaterMode::Ocean: rgba = ocean; break;
-        case WaterMode::Tropical: rgba = tropical; break;
-        case WaterMode::River: rgba = river; break;
-        case WaterMode::Lake: rgba = lake; break;
-        case WaterMode::Cold: rgba = cold; break;
-        case WaterMode::Swamp: rgba = swamp; break;
-        case WaterMode::Natural:
-        default: rgba = natural; break;
-        }
-        renderer.set_water_style(rgba);
-    }
-
-    namespace
-    {
-        constexpr const char* kDisplaySettingsFile = "display.ini";
-    }
-
-    DisplaySettings load_display_settings(const std::filesystem::path& executableDir)
-    {
-        DisplaySettings settings{};
-        std::ifstream f(executableDir / kDisplaySettingsFile);
-        int characterShadow = settings.characterShadow ? 1 : 0;
-        if (f) f >> characterShadow;
-        settings.characterShadow = characterShadow != 0;
-        return settings;
-    }
-
-    void save_display_settings(const std::filesystem::path& executableDir, const DisplaySettings& settings)
-    {
-        std::ofstream f(executableDir / kDisplaySettingsFile);
-        if (f) f << (settings.characterShadow ? 1 : 0);
-    }
-
     UnifiedPanelResult draw_editor_panel(
         const phoenix::runtime::PhoenixRuntime& runtime,
-        phoenix::renderer::VulkanRenderer& renderer,
+        phoenix::renderer::OpenGLRenderer& renderer,
         bool& fogEnabled,
-        bool& showCollisionDebug,
         bool& showCharacterShadow,
         bool& playMapSounds,
         bool& playMapMusic,
@@ -218,17 +168,12 @@ namespace phoenix::ui
         int& selectedMapIndex,
         float& viewDistance,
         WeatherMode& weatherMode,
-        WaterMode& waterMode,
         const std::vector<CharacterOption>& characterOptions,
         int& selectedCharacterOption,
         phoenix::character::CharacterAppearance& appearance,
         phoenix::character::CharacterSystem& characterSystem,
-        phoenix::character::WeaponEffect& weaponEffect,
-        phoenix::effects::EffectManager& effectManager,
         bool botControlsAvailable,
         std::size_t botCount,
-        bool& botEffectsEnabled,
-        bool& botWeaponAurasEnabled,
         float& botViewDistance,
         const std::vector<phoenix::character::NpcCatalogEntry>& npcCatalog,
         std::size_t npcActiveCount,
@@ -238,11 +183,7 @@ namespace phoenix::ui
         std::size_t monsterActiveCount,
         const std::string& monsterStatus,
         float& monsterViewDistance,
-        bool assetsReady,
-        float cameraX,
-        float cameraY,
-        float cameraZ,
-        float cameraYaw)
+        bool assetsReady)
     {
         UnifiedPanelResult result{};
         const auto prevAppearance = appearance;
@@ -253,7 +194,6 @@ namespace phoenix::ui
             Map,
             Display,
             Sound,
-            Effects,
             Character,
             Vehicle,
             Bots,
@@ -285,13 +225,12 @@ namespace phoenix::ui
         sectionButton(Section::Map, "Map##nav"); ImGui::SameLine();
         sectionButton(Section::Display, "Display##nav"); ImGui::SameLine();
         sectionButton(Section::Sound, "Sound##nav"); ImGui::SameLine();
-        sectionButton(Section::Effects, "Effects##nav"); ImGui::SameLine();
         sectionButton(Section::Animations, "Animations##nav");
         sectionButton(Section::Character, "Character##nav"); ImGui::SameLine();
         sectionButton(Section::Vehicle, "Vehicle##nav"); ImGui::SameLine();
         sectionButton(Section::Bots, "Bots##nav"); ImGui::SameLine();
         sectionButton(Section::NPCs, "NPCs##nav"); ImGui::SameLine();
-        sectionButton(Section::Monsters, "Monsters##nav");
+        sectionButton(Section::Monsters, "Monsters##nav"); ImGui::SameLine();
         sectionButton(Section::Emotes, "Emotes##nav");
         ImGui::Separator();
 
@@ -332,23 +271,9 @@ namespace phoenix::ui
             if (ImGui::Combo("Sky", &weatherIndex, weatherItems, IM_ARRAYSIZE(weatherItems)))
                 weatherMode = static_cast<WeatherMode>(std::clamp(weatherIndex, 0, 8));
             result.weatherChanged = weatherMode != previousWeatherMode;
-
-            const WaterMode previousWaterMode = waterMode;
-            const char* waterItems[] = { "Natural", "Ocean", "Tropical", "River", "Lake", "Cold", "Swamp" };
-            int waterIndex = static_cast<int>(waterMode);
-            ImGui::SetNextItemWidth(180.0f);
-            if (ImGui::Combo("Water", &waterIndex, waterItems, IM_ARRAYSIZE(waterItems)))
-            {
-                waterMode = static_cast<WaterMode>(std::clamp(waterIndex, 0, 6));
-                apply_renderer_water_style(renderer, waterMode);
-            }
-            result.waterChanged = waterMode != previousWaterMode;
         }
         else if (activeSection == Section::Display)
         {
-            const bool prevCollision = showCollisionDebug;
-            ImGui::Checkbox("Collision", &showCollisionDebug);
-            result.debugGizmosChanged = prevCollision != showCollisionDebug;
             ImGui::Checkbox("Character shadow", &showCharacterShadow);
         }
         else if (activeSection == Section::Sound)
@@ -357,123 +282,6 @@ namespace phoenix::ui
             ImGui::Checkbox("Play Music", &playMapMusic);
             ImGui::SetNextItemWidth(220.0f);
             ImGui::SliderFloat("Volume", &masterVolume, 0.0f, 1.0f, "%.2f");
-        }
-        else if (activeSection == Section::Effects)
-        {
-            ImGui::TextDisabled("Effects spawner");
-            {
-                using namespace phoenix::effects;
-                const auto& catalog = preset_catalog();
-                const int categoryCount = static_cast<int>(EffectCategory::Count);
-
-                static int catFilter = 0;
-                static int prevCatFilter = 0;
-                const char* curCat = (catFilter == 0)
-                    ? "All"
-                    : category_name(static_cast<EffectCategory>(catFilter - 1));
-                ImGui::SetNextItemWidth(120.0f);
-                if (ImGui::BeginCombo("Category##effectSpawner", curCat))
-                {
-                    if (ImGui::Selectable("All", catFilter == 0))
-                        catFilter = 0;
-                    for (int ci = 0; ci < categoryCount; ++ci)
-                    {
-                        const bool sel = catFilter == ci + 1;
-                        if (ImGui::Selectable(category_name(static_cast<EffectCategory>(ci)), sel))
-                            catFilter = ci + 1;
-                        if (sel)
-                            ImGui::SetItemDefaultFocus();
-                    }
-                    ImGui::EndCombo();
-                }
-
-                std::vector<int> filtered;
-                filtered.reserve(catalog.size());
-                for (int i = 0; i < static_cast<int>(catalog.size()); ++i)
-                    if (catFilter == 0 || static_cast<int>(catalog[static_cast<std::size_t>(i)].category) == catFilter - 1)
-                        filtered.push_back(i);
-
-                static int selInFiltered = 0;
-                if (catFilter != prevCatFilter)
-                {
-                    selInFiltered = 0;
-                    prevCatFilter = catFilter;
-                }
-
-                float sx = cameraX;
-                float sy = cameraY;
-                float sz = cameraZ;
-                if (botControlsAvailable && characterSystem.ready())
-                {
-                    sx = characterSystem.world_x();
-                    sy = characterSystem.world_y();
-                    sz = characterSystem.world_z();
-                }
-
-                if (filtered.empty())
-                {
-                    ImGui::TextDisabled("(no effects in category)");
-                }
-                else
-                {
-                    selInFiltered = std::clamp(selInFiltered, 0, static_cast<int>(filtered.size()) - 1);
-                    const auto curName = catalog[static_cast<std::size_t>(filtered[static_cast<std::size_t>(selInFiltered)])].name.c_str();
-                    ImGui::SetNextItemWidth(200.0f);
-                    if (ImGui::BeginCombo("Effect##effectSpawner", curName))
-                    {
-                        for (int k = 0; k < static_cast<int>(filtered.size()); ++k)
-                        {
-                            const bool sel = k == selInFiltered;
-                            const auto name = catalog[static_cast<std::size_t>(filtered[static_cast<std::size_t>(k)])].name.c_str();
-                            if (ImGui::Selectable(name, sel))
-                                selInFiltered = k;
-                            if (sel)
-                                ImGui::SetItemDefaultFocus();
-                        }
-                        ImGui::EndCombo();
-                    }
-
-                    const auto& def = catalog[static_cast<std::size_t>(filtered[static_cast<std::size_t>(selInFiltered)])];
-                    const float fx = std::sin(cameraYaw);
-                    const float fz = std::cos(cameraYaw);
-                    if (def.projectile)
-                    {
-                        if (ImGui::Button("Cast (forward)##effectSpawner"))
-                        {
-                            const float vel[3] = { fx * def.projectileSpeed, 0.0f, fz * def.projectileSpeed };
-                            const float travel = def.projectileRange / std::max(0.1f, def.projectileSpeed);
-                            effectManager.spawn(def,
-                                EffectAnchor::at(sx + fx * 0.6f, sy + 1.0f, sz + fz * 0.6f), vel, travel);
-                        }
-                    }
-                    else
-                    {
-                        if (ImGui::Button("Spawn at character##effectSpawner"))
-                            effectManager.spawn(def, EffectAnchor::at(sx, sy, sz));
-                        ImGui::SameLine();
-                        if (ImGui::Button("Spawn ahead##effectSpawner"))
-                            effectManager.spawn(def, EffectAnchor::at(sx + fx * 4.0f, sy, sz + fz * 4.0f));
-                    }
-                }
-
-                if (ImGui::Button("Clear all effects##effectSpawner"))
-                    effectManager.clear();
-                ImGui::Text("Active: %zu  |  Library: %zu", effectManager.active_count(), catalog.size());
-                ImGui::TextDisabled("G: impact at weapon/character");
-            }
-            ImGui::Separator();
-            ImGui::TextDisabled("Weapon aura");
-            using WE = phoenix::character::WeaponEffect;
-            ImGui::Checkbox("Enabled", &weaponEffect.enabled());
-
-            int elementIdx = static_cast<int>(weaponEffect.element());
-            const char* elementNames[WE::kElementCount] = { "Fire", "Wind", "Earth", "Water" };
-            ImGui::SetNextItemWidth(120.0f);
-            if (ImGui::Combo("Element", &elementIdx, elementNames, WE::kElementCount))
-                weaponEffect.set_element(static_cast<WE::Element>(elementIdx));
-
-            if (!characterSystem.weapon_attachment().valid)
-                ImGui::TextDisabled("Equip a weapon to anchor the aura.");
         }
         else if (activeSection == Section::Character)
         {
@@ -717,8 +525,6 @@ namespace phoenix::ui
                     result.botSpawnCount = 100;
                 if (ImGui::Button("Clear All", ImVec2(195.0f, 0.0f)))
                     result.clearBots = true;
-                ImGui::Checkbox("Bot Effects", &botEffectsEnabled);
-                ImGui::Checkbox("Weapon Auras", &botWeaponAurasEnabled);
                 ImGui::SetNextItemWidth(180.0f);
                 ImGui::SliderFloat("View dist", &botViewDistance, 20.0f, 300.0f, "%.0f m");
             }

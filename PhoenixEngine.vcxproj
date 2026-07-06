@@ -43,9 +43,9 @@
       <WarningLevel>Level4</WarningLevel>
       <DisableSpecificWarnings>4505;%(DisableSpecificWarnings)</DisableSpecificWarnings>
       <SDLCheck>true</SDLCheck>
-      <PreprocessorDefinitions>WIN32_LEAN_AND_MEAN;NOMINMAX;IMGUI_IMPL_VULKAN_USE_VOLK;_DEBUG;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <PreprocessorDefinitions>WIN32_LEAN_AND_MEAN;NOMINMAX;_DEBUG;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <LanguageStandard>stdcpplatest</LanguageStandard>
-      <AdditionalIncludeDirectories>$(ProjectDir)src;$(ProjectDir)external;$(ProjectDir)external\imgui;$(ProjectDir)external\imgui\backends;$(ProjectDir)external\volk;$(ProjectDir)external\Vulkan-Headers\include;$(ProjectDir)external\SDL2\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>$(ProjectDir)src;$(ProjectDir)external;$(ProjectDir)external\imgui;$(ProjectDir)external\imgui\backends;$(ProjectDir)external\SDL2\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
     </ClCompile>
     <Link>
       <SubSystem>Windows</SubSystem>
@@ -60,9 +60,9 @@
       <SDLCheck>true</SDLCheck>
       <FunctionLevelLinking>true</FunctionLevelLinking>
       <IntrinsicFunctions>true</IntrinsicFunctions>
-      <PreprocessorDefinitions>WIN32_LEAN_AND_MEAN;NOMINMAX;IMGUI_IMPL_VULKAN_USE_VOLK;NDEBUG;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <PreprocessorDefinitions>WIN32_LEAN_AND_MEAN;NOMINMAX;NDEBUG;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <LanguageStandard>stdcpplatest</LanguageStandard>
-      <AdditionalIncludeDirectories>$(ProjectDir)src;$(ProjectDir)external;$(ProjectDir)external\imgui;$(ProjectDir)external\imgui\backends;$(ProjectDir)external\volk;$(ProjectDir)external\Vulkan-Headers\include;$(ProjectDir)external\SDL2\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>$(ProjectDir)src;$(ProjectDir)external;$(ProjectDir)external\imgui;$(ProjectDir)external\imgui\backends;$(ProjectDir)external\SDL2\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
     </ClCompile>
     <Link>
       <SubSystem>Windows</SubSystem>
@@ -92,13 +92,12 @@
     <ClCompile Include="src\assets\data_index.cpp" />
     <ClCompile Include="src\diagnostics\crash_reporter.cpp" />
     <ClCompile Include="src\diagnostics\performance_diagnostics.cpp" />
-    <ClCompile Include="src\effects\effect_placement.cpp" />
     <ClCompile Include="src\runtime\phoenix_runtime.cpp" />
     <ClCompile Include="src\platform\sdl_window.cpp" />
     <ClCompile Include="src\renderer\dds_loader.cpp" />
+    <ClCompile Include="src\renderer\png_loader.cpp" />
     <ClCompile Include="src\renderer\visibility_culling.cpp" />
-    <ClCompile Include="src\renderer\vulkan_renderer.cpp" />
-    <ClCompile Include="src\renderer\vulkan_renderer_particles.cpp" />
+    <ClCompile Include="src\renderer\opengl_renderer.cpp" />
     <ClCompile Include="src\runtime\playable_spawn.cpp" />
     <ClCompile Include="src\world\dg_loader.cpp" />
     <ClCompile Include="src\world\smod_loader.cpp" />
@@ -106,24 +105,22 @@
     <ClCompile Include="src\world\vani_loader.cpp" />
     <ClCompile Include="src\world\mani_loader.cpp" />
     <ClCompile Include="src\world\wld_loader.cpp" />
-    <ClCompile Include="src\world\portal_runtime.cpp" />
     <ClCompile Include="src\world\character_loader.cpp" />
     <ClCompile Include="src\character\character_system.cpp" />
     <ClCompile Include="src\character\weapon_bone_map.cpp" />
-    <ClCompile Include="src\character\weapon_effect.cpp" />
-    <ClCompile Include="src\effects\effect_system.cpp" />
+    <ClCompile Include="src\ui\app_settings.cpp" />
     <ClCompile Include="src\ui\editor_panel.cpp" />
     <ClCompile Include="src\ui\loading_screen.cpp" />
     <ClCompile Include="src\ui\cpu_profiler.cpp" />
     <ClCompile Include="src\ui\perf_hud.cpp" />
     <ClCompile Include="src\ui\weather_overlay.cpp" />
-    <ClCompile Include="external\volk\volk.c" />
+    <ClCompile Include="src\renderer\gl\gl_loader.cpp" />
     <ClCompile Include="external\imgui\imgui.cpp" />
     <ClCompile Include="external\imgui\imgui_draw.cpp" />
     <ClCompile Include="external\imgui\imgui_tables.cpp" />
     <ClCompile Include="external\imgui\imgui_widgets.cpp" />
     <ClCompile Include="external\imgui\backends\imgui_impl_sdl2.cpp" />
-    <ClCompile Include="external\imgui\backends\imgui_impl_vulkan.cpp" />
+    <ClCompile Include="external\imgui\backends\imgui_impl_opengl3.cpp" />
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="src\assets\data_index.h" />
@@ -140,14 +137,14 @@
     <ClInclude Include="src\character\npc_manager.h" />
     <ClInclude Include="src\diagnostics\crash_reporter.h" />
     <ClInclude Include="src\diagnostics\performance_diagnostics.h" />
-    <ClInclude Include="src\effects\effect_placement.h" />
     <ClInclude Include="src\runtime\phoenix_runtime.h" />
     <ClInclude Include="src\runtime\playable_spawn.h" />
     <ClInclude Include="src\platform\sdl_window.h" />
     <ClInclude Include="src\renderer\dds_loader.h" />
+    <ClInclude Include="src\renderer\png_loader.h" />
     <ClInclude Include="src\renderer\visibility_culling.h" />
-    <ClInclude Include="src\renderer\vulkan_renderer.h" />
-    <ClInclude Include="src\renderer\vulkan_renderer_internal.h" />
+    <ClInclude Include="src\renderer\opengl_renderer.h" />
+    <ClInclude Include="src\renderer\opengl_renderer_internal.h" />
     <ClInclude Include="src\world\dg_loader.h" />
     <ClInclude Include="src\world\smod_loader.h" />
     <ClInclude Include="src\world\svmap_loader.h" />
@@ -155,22 +152,19 @@
     <ClInclude Include="src\world\water_constants.h" />
     <ClInclude Include="src\world\mani_loader.h" />
     <ClInclude Include="src\world\wld_loader.h" />
-    <ClInclude Include="src\world\portal_runtime.h" />
     <ClInclude Include="src\world\character_loader.h" />
+    <ClInclude Include="src\ui\app_settings.h" />
     <ClInclude Include="src\ui\editor_panel.h" />
     <ClInclude Include="src\ui\loading_screen.h" />
     <ClInclude Include="src\ui\cpu_profiler.h" />
     <ClInclude Include="src\ui\perf_hud.h" />
-    <ClInclude Include="src\ui\perf_hud_icons.h" />
     <ClInclude Include="src\ui\weather_overlay.h" />
     <ClInclude Include="src\character\character_system.h" />
     <ClInclude Include="src\character\weapon_bone_map.h" />
-    <ClInclude Include="src\character\weapon_effect.h" />
-    <ClInclude Include="src\effects\effect_system.h" />
-    <ClInclude Include="external\volk\volk.h" />
+    <ClInclude Include="src\renderer\gl\gl_loader.h" />
     <ClInclude Include="external\imgui\imgui.h" />
     <ClInclude Include="external\imgui\backends\imgui_impl_sdl2.h" />
-    <ClInclude Include="external\imgui\backends\imgui_impl_vulkan.h" />
+    <ClInclude Include="external\imgui\backends\imgui_impl_opengl3.h" />
   </ItemGroup>
   <ItemGroup>
     <ResourceCompile Include="res\phoenix.rc" />
