@@ -5,30 +5,48 @@ out vec4 outColor;
 
 CAMERA_BLOCK
 
+// Same subtle screen-space vignette as terrain.frag/static_object.frag/
+// skinned_character.frag — kept as a shared shape so the sky's corners
+// darken consistently with whatever's drawn in front of it.
+vec3 applyVignette(vec3 color)
+{
+    vec2 screenUv = gl_FragCoord.xy * camera.screenInfo.zw;
+    float vignette = 1.0 - smoothstep(0.4, 1.0, length(screenUv - 0.5) * 1.35);
+    return color * mix(0.55, 1.0, vignette);
+}
+
+// Interleaved-gradient-noise dither (same as the other shaders) — the sky's
+// smooth gradient bands are exactly the kind of slow ramp that shows 8-bit
+// banding most, so this matters here more than anywhere else.
+float ditherNoise(vec2 fragCoord)
+{
+    return fract(52.9829189 * fract(dot(fragCoord, vec2(0.06711056, 0.00583715))));
+}
+
+vec3 finalizeColor(vec3 color)
+{
+    color = applyVignette(color);
+    color += (ditherNoise(gl_FragCoord.xy) - 0.5) / 255.0;
+    return color;
+}
+
 void main()
 {
-    vec2 ndc = vUv * 2.0 - 1.0;
-    ndc.y = -ndc.y;
+    // Gradient bands stay screen-space static, driven only by screen
+    // position, never by camera yaw/pitch — so the backdrop itself never
+    // shifts as the character turns or the camera orbits/tilts. The sun/
+    // moon/stars are NOT drawn here: reconstructing a world-space ray from
+    // screen NDC + yaw/pitch (tried for both, at different points) reacts to
+    // camera rotation inconsistently with how every other in-world object is
+    // projected, and has no depth awareness (so it draws through
+    // water/terrain instead of being occluded by it). They're real
+    // camera-relative billboards rendered through the normal effect-particle
+    // pipeline instead — see CelestialSystem and StarField — which reuses
+    // the exact same, already-correct camera transform (and real depth
+    // testing) as everything else in the scene.
+    float up = clamp(1.0 - vUv.y, 0.0, 1.0);
+    float horizon = up;
 
-    float yaw = camera.positionYaw.w;
-    float pitch = camera.pitchAspectFov.x;
-    float aspect = camera.pitchAspectFov.y;
-    float tanHalfFov = camera.pitchAspectFov.z;
-
-    vec3 cameraDir = normalize(vec3(ndc.x * tanHalfFov * aspect, ndc.y * tanHalfFov, 1.0));
-    float cy = cos(yaw);
-    float sy = sin(yaw);
-    float cp = cos(pitch);
-    float sp = sin(pitch);
-
-    float yawZ = -sp * cameraDir.y + cp * cameraDir.z;
-    vec3 worldDir = normalize(vec3(
-        cy * cameraDir.x + sy * yawZ,
-        cp * cameraDir.y + sp * cameraDir.z,
-        -sy * cameraDir.x + cy * yawZ));
-
-    float skyAmount = clamp(worldDir.y, 0.0, 1.0);
-    float horizon = clamp(worldDir.y * 3.0 + 0.5, 0.0, 1.0);
     float weatherStyle = round(camera.skyTuning0.w);
     bool stormSky = weatherStyle > 0.5 && weatherStyle < 1.5;
     bool snowSky = weatherStyle >= 1.5 && weatherStyle < 2.5;
@@ -43,13 +61,11 @@ void main()
     float hasWorldSky = camera.fogColorHasSky.a;
     if (hasWorldSky > 0.5)
     {
-        vec3 sunDir = normalize(vec3(-0.45, 0.85, 0.77));
-        float sunDot = clamp(dot(worldDir, sunDir), 0.0, 1.0);
-        float up = clamp(worldDir.y, 0.0, 1.0);
-
-        vec3 horizonColor = mix(vec3(0.74, 0.83, 0.94), worldFog * 1.14, 0.35);
-        vec3 midColor = vec3(0.38, 0.57, 0.86);
-        vec3 zenithColor = vec3(0.10, 0.23, 0.52);
+        // A bit more saturated/differentiated than a flat pale-to-deep-blue
+        // ramp, for a livelier default daytime sky.
+        vec3 horizonColor = mix(vec3(0.80, 0.86, 0.92), worldFog * 1.14, 0.35);
+        vec3 midColor = vec3(0.30, 0.56, 0.90);
+        vec3 zenithColor = vec3(0.06, 0.22, 0.58);
         if (stormSky) { horizonColor = vec3(0.43,0.45,0.48); midColor = vec3(0.30,0.33,0.37); zenithColor = vec3(0.18,0.20,0.24); }
         else if (snowSky) { horizonColor = vec3(0.72,0.74,0.76); midColor = vec3(0.58,0.62,0.66); zenithColor = vec3(0.46,0.50,0.55); }
         else if (sunsetSky) { horizonColor = vec3(1.00,0.42,0.20); midColor = vec3(0.78,0.30,0.36); zenithColor = vec3(0.16,0.12,0.35); }
@@ -59,44 +75,23 @@ void main()
         else if (afternoonSky) { horizonColor = vec3(0.82,0.78,0.68); midColor = vec3(0.48,0.58,0.78); zenithColor = vec3(0.18,0.32,0.62); }
         else if (overcastSky) { horizonColor = vec3(0.58,0.60,0.62); midColor = vec3(0.48,0.50,0.53); zenithColor = vec3(0.38,0.40,0.44); }
 
-        vec3 color = mix(horizonColor, midColor, smoothstep(0.02, 0.45, up));
-        color = mix(color, zenithColor, smoothstep(0.42, 1.0, up));
+        // Dialed in live via the (now removed) "Sky debug" panel.
+        vec3 color = mix(horizonColor, midColor, smoothstep(1.0, 0.0, up));
+        color = mix(color, zenithColor, smoothstep(0.2, 0.0, up));
 
-        vec3 lightDir = sunDir;
-        if (sunsetSky) lightDir = normalize(vec3(-0.75, 0.12, 0.64));
-        else if (nightSky) lightDir = normalize(vec3(0.45, 0.75, 0.82));
-        else if (dawnSky) lightDir = normalize(vec3(0.80, 0.08, -0.58));
-        else if (duskSky) lightDir = normalize(vec3(-0.80, 0.06, 0.58));
-        else if (afternoonSky) lightDir = normalize(vec3(-0.60, 0.75, 0.70));
-        sunDot = clamp(dot(worldDir, lightDir), 0.0, 1.0);
-
-        bool warmSun = sunsetSky || dawnSky || duskSky;
-        float sunCore = pow(sunDot, warmSun ? 520.0 : 950.0);
-        float sunGlow = pow(sunDot, warmSun ? 8.0 : 16.0) * (warmSun ? 0.62 : 0.34)
-                      + pow(sunDot, 4.0) * (warmSun ? 0.20 : 0.10);
-        float sunStrength = stormSky ? 0.08 : (snowSky ? 0.18 : (nightSky ? 0.0 : (overcastSky ? 0.05 : (duskSky ? 0.72 : 1.0))));
-        vec3 sunTint = vec3(1.0, 0.74, 0.42);
-        vec3 sunCoreTint = vec3(1.0, 0.88, 0.58);
-        if (dawnSky) { sunTint = vec3(1.0, 0.58, 0.32); sunCoreTint = vec3(1.0, 0.82, 0.48); }
-        else if (duskSky) { sunTint = vec3(0.92, 0.38, 0.28); sunCoreTint = vec3(1.0, 0.62, 0.38); }
-        else if (afternoonSky) { sunTint = vec3(1.0, 0.82, 0.52); sunCoreTint = vec3(1.0, 0.92, 0.72); }
-        color += (sunTint * sunGlow + sunCoreTint * sunCore) * sunStrength;
-
-        float horizonBlend = clamp((0.12 - worldDir.y) / 0.18, 0.0, 1.0);
-        color = mix(color, worldFog, horizonBlend * 0.35);
         if (camera.positionYaw.y < 0.0)
         {
             vec3 waterTint = vec3(0.04, 0.16, 0.38);
             float depth = clamp((0.0 - camera.positionYaw.y) * 0.12, 0.0, 1.0);
             color = mix(color * vec3(0.82, 0.92, 1.02), waterTint, 0.18 + depth * 0.22);
         }
-        outColor = vec4(color, 1.0);
+        outColor = vec4(finalizeColor(color), 1.0);
         return;
     }
 
-    vec3 zenith = vec3(0.16, 0.28, 0.58);
-    vec3 midSky = vec3(0.38, 0.55, 0.80);
-    vec3 horizonColor = vec3(0.68, 0.80, 0.92);
+    vec3 zenith = vec3(0.10, 0.26, 0.60);
+    vec3 midSky = vec3(0.30, 0.56, 0.86);
+    vec3 horizonColor = vec3(0.72, 0.82, 0.92);
     if (stormSky) { zenith = vec3(0.18,0.20,0.24); midSky = vec3(0.30,0.33,0.37); horizonColor = vec3(0.43,0.45,0.48); }
     else if (snowSky) { zenith = vec3(0.46,0.50,0.55); midSky = vec3(0.58,0.62,0.66); horizonColor = vec3(0.72,0.74,0.76); }
     else if (sunsetSky) { zenith = vec3(0.16,0.12,0.35); midSky = vec3(0.78,0.30,0.36); horizonColor = vec3(1.00,0.42,0.20); }
@@ -127,5 +122,5 @@ void main()
         color = mix(color * vec3(0.82, 0.92, 1.02), waterTint, 0.18 + depth * 0.22);
     }
 
-    outColor = vec4(color, 1.0);
+    outColor = vec4(finalizeColor(color), 1.0);
 }

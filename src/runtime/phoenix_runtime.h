@@ -2,6 +2,8 @@
 
 #include "assets/data_index.h"
 #include "renderer/opengl_renderer.h"
+#include "world/eft_loader.h"
+#include "world/eft_mesh_loader.h"
 #include "world/wld_loader.h"
 
 #include <algorithm>
@@ -74,6 +76,26 @@ namespace phoenix::runtime
         std::vector<std::filesystem::path> framePaths;
     };
 
+    // World-space placement of one map effect (from WldAnalysis::effectInstances).
+    // right/up/forward are an orthonormal basis derived the same way as
+    // SceneObject's (right = up x forward), used by baseAxis-locked effect
+    // components (see EffectParticleSystem) instead of a camera-facing billboard.
+    struct EffectPlacement
+    {
+        float position[3]{};
+        float right[3]{};
+        float up[3]{};
+        float forward[3]{};
+        // Index into PhoenixRuntimeState::effectLibrary.sequences — not
+        // .effects directly. A world-placed "effect" (torch, brazier,
+        // fountain splash...) is an authored named sequence combining
+        // several raw particle components (flame + embers + smoke, each with
+        // its own start delay), the same way skills reference sequences by
+        // name rather than a single component. EffectParticleSystem expands
+        // each placement into one emitter per sequence record.
+        std::int32_t sequenceIndex{ -1 };
+    };
+
     struct PhoenixRuntimeState
     {
         std::filesystem::path dataRoot;
@@ -93,6 +115,16 @@ namespace phoenix::runtime
         WaterAnimation waterAnimation;
         std::size_t selectedWorldMap{};
         std::string status;
+
+        // Map effects (.EFT), resolved from world.effectFileName/effectInstances.
+        phoenix::world::EftLibrary effectLibrary;
+        // Parallel to effectLibrary.textureNames: resolved asset-texture-array
+        // layer for each, or 0xFFFFFFFF if the texture couldn't be resolved.
+        std::vector<std::uint32_t> effectTextureLayers;
+        // Parallel to effectLibrary.meshNames: the referenced .3DE mesh (parsed
+        // = false, empty vertices/faces, if missing/unresolvable).
+        std::vector<phoenix::world::EftMesh> effectMeshes;
+        std::vector<EffectPlacement> effectPlacements;
     };
 
     struct CameraInput
@@ -333,8 +365,38 @@ namespace phoenix::runtime
         const std::vector<AudioAsset>& audio_assets() const { return state_.audioAssets; }
         std::size_t selected_world_map() const { return state_.selectedWorldMap; }
         const PhoenixRuntimeState& state() const { return state_; }
+        const phoenix::world::EftLibrary& effect_library() const { return state_.effectLibrary; }
+        const std::vector<std::uint32_t>& effect_texture_layers() const { return state_.effectTextureLayers; }
+        const std::vector<phoenix::world::EftMesh>& effect_meshes() const { return state_.effectMeshes; }
+        const std::vector<EffectPlacement>& effect_placements() const { return state_.effectPlacements; }
         float terrain_height_at(float worldX, float worldZ) const { return terrain_height(worldX, worldZ); }
         WorldCollisionMesh build_collision_mesh() const;
+
+        struct LoadedEffectLibrary
+        {
+            phoenix::world::EftLibrary library;
+            // Parallel to library.textureNames: resolved file path for each
+            // (empty = unresolved). Deliberately NOT registered into the
+            // shared asset-texture array — the map's own linked effect file
+            // uses that array (see load_effect_library()), but a file browsed
+            // from the debug panel is meant to be loaded fully on demand, so
+            // the caller decides how/where to upload these (e.g. the
+            // "Effects" panel's own dedicated texture array in main.cpp).
+            std::vector<std::filesystem::path> texturePaths;
+            // Parallel to library.meshNames.
+            std::vector<phoenix::world::EftMesh> meshes;
+        };
+
+        // Every .eft/.ef2/.ef3 file directly under data/effects/, sorted by
+        // filename — the full catalog for the "Effects" debug panel, as
+        // opposed to effect_library() (only the current map's linked file).
+        std::vector<std::filesystem::path> effect_library_files() const;
+
+        // Loads an arbitrary effect file from effect_library_files() (or any
+        // other .eft-family path), independent of the current map's own
+        // effectFileName. Pure data load — does not touch the shared asset
+        // texture array.
+        LoadedEffectLibrary load_effect_library_file(const std::filesystem::path& path) const;
 
     private:
         std::filesystem::path find_data_root(const std::filesystem::path& executableDir) const;
@@ -344,6 +406,7 @@ namespace phoenix::runtime
         void scan_terrain_textures();
         void scan_audio_assets();
         void load_world_assets();
+        void load_effect_library();
         std::uint32_t resolve_asset_texture_layer(std::string_view textureName);
         void update_status();
         float terrain_height(float worldX, float worldZ) const;

@@ -33,6 +33,10 @@ set(ENGINE_SOURCES
     src/renderer/gl/gl_loader.cpp
     src/runtime/playable_spawn.cpp
     src/runtime/phoenix_runtime.cpp
+    src/runtime/effect_particle_system.cpp
+    src/runtime/weather_particle_system.cpp
+    src/runtime/celestial_system.cpp
+    src/runtime/star_field.cpp
     src/ui/app_settings.cpp
     src/ui/editor_panel.cpp
     src/ui/loading_screen.cpp
@@ -41,6 +45,9 @@ set(ENGINE_SOURCES
     src/ui/weather_overlay.cpp
     src/world/character_loader.cpp
     src/world/dg_loader.cpp
+    src/world/eft_loader.cpp
+    src/world/eft_mesh_loader.cpp
+    src/world/seff_loader.cpp
     src/world/mani_loader.cpp
     src/world/smod_loader.cpp
     src/world/svmap_loader.cpp
@@ -138,14 +145,33 @@ else()
 
     target_compile_options(PhoenixEngine PRIVATE -Wno-missing-field-initializers)
 
-    # Use mimalloc on Linux for aggressive memory return to the OS.
-    # glibc malloc_trim is ineffective with fragmented arenas.
-    find_library(MIMALLOC_LIB mimalloc)
-    if(MIMALLOC_LIB)
-        target_link_libraries(PhoenixEngine PRIVATE ${MIMALLOC_LIB})
-        target_compile_definitions(PhoenixEngine PRIVATE PHOENIX_USE_MIMALLOC)
-        message(STATUS "Using mimalloc: ${MIMALLOC_LIB}")
-    else()
-        message(STATUS "mimalloc not found - using system allocator (apt install libmimalloc-dev)")
-    endif()
+    # mimalloc on Linux for aggressive memory return to the OS (glibc
+    # malloc_trim is ineffective with fragmented arenas) — see
+    # release_memory_to_os() in src/app/bootstrap.cpp.
+    #
+    # Vendored via FetchContent and statically linked, NOT a system package
+    # lookup: find_library(mimalloc) used to pick up whatever the *build*
+    # machine happened to have installed, silently baking a shared-library
+    # dependency into the binary. On a machine without libmimalloc installed
+    # the game failed to even start (missing shared object), even though
+    # mimalloc is only used for one optional trim call that already no-ops
+    # gracefully when unavailable. Static linking (MI_OVERRIDE default ON)
+    # bundles it into the executable instead, so no runtime install is ever
+    # required.
+    set(MI_BUILD_SHARED OFF CACHE BOOL "" FORCE)
+    set(MI_BUILD_STATIC ON CACHE BOOL "" FORCE)
+    set(MI_BUILD_OBJECT OFF CACHE BOOL "" FORCE)
+    set(MI_BUILD_TESTS OFF CACHE BOOL "" FORCE)
+
+    include(FetchContent)
+    FetchContent_Declare(
+        mimalloc
+        GIT_REPOSITORY https://github.com/microsoft/mimalloc.git
+        GIT_TAG v3.4.1
+        GIT_SHALLOW TRUE
+    )
+    FetchContent_MakeAvailable(mimalloc)
+
+    target_link_libraries(PhoenixEngine PRIVATE mimalloc-static)
+    target_compile_definitions(PhoenixEngine PRIVATE PHOENIX_USE_MIMALLOC)
 endif()

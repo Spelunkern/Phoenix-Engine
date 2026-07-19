@@ -34,6 +34,11 @@ namespace phoenix::platform
 
         SDL_Window* handle() const { return window_; }
         SDL_GLContext gl_context() const { return glContext_; }
+        // False if the driver rejected the multisample request during
+        // create() and the context fell back to single-sampled — the
+        // "Anti-aliasing" toggle should hide/disable itself in that case,
+        // since GL_MULTISAMPLE has nothing to enable.
+        bool has_multisample_context() const { return hasMultisampleContext_; }
 
     private:
         SDL_Window* window_{};
@@ -48,5 +53,6 @@ namespace phoenix::platform
         int mouseWheelDelta_{};
         bool minimized_{};
         bool restoredEvent_{};
+        bool hasMultisampleContext_{};
     };
 }

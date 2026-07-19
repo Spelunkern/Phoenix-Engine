@@ -15,6 +15,13 @@ CAMERA_BLOCK
 layout(binding = 0) uniform sampler2DArray terrainTexture;
 layout(binding = 2) uniform sampler2DArray lightmapTexture;
 
+// Same interleaved-gradient-noise dither as terrain.frag — see there for
+// the reference.
+float ditherNoise(vec2 fragCoord)
+{
+    return fract(52.9829189 * fract(dot(fragCoord, vec2(0.06711056, 0.00583715))));
+}
+
 vec3 applyUnderwaterView(vec3 color, vec3 worldPos)
 {
     if (camera.positionYaw.y >= 0.0)
@@ -54,18 +61,40 @@ void main()
         bool isCharacter = (vColor.r < 0.01 && vColor.g < 0.01 && vColor.b < 0.01);
         if (isCharacter)
         {
+            // Same lighting model as terrain.frag's character branch /
+            // skinned_character.frag's isCharacter branch (player and
+            // monsters/NPCs respectively) — bots draw through this shader
+            // with assetConstants instead of constants, and that buffer's
+            // tuning0-3 are already claimed by the environment color-grade
+            // (see assetGrade below), so the values are inlined here rather
+            // than reusing camera.tuning* to avoid clashing with it.
             assetGrade = false;
             if (alphaCutout && textureColor.a - 0.08 < 0.0)
                 discard;
             color = textureColor.rgb;
+
             vec3 n = normalize(vNormal);
             vec3 charLightDir = vec3(-0.33, 0.80, -0.26);
-            float diffuse = clamp(dot(n, charLightDir), 0.0, 1.0);
-            vec3 lit = color * (0.56 + diffuse * 0.72);
+            float nDotL = dot(n, charLightDir);
+            float diffuse = clamp(nDotL, 0.0, 1.0);
+            float wrap = clamp((nDotL + 0.4) / 1.4, 0.0, 1.0);
+            float shade = mix(diffuse, wrap, 0.35);
+
+            float hemi = n.y * 0.5 + 0.5;
+            vec3 ambient = mix(vec3(0.56), vec3(0.56), hemi); // ground==sky here, kept for formula parity
+
+            vec3 lit = color * (ambient + shade * 0.72);
+
+            vec3 viewDir = normalize(camera.positionYaw.xyz - vWorldPos);
+            vec3 halfVec = normalize(charLightDir + viewDir);
+            float spec = pow(clamp(dot(n, halfVec), 0.0, 1.0), 24.0) * 0.35 * (0.25 + 0.75 * diffuse);
+            float rim = pow(1.0 - clamp(dot(n, viewDir), 0.0, 1.0), 3.0) * 0.22 * (0.4 + 0.6 * hemi);
+            lit += spec + rim * (0.5 + 0.5 * skyColor);
+
             if (!alphaCutout)
                 color = clamp(lit + color * textureColor.a * 0.30, 0.0, 1.0);
             else
-                color = lit;
+                color = clamp(lit, 0.0, 1.0);
         }
         else
         {
@@ -98,5 +127,15 @@ void main()
 
     color = applyUnderwaterView(color, vWorldPos);
     color = mix(color, skyColor, vFogFactor);
+
+    // Subtle screen-space vignette — a lens/framing effect, so unlike the
+    // grading above it applies to everything drawn by this shader
+    // (characters included), not just map assets.
+    vec2 screenUv = gl_FragCoord.xy * camera.screenInfo.zw;
+    float vignette = 1.0 - smoothstep(0.4, 1.0, length(screenUv - 0.5) * 1.35);
+    color *= mix(0.55, 1.0, vignette);
+
+    color += (ditherNoise(gl_FragCoord.xy) - 0.5) / 255.0;
+
     outColor = vec4(color, 1.0);
 }

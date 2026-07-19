@@ -39,6 +39,13 @@ cmake -S . -B build/linux-release -DCMAKE_BUILD_TYPE=Release
 cmake --build build/linux-release -j"$(nproc)"
 ```
 
+The first `cmake -S ... -B ...` configure needs network access once: it fetches
+and statically builds [mimalloc](https://github.com/microsoft/mimalloc) (used
+for aggressive memory return to the OS) via `FetchContent`. It's linked
+statically into the executable, so — unlike a system package — the resulting
+binary has no runtime dependency on it being installed on whatever machine
+runs the game.
+
 ## Run
 
 Place `Data/` next to the executable or in the repository root, then:

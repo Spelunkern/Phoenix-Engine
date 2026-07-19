@@ -762,16 +762,22 @@ namespace phoenix::character
     void NpcManager::clear(phoenix::renderer::OpenGLRenderer& renderer)
     {
         placements_.clear();
+        placements_.shrink_to_fit();
         streamedPlacements_ = 0;
         // In-flight worker parses (if any) complete harmlessly; their results are
         // self-contained and simply discarded when the futures are dropped.
         visualLoads_.clear();
         failedModels_.clear();
         active_.clear();
+        active_.shrink_to_fit();
         renderVertices_.clear();
+        renderVertices_.shrink_to_fit();
         renderIndices_.clear();
+        renderIndices_.shrink_to_fit();
         instances_.clear();
+        instances_.shrink_to_fit();
         instanceBatches_.clear();
+        instanceBatches_.shrink_to_fit();
         visibleCount_ = 0;
         renderer.update_npc_skinned_instances(instances_, instanceBatches_);
         renderer.set_npc_skinned_visible(false);

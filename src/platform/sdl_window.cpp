@@ -28,6 +28,13 @@ namespace phoenix::platform
         SDL_GL_SetAttribute(SDL_GL_GREEN_SIZE, 8);
         SDL_GL_SetAttribute(SDL_GL_BLUE_SIZE, 8);
         SDL_GL_SetAttribute(SDL_GL_ALPHA_SIZE, 8);
+        // Requested unconditionally so the default framebuffer always has
+        // sample buffers to enable/disable at runtime (see
+        // OpenGLRenderer::set_antialiasing_enabled) — GL_MULTISAMPLE can
+        // only be toggled live if the context was created with multisample
+        // support in the first place; it can't be added after the fact.
+        SDL_GL_SetAttribute(SDL_GL_MULTISAMPLEBUFFERS, 1);
+        SDL_GL_SetAttribute(SDL_GL_MULTISAMPLESAMPLES, 4);
 #if !defined(NDEBUG)
         SDL_GL_SetAttribute(SDL_GL_CONTEXT_FLAGS, SDL_GL_CONTEXT_DEBUG_FLAG);
 #endif
@@ -44,7 +51,23 @@ namespace phoenix::platform
 
         glContext_ = SDL_GL_CreateContext(window_);
         if (!glContext_)
-            return false;
+        {
+            // Some older/integrated drivers reject the 4x multisample
+            // request outright — retry once without it rather than failing
+            // to start entirely.
+            SDL_GL_SetAttribute(SDL_GL_MULTISAMPLEBUFFERS, 0);
+            SDL_GL_SetAttribute(SDL_GL_MULTISAMPLESAMPLES, 0);
+            glContext_ = SDL_GL_CreateContext(window_);
+            if (!glContext_)
+                return false;
+            hasMultisampleContext_ = false;
+        }
+        else
+        {
+            int actualSamples = 0;
+            SDL_GL_GetAttribute(SDL_GL_MULTISAMPLESAMPLES, &actualSamples);
+            hasMultisampleContext_ = actualSamples > 0;
+        }
 
         // 4.5 core may not be available on older/integrated drivers; retry at
         // 4.3 (still covers compute shaders) before giving up entirely.

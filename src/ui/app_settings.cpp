@@ -13,6 +13,7 @@ namespace phoenix::ui
     {
         bool* g_characterShadow = nullptr;
         int* g_fpsCapIndex = nullptr;
+        bool* g_antialiasingEnabled = nullptr;
 
         void* read_open(ImGuiContext*, ImGuiSettingsHandler*, const char*)
         {
@@ -36,6 +37,8 @@ namespace phoenix::ui
                 *g_characterShadow = value != 0;
             else if (g_fpsCapIndex && read_int_field(line, "FpsCapIndex", value))
                 *g_fpsCapIndex = std::clamp(value, 0, 9);
+            else if (g_antialiasingEnabled && read_int_field(line, "AntialiasingEnabled", value))
+                *g_antialiasingEnabled = value != 0;
         }
 
         void write_all(ImGuiContext*, ImGuiSettingsHandler* handler, ImGuiTextBuffer* buf)
@@ -43,14 +46,16 @@ namespace phoenix::ui
             buf->appendf("[%s][Config]\n", handler->TypeName);
             buf->appendf("CharacterShadow=%d\n", (g_characterShadow && *g_characterShadow) ? 1 : 0);
             buf->appendf("FpsCapIndex=%d\n", g_fpsCapIndex ? *g_fpsCapIndex : 0);
+            buf->appendf("AntialiasingEnabled=%d\n", (g_antialiasingEnabled && *g_antialiasingEnabled) ? 1 : 0);
             buf->append("\n");
         }
     }
 
-    void register_app_settings(bool& characterShadow, int& fpsCapIndex)
+    void register_app_settings(bool& characterShadow, int& fpsCapIndex, bool& antialiasingEnabled)
     {
         g_characterShadow = &characterShadow;
         g_fpsCapIndex = &fpsCapIndex;
+        g_antialiasingEnabled = &antialiasingEnabled;
 
         ImGuiSettingsHandler handler{};
         handler.TypeName = "PhoenixSettings";

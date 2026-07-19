@@ -478,6 +478,7 @@ namespace phoenix::runtime
                 state_.world.phoenixWorldFieldDir = fieldDir;
         }
         load_world_assets();
+        load_effect_library();
         update_status();
 
         camera_ = {};
@@ -1227,6 +1228,136 @@ namespace phoenix::runtime
             }
         }
 
+    }
+
+    PhoenixRuntime::LoadedEffectLibrary PhoenixRuntime::load_effect_library_file(const std::filesystem::path& path) const
+    {
+        LoadedEffectLibrary result{};
+        result.library = phoenix::world::load_eft(path);
+        if (!result.library.parsed)
+            return result;
+
+        result.texturePaths.reserve(result.library.textureNames.size());
+        for (const auto& textureName : result.library.textureNames)
+            result.texturePaths.push_back(textureName.empty() ? std::filesystem::path{} : state_.assets.resolve(textureName));
+
+        result.meshes.reserve(result.library.meshNames.size());
+        for (const auto& meshName : result.library.meshNames)
+        {
+            if (meshName.empty())
+            {
+                result.meshes.push_back({});
+                continue;
+            }
+            const auto meshPath = state_.assets.resolve(meshName);
+            result.meshes.push_back(
+                meshPath.empty() ? phoenix::world::EftMesh{} : phoenix::world::load_eft_mesh(meshPath));
+        }
+        return result;
+    }
+
+    std::vector<std::filesystem::path> PhoenixRuntime::effect_library_files() const
+    {
+        std::vector<std::filesystem::path> files;
+        const auto effectsRoot = resolve_ci(state_.dataRoot / "effects");
+        if (effectsRoot.empty() || !std::filesystem::is_directory(effectsRoot))
+            return files;
+
+        for (const auto& entry : std::filesystem::directory_iterator(effectsRoot))
+        {
+            if (!entry.is_regular_file())
+                continue;
+            const auto ext = phoenix::assets::lower_ascii(entry.path().extension().string());
+            if (ext == ".eft" || ext == ".ef2" || ext == ".ef3")
+                files.push_back(entry.path());
+        }
+        std::ranges::sort(files, {}, [](const std::filesystem::path& p) {
+            return phoenix::assets::lower_ascii(p.filename().string());
+        });
+        return files;
+    }
+
+    void PhoenixRuntime::load_effect_library()
+    {
+        state_.effectLibrary = {};
+        state_.effectTextureLayers.clear();
+        state_.effectMeshes.clear();
+        state_.effectPlacements.clear();
+
+        if (state_.world.effectFileName.empty())
+            return;
+
+        const auto eftPath = state_.assets.resolve(state_.world.effectFileName);
+        if (eftPath.empty())
+            return;
+
+        auto loaded = load_effect_library_file(eftPath);
+        if (!loaded.library.parsed)
+            return;
+        state_.effectLibrary = std::move(loaded.library);
+        state_.effectMeshes = std::move(loaded.meshes);
+
+        // The map's own linked effect file goes into the shared asset texture
+        // array like everything else (unlike an arbitrary file browsed from
+        // the debug panel — see LoadedEffectLibrary's doc comment).
+        state_.effectTextureLayers.reserve(state_.effectLibrary.textureNames.size());
+        for (const auto& textureName : state_.effectLibrary.textureNames)
+        {
+            if (textureName.empty())
+            {
+                state_.effectTextureLayers.push_back(0xFFFFFFFFu);
+                continue;
+            }
+            state_.effectTextureLayers.push_back(resolve_asset_texture_layer(textureName));
+        }
+
+        const auto mapSize = static_cast<float>(std::max(1u, state_.world.mapSize));
+        const auto halfMap = state_.world.isDungeon ? 0.0f : mapSize * 0.5f;
+
+        const auto normalize = [](float* vector, const float* fallback) {
+            const auto length = std::sqrt(vector[0] * vector[0] + vector[1] * vector[1] + vector[2] * vector[2]);
+            if (length < 0.001f)
+            {
+                vector[0] = fallback[0];
+                vector[1] = fallback[1];
+                vector[2] = fallback[2];
+                return;
+            }
+            vector[0] /= length;
+            vector[1] /= length;
+            vector[2] /= length;
+        };
+
+        state_.effectPlacements.reserve(state_.world.effectInstances.size());
+        for (const auto& inst : state_.world.effectInstances)
+        {
+            if (inst.effectId < 0
+                || static_cast<std::size_t>(inst.effectId) >= state_.effectLibrary.sequences.size())
+                continue;
+
+            EffectPlacement placement{};
+            placement.position[0] = inst.position[0] - halfMap;
+            placement.position[1] = inst.position[1];
+            placement.position[2] = inst.position[2] - halfMap;
+
+            float forward[3]{ inst.rotationForward[0], inst.rotationForward[1], inst.rotationForward[2] };
+            float up[3]{ inst.rotationUp[0], inst.rotationUp[1], inst.rotationUp[2] };
+            const float fallbackForward[3]{ 0.0f, 0.0f, 1.0f };
+            const float fallbackUp[3]{ 0.0f, 1.0f, 0.0f };
+            normalize(forward, fallbackForward);
+            normalize(up, fallbackUp);
+            const float right[3]{
+                up[1] * forward[2] - up[2] * forward[1],
+                up[2] * forward[0] - up[0] * forward[2],
+                up[0] * forward[1] - up[1] * forward[0],
+            };
+            std::copy(std::begin(forward), std::end(forward), std::begin(placement.forward));
+            std::copy(std::begin(up), std::end(up), std::begin(placement.up));
+            std::copy(std::begin(right), std::end(right), std::begin(placement.right));
+            placement.sequenceIndex = inst.effectId;
+
+            state_.effectPlacements.push_back(placement);
+        }
     }
 
     float PhoenixRuntime::terrain_height(float worldX, float worldZ) const

@@ -122,9 +122,9 @@ namespace phoenix::renderer
             return program;
         }
 
-        void set_camera_ubo(GLuint ubo, const float* constants60)
+        void set_camera_ubo(GLuint ubo, const float* constants64)
         {
-            glNamedBufferSubData_(ubo, 0, sizeof(float) * 60, constants60);
+            glNamedBufferSubData_(ubo, 0, sizeof(float) * 64, constants64);
         }
     }
 
@@ -161,7 +161,7 @@ namespace phoenix::renderer
         glViewport_(0, 0, static_cast<GLsizei>(width), static_cast<GLsizei>(height));
 
         glCreateBuffers_(1, &impl_->cameraUbo);
-        glNamedBufferData_(impl_->cameraUbo, sizeof(float) * 60, nullptr, GL_DYNAMIC_DRAW);
+        glNamedBufferData_(impl_->cameraUbo, sizeof(float) * 64, nullptr, GL_DYNAMIC_DRAW);
         glBindBufferBase_(GL_UNIFORM_BUFFER, 0, impl_->cameraUbo);
 
         glCreateVertexArrays_(1, &impl_->emptyVao);
@@ -180,6 +180,8 @@ namespace phoenix::renderer
         }
         if (!create_skinned_character_pipeline())
             log_line("GL: skinned character pipeline unavailable (non-fatal)");
+        if (!create_effect_particle_pipeline())
+            log_line("GL: effect particle pipeline unavailable (non-fatal)");
         if (!create_sky_pipeline())
             log_line("GL: sky pipeline unavailable (non-fatal)");
         create_cull_compute_pipeline(); // stub: GPU culling stays disabled, see internal header note
@@ -342,6 +344,16 @@ namespace phoenix::renderer
         glGetFloatv_(GL_MAX_TEXTURE_MAX_ANISOTROPY, &maxAniso);
         glSamplerParameterf_(impl_->terrainSampler, GL_TEXTURE_MAX_ANISOTROPY, std::min(16.0f, maxAniso > 0.0f ? maxAniso : 1.0f));
 
+        // No mipmaps: the debug effect array is always uploaded with a single
+        // level (see upload_debug_effect_textures), so MIN_FILTER must not
+        // request one — LINEAR_MIPMAP_LINEAR against a 1-level texture makes
+        // it "mipmap incomplete" and GL samples opaque black instead.
+        glCreateSamplers_(1, &impl_->debugEffectSampler);
+        glSamplerParameteri_(impl_->debugEffectSampler, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+        glSamplerParameteri_(impl_->debugEffectSampler, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+        glSamplerParameteri_(impl_->debugEffectSampler, GL_TEXTURE_WRAP_S, GL_MIRRORED_REPEAT);
+        glSamplerParameteri_(impl_->debugEffectSampler, GL_TEXTURE_WRAP_T, GL_MIRRORED_REPEAT);
+
         glCreateSamplers_(1, &impl_->lightmapSampler);
         glSamplerParameteri_(impl_->lightmapSampler, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
         glSamplerParameteri_(impl_->lightmapSampler, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
@@ -404,6 +416,18 @@ namespace phoenix::renderer
         }
         glCreateVertexArrays_(1, &impl_->monsterCharacterVao);
         glCreateVertexArrays_(1, &impl_->npcCharacterVao);
+        return true;
+    }
+
+    bool OpenGLRenderer::create_effect_particle_pipeline()
+    {
+        impl_->effectParticleProgram = build_program("shaders/gl/effect_particle.vert", "shaders/gl/effect_particle.frag");
+        if (!impl_->effectParticleProgram)
+        {
+            log_line("GL: effect particle shaders not found");
+            return true; // non-fatal, matches the skinned-character pipeline's fallback
+        }
+        glCreateVertexArrays_(1, &impl_->effectParticleVao);
         return true;
     }
 
@@ -503,6 +527,73 @@ namespace phoenix::renderer
             if (indexBuf)
                 glBindBuffer_(GL_ELEMENT_ARRAY_BUFFER, indexBuf);
             glBindVertexArray_(0);
+        }
+
+        // TerrainVertex (locations 0-4) + EffectParticleInstance (locations 5-8).
+        void setup_effect_particle_vao_attribs(GLuint vao, GLuint vbo, GLuint indexBuf, GLuint instanceBuf)
+        {
+            glBindVertexArray_(vao);
+            glBindBuffer_(GL_ARRAY_BUFFER, vbo);
+            const GLsizei stride = sizeof(TerrainVertex);
+            glEnableVertexAttribArray_(0);
+            glVertexAttribPointer_(0, 3, GL_FLOAT, GL_FALSE, stride, (const void*)offsetof(TerrainVertex, position));
+            glEnableVertexAttribArray_(1);
+            glVertexAttribPointer_(1, 3, GL_FLOAT, GL_FALSE, stride, (const void*)offsetof(TerrainVertex, color));
+            glEnableVertexAttribArray_(2);
+            glVertexAttribPointer_(2, 3, GL_FLOAT, GL_FALSE, stride, (const void*)offsetof(TerrainVertex, normal));
+            glEnableVertexAttribArray_(3);
+            glVertexAttribPointer_(3, 2, GL_FLOAT, GL_FALSE, stride, (const void*)offsetof(TerrainVertex, uv));
+            glEnableVertexAttribArray_(4);
+            glVertexAttribIPointer_(4, 1, GL_UNSIGNED_INT, stride, (const void*)offsetof(TerrainVertex, textureLayer));
+
+            if (instanceBuf)
+            {
+                glBindBuffer_(GL_ARRAY_BUFFER, instanceBuf);
+                const GLsizei istride = sizeof(EffectParticleInstance);
+                glEnableVertexAttribArray_(5);
+                glVertexAttribPointer_(5, 4, GL_FLOAT, GL_FALSE, istride, (const void*)offsetof(EffectParticleInstance, right));
+                glVertexAttribDivisor_(5, 1);
+                glEnableVertexAttribArray_(6);
+                glVertexAttribPointer_(6, 4, GL_FLOAT, GL_FALSE, istride, (const void*)offsetof(EffectParticleInstance, up));
+                glVertexAttribDivisor_(6, 1);
+                glEnableVertexAttribArray_(7);
+                glVertexAttribPointer_(7, 4, GL_FLOAT, GL_FALSE, istride, (const void*)offsetof(EffectParticleInstance, forward));
+                glVertexAttribDivisor_(7, 1);
+                glEnableVertexAttribArray_(8);
+                glVertexAttribPointer_(8, 4, GL_FLOAT, GL_FALSE, istride, (const void*)offsetof(EffectParticleInstance, position));
+                glVertexAttribDivisor_(8, 1);
+                glEnableVertexAttribArray_(9);
+                glVertexAttribPointer_(9, 4, GL_FLOAT, GL_FALSE, istride, (const void*)offsetof(EffectParticleInstance, color));
+                glVertexAttribDivisor_(9, 1);
+            }
+            if (indexBuf)
+                glBindBuffer_(GL_ELEMENT_ARRAY_BUFFER, indexBuf);
+            glBindVertexArray_(0);
+        }
+
+        // Maps a D3DBLEND-style enum value straight from the .EFT file to a GL
+        // blend factor. Mirrors effect-renderer's threeBlendFactor(), which was
+        // validated against the retail client's ps0198 blend table (game.exe
+        // 0x7138BC): that table starts one entry after D3DBLEND_ZERO, so the
+        // stored value is already `blend + 1` relative to the D3D enum.
+        GLenum d3d_blend_to_gl(std::int32_t blend, bool sourceRole)
+        {
+            switch (blend)
+            {
+                case 0: return GL_ZERO;
+                case 1: return GL_ONE;
+                case 2: return GL_SRC_COLOR;
+                case 3: return GL_ONE_MINUS_SRC_COLOR;
+                case 4: return GL_SRC_ALPHA;
+                case 5: return GL_ONE_MINUS_SRC_ALPHA;
+                case 6: return GL_DST_ALPHA;
+                case 7: return GL_ONE_MINUS_DST_ALPHA;
+                case 8: return GL_DST_COLOR;
+                case 9: return GL_ONE_MINUS_DST_COLOR;
+                case 10: return sourceRole ? GL_SRC_ALPHA_SATURATE : GL_ONE;
+                case 11: return sourceRole ? GL_SRC_ALPHA : GL_ONE;
+                default: return GL_ONE;
+            }
         }
 
         // SkinnedVertex (locations 0-6) + ObjectInstance (locations 7-10).
@@ -752,6 +843,33 @@ namespace phoenix::renderer
         if (static_cast<std::size_t>(byteOffset + byteSize) > impl_->animatedObjectVertexBytes)
             return false;
         glNamedBufferSubData_(impl_->animatedObjectVertexBuffer.id, byteOffset, byteSize, vertices + firstVertex);
+        return true;
+    }
+
+    bool OpenGLRenderer::update_effect_particles(
+        const std::vector<TerrainVertex>& vertices,
+        const std::vector<std::uint32_t>& indices,
+        const std::vector<EffectParticleInstance>& instances,
+        const std::vector<EffectParticleBatch>& batches)
+    {
+        if (!ready_) return false;
+        destroy_gl_buffer(impl_->effectParticleVertexBuffer);
+        destroy_gl_buffer(impl_->effectParticleIndexBuffer);
+        destroy_gl_buffer(impl_->effectParticleInstanceBuffer);
+        impl_->effectParticleBatches.clear();
+        impl_->effectParticlesReady = false;
+        if (vertices.empty() || indices.empty() || instances.empty() || batches.empty()
+            || !impl_->effectParticleProgram)
+            return false;
+
+        impl_->effectParticleVertexBuffer = make_static_buffer(vertices.data(), vertices.size() * sizeof(TerrainVertex), GL_DYNAMIC_DRAW);
+        impl_->effectParticleIndexBuffer = make_static_buffer(indices.data(), indices.size() * sizeof(std::uint32_t), GL_DYNAMIC_DRAW);
+        impl_->effectParticleInstanceBuffer = make_static_buffer(instances.data(), instances.size() * sizeof(EffectParticleInstance), GL_DYNAMIC_DRAW);
+        setup_effect_particle_vao_attribs(impl_->effectParticleVao, impl_->effectParticleVertexBuffer.id,
+            impl_->effectParticleIndexBuffer.id, impl_->effectParticleInstanceBuffer.id);
+
+        impl_->effectParticleBatches = batches;
+        impl_->effectParticlesReady = true;
         return true;
     }
 
@@ -1167,6 +1285,141 @@ namespace phoenix::renderer
         return true;
     }
 
+    bool OpenGLRenderer::upload_debug_effect_textures(const std::vector<DdsTexture>& textures)
+    {
+        if (!ready_) return false;
+
+        if (impl_->debugEffectTextureArray.id)
+            glDeleteTextures_(1, &impl_->debugEffectTextureArray.id);
+        impl_->debugEffectTextureArray = {};
+        impl_->debugEffectTextureLayerCount = 0;
+        impl_->debugEffectTextureWidth = 0;
+        impl_->debugEffectTextureHeight = 0;
+        impl_->debugEffectTextureMipLevels = 0;
+        impl_->debugEffectTextureFormat = 0;
+        impl_->debugEffectTextureCompressed = false;
+        impl_->debugEffectTexturesReady = false;
+
+        if (textures.empty())
+            return false;
+
+        std::uint32_t texWidth = 0, texHeight = 0;
+        for (const auto& tex : textures)
+        {
+            if (tex.valid) { texWidth = tex.width; texHeight = tex.height; break; }
+        }
+        if (texWidth == 0 || texHeight == 0)
+            return false;
+
+        auto layerCount = static_cast<std::uint32_t>(textures.size());
+        if (layerCount > impl_->maxImageArrayLayers)
+        {
+            log_line("GL: debug effect texture array layer count exceeds device limit — truncating");
+            layerCount = impl_->maxImageArrayLayers;
+        }
+
+        // Always a single mip level: many effect textures are atlases
+        // (packed animation-frame grids), and mipmapping — box-filtering 2x2
+        // neighborhoods repeatedly — bleeds neighboring cells together,
+        // visible as "squares" of wrong transparency at any mip beyond 0.
+        const std::uint32_t mipLevels = 1;
+
+        std::uint32_t nativeFormat = 0;
+        std::uint32_t nativeMips = UINT32_MAX;
+        bool canUploadBc = true;
+        for (const auto& tex : textures)
+        {
+            if (!tex.valid) continue;
+            if (!tex.compressed || !is_bc_format(tex.vkFormat) || tex.mipData.empty()
+                || tex.width != texWidth || tex.height != texHeight)
+            {
+                canUploadBc = false;
+                break;
+            }
+            if (nativeFormat == 0) nativeFormat = tex.vkFormat;
+            else if (tex.vkFormat != nativeFormat) { canUploadBc = false; break; }
+            nativeMips = std::min(nativeMips, static_cast<std::uint32_t>(tex.mipData.size()));
+        }
+
+        GLuint texId{};
+        glCreateTextures_(GL_TEXTURE_2D_ARRAY, 1, &texId);
+
+        if (canUploadBc && nativeFormat != 0 && nativeMips != UINT32_MAX && nativeMips > 0)
+        {
+            nativeMips = std::min(nativeMips, mipLevels);
+            const GLenum internalFormat = bc_gl_internal_format(nativeFormat);
+            glTextureStorage3D_(texId, static_cast<GLsizei>(nativeMips), internalFormat,
+                static_cast<GLsizei>(texWidth), static_cast<GLsizei>(texHeight), static_cast<GLsizei>(layerCount));
+
+            for (std::uint32_t layer = 0; layer < layerCount; ++layer)
+            {
+                for (std::uint32_t mip = 0; mip < nativeMips; ++mip)
+                {
+                    const auto mipW = std::max(1u, texWidth >> mip);
+                    const auto mipH = std::max(1u, texHeight >> mip);
+                    const std::vector<std::uint8_t>* src{};
+                    std::vector<std::uint8_t> fallback;
+                    if (textures[layer].valid && mip < textures[layer].mipData.size())
+                        src = &textures[layer].mipData[mip];
+                    else
+                    {
+                        fallback = make_bc_fallback_mip(nativeFormat, mipW, mipH);
+                        src = &fallback;
+                    }
+                    glCompressedTextureSubImage3D_(texId, static_cast<GLint>(mip),
+                        0, 0, static_cast<GLint>(layer), static_cast<GLsizei>(mipW), static_cast<GLsizei>(mipH), 1,
+                        internalFormat, static_cast<GLsizei>(src->size()), src->data());
+                }
+            }
+            impl_->debugEffectTextureCompressed = true;
+            impl_->debugEffectTextureFormat = nativeFormat;
+            impl_->debugEffectTextureMipLevels = nativeMips;
+        }
+        else
+        {
+            glTextureStorage3D_(texId, static_cast<GLsizei>(mipLevels), GL_RGBA8,
+                static_cast<GLsizei>(texWidth), static_cast<GLsizei>(texHeight), static_cast<GLsizei>(layerCount));
+            std::vector<std::uint8_t> fallbackRgba(static_cast<std::size_t>(texWidth) * texHeight * 4, 0x40);
+            for (std::uint32_t layer = 0; layer < layerCount; ++layer)
+            {
+                const std::uint8_t* pixels = fallbackRgba.data();
+                std::vector<std::uint8_t> decoded;
+                if (textures[layer].valid)
+                {
+                    decoded = decode_texture_rgba(textures[layer]);
+                    if (!decoded.empty() && textures[layer].width == texWidth && textures[layer].height == texHeight)
+                        pixels = decoded.data();
+                }
+                glTextureSubImage3D_(texId, 0, 0, 0, static_cast<GLint>(layer),
+                    static_cast<GLsizei>(texWidth), static_cast<GLsizei>(texHeight), 1,
+                    GL_RGBA, GL_UNSIGNED_BYTE, pixels);
+            }
+            impl_->debugEffectTextureCompressed = false;
+            impl_->debugEffectTextureFormat = kFormatR8G8B8A8Unorm;
+            impl_->debugEffectTextureMipLevels = mipLevels;
+        }
+
+        // Plain LINEAR (no mipmap chain — see the mipLevels note above).
+        // MIRRORED_REPEAT: most debug-panel billboards sample a single
+        // sprite at UV 0..1 and never touch the wrap mode at all, but
+        // mirrorTexture-flagged components deliberately sample UV -1..2
+        // (see effect_particle_system.cpp's mirrorUvs) to tile the sprite
+        // 3x with mirrored seams instead of stretching one copy across a
+        // large quad — matching the reference renderer's
+        // THREE.MirroredRepeatWrapping for mirrorTexture effects.
+        glTextureParameteri_(texId, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+        glTextureParameteri_(texId, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+        glTextureParameteri_(texId, GL_TEXTURE_WRAP_S, GL_MIRRORED_REPEAT);
+        glTextureParameteri_(texId, GL_TEXTURE_WRAP_T, GL_MIRRORED_REPEAT);
+
+        impl_->debugEffectTextureArray.id = texId;
+        impl_->debugEffectTextureLayerCount = layerCount;
+        impl_->debugEffectTextureWidth = texWidth;
+        impl_->debugEffectTextureHeight = texHeight;
+        impl_->debugEffectTexturesReady = true;
+        return true;
+    }
+
     bool OpenGLRenderer::upload_terrain_texture_layers(std::uint32_t firstLayer, const std::vector<DdsTexture>& textures)
     {
         if (!ready_ || !impl_->terrainTexturesReady || textures.empty())
@@ -1411,6 +1664,22 @@ namespace phoenix::renderer
             impl_->skyTuning[i] = values[i];
     }
 
+    void OpenGLRenderer::set_antialiasing_enabled(bool enabled)
+    {
+        if (!impl_ || !ready_) return;
+        impl_->antialiasingEnabled = enabled;
+        if (enabled)
+        {
+            glEnable_(GL_MULTISAMPLE);
+            glEnable_(GL_SAMPLE_ALPHA_TO_COVERAGE);
+        }
+        else
+        {
+            glDisable_(GL_MULTISAMPLE);
+            glDisable_(GL_SAMPLE_ALPHA_TO_COVERAGE);
+        }
+    }
+
     void OpenGLRenderer::set_water_layer(std::uint32_t waterLayer)
     {
         if (!impl_) return;
@@ -1449,15 +1718,22 @@ namespace phoenix::renderer
             glClear_(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
             glEnable_(GL_DEPTH_TEST);
 
-            float constants[60]{};
+            impl_->screenInfo[0] = static_cast<float>(impl_->surfaceWidth);
+            impl_->screenInfo[1] = static_cast<float>(impl_->surfaceHeight);
+            impl_->screenInfo[2] = 1.0f / static_cast<float>(impl_->surfaceWidth);
+            impl_->screenInfo[3] = 1.0f / static_cast<float>(impl_->surfaceHeight);
+
+            float constants[64]{};
             std::memcpy(constants, impl_->cameraConstants, sizeof(impl_->cameraConstants));
             std::memcpy(constants + 12, impl_->skyConstants, sizeof(impl_->skyConstants));
             std::memcpy(constants + 28, impl_->skyTuning, sizeof(impl_->skyTuning));
             std::memcpy(constants + 40, impl_->waterStyle, sizeof(impl_->waterStyle));
             std::memcpy(constants + 44, impl_->characterShading, sizeof(impl_->characterShading));
-            float assetConstants[60]{};
+            std::memcpy(constants + 60, impl_->screenInfo, sizeof(impl_->screenInfo));
+            float assetConstants[64]{};
             std::memcpy(assetConstants, constants, sizeof(float) * 44);
             std::memcpy(assetConstants + 44, impl_->assetShading, sizeof(impl_->assetShading));
+            std::memcpy(assetConstants + 60, impl_->screenInfo, sizeof(impl_->screenInfo));
 
             // Every draw call below re-specified its program and re-uploaded the
             // camera UBO even when back-to-back draws share both (e.g. monster then
@@ -1490,6 +1766,11 @@ namespace phoenix::renderer
             }
             glBindTextureUnit_(2, impl_->lightmapTexture.id);
             glBindSampler_(2, impl_->lightmapSampler);
+            if (impl_->debugEffectTexturesReady)
+            {
+                glBindTextureUnit_(3, impl_->debugEffectTextureArray.id);
+                glBindSampler_(3, impl_->debugEffectSampler);
+            }
             glBindBufferBase_(GL_SHADER_STORAGE_BUFFER, 1, impl_->terrainMapBuffer.id);
 
             // sky
@@ -1595,10 +1876,66 @@ namespace phoenix::renderer
             }
             if (impl_->waterReady && impl_->waterIndexCount > 0)
             {
+                // Same reasoning as the effect-particle pass below: MSAA/
+                // alpha-to-coverage on the water surface's blended,
+                // constantly-animated edges reads wrong, so it's excluded
+                // too, restored right after.
+                glDisable_(GL_MULTISAMPLE);
+                glDisable_(GL_SAMPLE_ALPHA_TO_COVERAGE);
                 useProgram(impl_->terrainProgram);
                 useCamera(constants);
                 glBindVertexArray_(impl_->waterVao);
                 glDrawElements_(GL_TRIANGLES, static_cast<GLsizei>(impl_->waterIndexCount), GL_UNSIGNED_INT, nullptr);
+                if (impl_->antialiasingEnabled)
+                {
+                    glEnable_(GL_MULTISAMPLE);
+                    glEnable_(GL_SAMPLE_ALPHA_TO_COVERAGE);
+                }
+            }
+
+            if (impl_->effectParticlesReady && impl_->effectParticleProgram && !impl_->effectParticleBatches.empty())
+            {
+                useProgram(impl_->effectParticleProgram);
+                useCamera(constants);
+                glBindVertexArray_(impl_->effectParticleVao);
+                // Effects must not be touched by anti-aliasing: MSAA softens
+                // billboard/quad edges in a way that looks wrong against
+                // additive/alpha-blended sprite art, and GL_SAMPLE_ALPHA_TO_
+                // COVERAGE (meant for alpha-tested cutouts) actively
+                // dithers/mis-renders the soft alpha edges these particles
+                // rely on (effect_particle.frag alpha-discards, so it reads
+                // as a cutout to the coverage logic even though it's really
+                // smoothly blended). Disabled just for this pass, restored
+                // to whatever the user's toggle is set to right after.
+                glDisable_(GL_MULTISAMPLE);
+                glDisable_(GL_SAMPLE_ALPHA_TO_COVERAGE);
+                // Particles don't occlude each other or write depth, but still
+                // test against opaque scene depth so they hide behind terrain/buildings.
+                glDepthMask_(GL_FALSE);
+                GLenum boundSrc = GL_SRC_ALPHA;
+                GLenum boundDst = GL_ONE_MINUS_SRC_ALPHA;
+                for (const auto& batch : impl_->effectParticleBatches)
+                {
+                    if (batch.instanceCount == 0 || batch.indexCount == 0) continue;
+                    const auto src = d3d_blend_to_gl(batch.sourceBlend, true);
+                    const auto dst = d3d_blend_to_gl(batch.destinationBlend, false);
+                    if (src != boundSrc || dst != boundDst)
+                    {
+                        glBlendFunc_(src, dst);
+                        boundSrc = src;
+                        boundDst = dst;
+                    }
+                    glDrawElementsInstancedBaseInstance_(GL_TRIANGLES, static_cast<GLsizei>(batch.indexCount), GL_UNSIGNED_INT,
+                        (const void*)(static_cast<std::uintptr_t>(batch.firstIndex) * sizeof(std::uint32_t)),
+                        static_cast<GLsizei>(batch.instanceCount), batch.firstInstance);
+                }
+                glDepthMask_(GL_TRUE);
+                glBlendFunc_(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+                if (impl_->antialiasingEnabled)
+                {
+                    glEnable_(GL_MULTISAMPLE);
+                    glEnable_(GL_SAMPLE_ALPHA_TO_COVERAGE);
+                }
             }
             if (imguiReady_ && imguiFrameStarted_)
             {
@@ -1679,6 +2016,9 @@ namespace phoenix::renderer
         destroyBuf(impl_->npcCharacterVertexBuffer);
         destroyBuf(impl_->npcCharacterIndexBuffer);
         destroyBuf(impl_->terrainMapBuffer);
+        destroyBuf(impl_->effectParticleVertexBuffer);
+        destroyBuf(impl_->effectParticleIndexBuffer);
+        destroyBuf(impl_->effectParticleInstanceBuffer);
         for (auto& b : impl_->monsterCharacterInstanceBuffer) destroyBuf(b);
         for (auto& b : impl_->monsterPaletteBuffer) destroyBuf(b);
         for (auto& b : impl_->npcCharacterInstanceBuffer) destroyBuf(b);
@@ -1693,23 +2033,27 @@ namespace phoenix::renderer
         destroyVao(impl_->botCharacterVao);
         destroyVao(impl_->monsterCharacterVao);
         destroyVao(impl_->npcCharacterVao);
+        destroyVao(impl_->effectParticleVao);
         destroyVao(impl_->emptyVao);
 
         if (impl_->cameraUbo) glDeleteBuffers_(1, &impl_->cameraUbo);
 
         if (impl_->terrainTextureArray.id) glDeleteTextures_(1, &impl_->terrainTextureArray.id);
+        if (impl_->debugEffectTextureArray.id) glDeleteTextures_(1, &impl_->debugEffectTextureArray.id);
         if (impl_->lightmapTexture.id) glDeleteTextures_(1, &impl_->lightmapTexture.id);
         if (impl_->previewTexture) glDeleteTextures_(1, &impl_->previewTexture);
         for (auto& icon : impl_->imguiIconTextures)
             if (icon.texture) glDeleteTextures_(1, &icon.texture);
 
         if (impl_->terrainSampler) glDeleteSamplers_(1, &impl_->terrainSampler);
+        if (impl_->debugEffectSampler) glDeleteSamplers_(1, &impl_->debugEffectSampler);
         if (impl_->lightmapSampler) glDeleteSamplers_(1, &impl_->lightmapSampler);
 
         auto destroyProg = [](GLuint& p) { if (p) glDeleteProgram_(p); p = 0; };
         destroyProg(impl_->terrainProgram);
         destroyProg(impl_->staticObjectProgram);
         destroyProg(impl_->skinnedCharacterProgram);
+        destroyProg(impl_->effectParticleProgram);
         destroyProg(impl_->skyProgram);
 
         delete impl_;

@@ -12,6 +12,10 @@
 #include "character/monster_manager.h"
 #include "character/npc_manager.h"
 #include "runtime/playable_spawn.h"
+#include "runtime/effect_particle_system.h"
+#include "runtime/weather_particle_system.h"
+#include "runtime/celestial_system.h"
+#include "runtime/star_field.h"
 #include "runtime/phoenix_runtime.h"
 #include "platform/sdl_window.h"
 #include "renderer/dds_loader.h"
@@ -47,6 +51,17 @@
 
 namespace
 {
+    // A file loaded by the debug "Effects" panel, with its textures resolved
+    // to layer indices in OpenGLRenderer's dedicated debug-effect texture
+    // array (top bit set — see effect_particle.frag) rather than the shared
+    // terrain/asset array the map's own effect file uses.
+    struct DebugEffectLibraryEntry
+    {
+        phoenix::world::EftLibrary library;
+        std::vector<std::uint32_t> textureLayers; // parallel to library.textureNames
+        std::vector<phoenix::world::EftMesh> meshes;
+    };
+
     // UI types/functions live in ui/editor_panel.{h,cpp} and ui/perf_hud.{h,cpp}.
     using phoenix::ui::WeatherMode;
     using phoenix::ui::CharacterOption;
@@ -121,9 +136,11 @@ int main(int, char**)
     perfHud.initialize_system_info();
     perfHud.gpuName = renderer.adapter_name();
     perfHud.renderer = &renderer;
+    perfHud.antialiasingAvailable = window.has_multisample_context();
     phoenix::ui::DisplaySettings displaySettings{};
     if (imguiAvailable)
-        phoenix::ui::register_app_settings(displaySettings.characterShadow, perfHud.fpsCapIndex);
+        phoenix::ui::register_app_settings(displaySettings.characterShadow, perfHud.fpsCapIndex, perfHud.antialiasingEnabled);
+    renderer.set_antialiasing_enabled(perfHud.antialiasingAvailable && perfHud.antialiasingEnabled);
 
     // Closing the window must work even mid-load: skip all teardown and let
     // the OS reclaim the process — waiting on loaders/GPU only delays the user.
@@ -267,6 +284,66 @@ int main(int, char**)
     std::size_t characterTextureBaseSlot = 0;
     phoenix::runtime::StaticObjectScene staticObjectScene;
     phoenix::runtime::AnimatedObjectScene animatedObjectScene;
+    phoenix::runtime::EffectParticleSystem effectParticleSystem;
+    phoenix::runtime::WeatherParticleSystem weatherParticleSystem;
+    phoenix::runtime::CelestialSystem celestialSystem;
+    phoenix::runtime::StarField starField;
+    starField.build(); // fixed star directions, independent of map/runtime state — generated once
+    // Debug "Effects" panel: the full data/effects catalog (built once, lazily,
+    // since it's independent of the loaded map), the currently selected file's
+    // loaded/resolved library (cached by path so re-selecting is instant), and
+    // the sequence-name list for whichever file is selected.
+    std::vector<std::filesystem::path> effectLibraryFilePaths;
+    std::vector<std::string> effectFileNames;
+    std::unordered_map<std::string, DebugEffectLibraryEntry> effectLibraryCache;
+    // Raw (unnormalized) textures for every distinct debug-loaded file so
+    // far, append-only — re-normalized and re-uploaded as a whole each time a
+    // new file is added, since the dedicated debug array needs one uniform
+    // format/resolution across all its layers (same constraint the shared
+    // terrain array has).
+    std::vector<phoenix::renderer::DdsTexture> debugEffectTexturesRaw;
+    int selectedEffectFileIndex = 0;
+    int selectedEffectSequenceIndex = 0;
+    int loadedEffectFileIndex = -1;
+    std::vector<std::string> effectSequenceNames;
+    float effectSpawnYOffset = 0.0f;
+
+    // Bots occasionally cast a random spell-ish effect (see
+    // botManager.onCastEffect below) — restricted to files that are actually
+    // used by real spells (in_/da_/ca_ name prefixes), a subset of
+    // effectLibraryFilePaths filtered once alongside it.
+    std::vector<std::filesystem::path> botEffectFilePaths;
+    struct PendingBotEffect { std::uint32_t spawnId; float age; };
+    std::vector<PendingBotEffect> pendingBotEffects;
+    std::mt19937 botCastRng{ std::random_device{}() };
+
+    // Background (non-blocking) warm-up of every bot-castable effect file.
+    // Loading each file lazily, one at a time, the moment some bot happens
+    // to roll it for the first time is what previously destroyed framerate:
+    // each newly-discovered file forces a full re-normalize + re-upload of
+    // the whole shared debug texture array (see debugEffectTexturesDirty),
+    // and with ~100 bots casting semi-randomly that meant many full-array
+    // rebuilds in quick succession. Loading everything up front on the main
+    // thread (an earlier fix attempt) avoided that but stalled map load
+    // instead. This does the CPU-side work (parsing + DDS decode, no GL
+    // calls) on a cpuLoader worker thread while the game keeps rendering,
+    // then merges the results and uploads textures exactly once (see the
+    // merge block next to botManager.update()).
+    struct PreloadedBotEffect
+    {
+        std::filesystem::path path;
+        phoenix::world::EftLibrary library;
+        std::vector<phoenix::world::EftMesh> meshes;
+        std::vector<std::filesystem::path> texturePaths;
+        std::vector<phoenix::renderer::DdsTexture> textures; // parallel to texturePaths
+    };
+    std::future<std::vector<PreloadedBotEffect>> botEffectPreloadFuture;
+    bool botEffectPreloadKicked = false;
+    bool botEffectPreloadReady = false;
+    // Diagnostic isolation: raw component index (library.effects), spawned
+    // directly via the panel's "Spawn component" button, bypassing sequence
+    // expansion.
+    int effectComponentIndex = 0;
     phoenix::runtime::WorldCollisionMesh worldCollisionMesh;
     HeightSamplerContext heightSamplerCtx{ &runtime, &worldCollisionMesh };
     // Map mobs follow the terrain/floor as they spawn and wander.
@@ -296,7 +373,18 @@ int main(int, char**)
         std::vector<phoenix::renderer::DdsTexture>& textures,
         std::string_view loadingStage = {},
         float progressStart = 0.0f,
-        float progressEnd = 0.0f) {
+        float progressEnd = 0.0f,
+        // Caps the generated mip chain. Regular game assets always ship
+        // pre-baked mips through the canonical dds_normalize pipeline, so
+        // this only matters for content normalised on the fly here (the
+        // debug "Effects" panel's textures): mip generation box-filters 2x2
+        // neighborhoods repeatedly, which is fine for a normal single-image
+        // texture but bleeds colors/alpha across cell boundaries for a
+        // texture atlas (several distinct regions packed into one image,
+        // common for effect flipbooks/animation frames) — visible as
+        // "squares" of wrong transparency at any mip level beyond 0. Passing
+        // 1 here disables mip generation entirely for that case.
+        std::uint32_t maxMipLevels = UINT32_MAX) {
         if (textures.empty())
             return;
 
@@ -323,8 +411,9 @@ int main(int, char**)
         // Compute mip count: down to 4x4 blocks (same as renderer logic).
         const auto maxDim = std::max(targetW, targetH);
         const auto fullMips = static_cast<std::uint32_t>(std::floor(std::log2(static_cast<float>(maxDim)))) + 1u;
-        const auto targetMips = std::min(fullMips,
-            static_cast<std::uint32_t>(std::max(1.0, std::log2(static_cast<double>(maxDim)) - 1.0)));
+        const auto targetMips = std::min({ fullMips,
+            static_cast<std::uint32_t>(std::max(1.0, std::log2(static_cast<double>(maxDim)) - 1.0)),
+            std::max(1u, maxMipLevels) });
 
         // The data tree is pre-normalised to canonical BC3 + full mip chain
         // (via the standalone dds_normalize tool), so conversion is the
@@ -395,6 +484,89 @@ int main(int, char**)
             future.get();
     };
 
+    // True whenever debugEffectTexturesRaw has grown since the last upload —
+    // checked once per frame (see the flush next to the pendingBotEffects
+    // sweep) instead of uploading inline in ensureEffectLibraryLoaded. Doing
+    // it inline meant every newly-discovered file — whether from a bot
+    // casting or the "Effects" panel's file picker — triggered its own full
+    // re-normalize + re-upload of the WHOLE debug texture array (all layers
+    // share one format/resolution, so there's no way to append just one).
+    // A burst of bots each discovering a different file in the same frame
+    // used to mean that many full-array rebuilds in a row, which is what
+    // tanked framerate even with only a handful of effects actually playing.
+    // Batching to at most one upload per frame fixes that without needing to
+    // preload everything up front (which just moved the same cost to a
+    // single big stall on the very first map load instead).
+    bool debugEffectTexturesDirty = false;
+
+    // Loads (and caches, by path) one data/effects file into a
+    // DebugEffectLibraryEntry. Shared by the "Effects" panel's own file
+    // picker and bots' random effect casting (see botManager.onCastEffect
+    // below) so there's exactly one place that knows how to load an .eft
+    // file on demand — texture upload is deferred (see debugEffectTexturesDirty).
+    const auto ensureEffectLibraryLoaded = [&](const std::filesystem::path& path) -> DebugEffectLibraryEntry& {
+        const auto key = path.string();
+        auto cacheIt = effectLibraryCache.find(key);
+        if (cacheIt == effectLibraryCache.end())
+        {
+            auto loaded = runtime.load_effect_library_file(path);
+
+            DebugEffectLibraryEntry entry{};
+            entry.library = std::move(loaded.library);
+            entry.meshes = std::move(loaded.meshes);
+
+            const auto baseLayer = debugEffectTexturesRaw.size();
+            entry.textureLayers.reserve(loaded.texturePaths.size());
+            for (std::size_t i = 0; i < loaded.texturePaths.size(); ++i)
+            {
+                const auto& texturePath = loaded.texturePaths[i];
+                if (texturePath.empty())
+                {
+                    entry.textureLayers.push_back(0xFFFFFFFFu);
+                    debugEffectTexturesRaw.push_back({});
+                    continue;
+                }
+                entry.textureLayers.push_back(0x80000000u | static_cast<std::uint32_t>(baseLayer + i));
+                debugEffectTexturesRaw.push_back(phoenix::renderer::load_dds(texturePath));
+                debugEffectTexturesDirty = true;
+            }
+
+            cacheIt = effectLibraryCache.emplace(key, std::move(entry)).first;
+        }
+        return cacheIt->second;
+    };
+
+    // Bots occasionally cast: pick a random in_/da_/ca_ effect file, use
+    // sequence 1 if there's more than one option (else the only one there
+    // is), always one-shot. spawn_debug_effect() already handles culling
+    // (see EffectParticleSystem::process_emitter's cameraPosition/
+    // cullDistance check) the same way every other effect does — nothing
+    // extra needed here for that. The returned id is tracked so it can be
+    // force-cleaned at 10s if it doesn't finish on its own (see the
+    // pendingBotEffects sweep next to botManager.update()).
+    botManager.onCastEffect = [&](float x, float y, float z, float yaw) {
+        // Skip casts entirely until the background preload has merged (see
+        // botEffectPreloadReady) — falling back to ensureEffectLibraryLoaded
+        // here for a not-yet-cached file would re-introduce the per-file
+        // synchronous load + full-array texture rebuild that used to tank
+        // framerate. Once ready, every file is already cached, so this is
+        // just a fast lookup from then on.
+        if (botEffectFilePaths.empty() || !botEffectPreloadReady)
+            return;
+        const auto& path = botEffectFilePaths[botCastRng() % botEffectFilePaths.size()];
+        auto& entry = ensureEffectLibraryLoaded(path);
+        if (!entry.library.parsed || entry.library.sequences.empty())
+            return;
+        const std::int32_t sequenceIndex = entry.library.sequences.size() > 1 ? 1 : 0;
+        const float position[3]{ x, y, z };
+        const auto id = effectParticleSystem.spawn_debug_effect(
+            entry.library, entry.textureLayers, entry.meshes, sequenceIndex, position, yaw, /*oneShot=*/true);
+        if (id != 0)
+            pendingBotEffects.push_back({ id, 0.0f });
+    };
+
+    // Warms effectLibraryCache/debugEffectTexturesRaw for every bot-castable
+    // file in ONE batched pass (called once, right after botEffectFilePaths
     constexpr std::size_t kCharacterTextureSlotReserve = 32;
     constexpr std::size_t kBotTextureSlotReserve = 256;
     constexpr std::size_t kNpcTextureSlotReserve = 96;
@@ -809,6 +981,67 @@ int main(int, char**)
         animatedObjectScene = runAsync([&runtime]() {
             return runtime.build_animated_object_scene();
         }, 0.87f, "Building animated objects");
+        effectParticleSystem.build(runtime.state());
+
+        // The debug "Effects" panel's file catalog is independent of the map
+        // (it lists all of data/effects), so build it once, lazily.
+        if (effectLibraryFilePaths.empty())
+        {
+            effectLibraryFilePaths = runtime.effect_library_files();
+            effectFileNames.reserve(effectLibraryFilePaths.size());
+            for (std::size_t i = 0; i < effectLibraryFilePaths.size(); ++i)
+                effectFileNames.push_back(std::to_string(i) + ": " + effectLibraryFilePaths[i].filename().string());
+
+            // Bots only cast files actually used by real spells — the
+            // in_/da_/ca_ name-prefix convention filters out map-decoration
+            // effects (torches, fountains, ...) that happen to live in the
+            // same data/effects folder.
+            for (const auto& path : effectLibraryFilePaths)
+            {
+                auto stem = phoenix::assets::lower_ascii(path.stem().string());
+                if (stem.starts_with("in_") || stem.starts_with("da_") || stem.starts_with("ca_"))
+                    botEffectFilePaths.push_back(path);
+            }
+
+            // load_effect_library_file() resolves everything against the
+            // session-wide DataIndex (state_.assets), not per-map data — so
+            // unlike the main terrain/asset texture array, effectLibraryCache/
+            // debugEffectTexturesRaw don't actually go stale across map
+            // changes and this only needs to run once, ever.
+        }
+
+        // Kick the background warm-up of every bot-castable file once, ever
+        // (see PreloadedBotEffect / botEffectPreloadReady). Runs on a
+        // cpuLoader worker thread — CPU-only work (parse + DDS decode, no GL
+        // calls), so it doesn't block map loading. Bots simply skip casting
+        // until it's merged (see botManager.onCastEffect).
+        if (!botEffectPreloadKicked)
+        {
+            botEffectPreloadKicked = true;
+            auto pathsToLoad = botEffectFilePaths;
+            botEffectPreloadFuture = cpuLoader.submit([&runtime, pathsToLoad]() {
+                std::vector<PreloadedBotEffect> results;
+                results.reserve(pathsToLoad.size());
+                for (const auto& path : pathsToLoad)
+                {
+                    auto loaded = runtime.load_effect_library_file(path);
+                    PreloadedBotEffect item{};
+                    item.path = path;
+                    item.library = std::move(loaded.library);
+                    item.meshes = std::move(loaded.meshes);
+                    item.texturePaths = std::move(loaded.texturePaths);
+                    item.textures.reserve(item.texturePaths.size());
+                    for (const auto& texturePath : item.texturePaths)
+                        item.textures.push_back(texturePath.empty()
+                            ? phoenix::renderer::DdsTexture{}
+                            : phoenix::renderer::load_dds(texturePath));
+                    results.push_back(std::move(item));
+                }
+                return results;
+            });
+        }
+        loadedEffectFileIndex = -1;
+        effectSequenceNames.clear();
         objectInstanceCount = static_cast<std::uint32_t>(staticObjectScene.instances.size());
         objectBatchCount = static_cast<std::uint32_t>(staticObjectScene.batches.size());
         {
@@ -1072,6 +1305,25 @@ int main(int, char**)
                     character_height_sampler, &heightSamplerCtx, &cpuLoader);
             }
 
+            // Safety net for bot-cast effects (see botManager.onCastEffect):
+            // force-remove anything that's either finished on its own or has
+            // been running for 10s regardless.
+            for (std::size_t i = 0; i < pendingBotEffects.size();)
+            {
+                auto& pending = pendingBotEffects[i];
+                pending.age += deltaSeconds;
+                if (pending.age > 10.0f || !effectParticleSystem.debug_spawn_active(pending.spawnId))
+                {
+                    effectParticleSystem.remove_debug_spawn(pending.spawnId);
+                    pending = pendingBotEffects.back();
+                    pendingBotEffects.pop_back();
+                }
+                else
+                {
+                    ++i;
+                }
+            }
+
             phoenix::app::update_character_vertices(renderer, characterSystem,
                 characterShadowScratch, displaySettings.characterShadow);
             if (!npcManager.active() && botManager.bots.empty())
@@ -1128,6 +1380,57 @@ int main(int, char**)
 
             runtime.camera_state(cameraX, cameraY, cameraZ, cameraYaw, cameraPitch);
             renderer.set_character_visible(false);
+        }
+
+        // Merge the background bot-effect preload (see botEffectPreloadFuture)
+        // the moment it's done, without ever blocking on it. This is a
+        // one-time, one-shot merge for the whole batch, so it only ever
+        // marks debugEffectTexturesDirty once (see the flush right below)
+        // instead of once per file like the old per-cast lazy path did.
+        if (botEffectPreloadKicked && !botEffectPreloadReady
+            && botEffectPreloadFuture.valid()
+            && botEffectPreloadFuture.wait_for(std::chrono::seconds(0)) == std::future_status::ready)
+        {
+            for (auto& item : botEffectPreloadFuture.get())
+            {
+                const auto key = item.path.string();
+                if (effectLibraryCache.contains(key))
+                    continue;
+
+                DebugEffectLibraryEntry entry{};
+                entry.library = std::move(item.library);
+                entry.meshes = std::move(item.meshes);
+
+                const auto baseLayer = debugEffectTexturesRaw.size();
+                entry.textureLayers.reserve(item.texturePaths.size());
+                for (std::size_t i = 0; i < item.texturePaths.size(); ++i)
+                {
+                    if (item.texturePaths[i].empty())
+                    {
+                        entry.textureLayers.push_back(0xFFFFFFFFu);
+                        debugEffectTexturesRaw.push_back({});
+                        continue;
+                    }
+                    entry.textureLayers.push_back(0x80000000u | static_cast<std::uint32_t>(baseLayer + i));
+                    debugEffectTexturesRaw.push_back(std::move(item.textures[i]));
+                    debugEffectTexturesDirty = true;
+                }
+                effectLibraryCache.emplace(key, std::move(entry));
+            }
+            botEffectPreloadReady = true;
+        }
+
+        // Flush any debug-effect textures discovered this frame (bot casts
+        // and/or the "Effects" panel's file picker both funnel through
+        // ensureEffectLibraryLoaded, which only marks this dirty — see its
+        // definition). At most one full-array upload per frame regardless
+        // of how many distinct new files got touched.
+        if (debugEffectTexturesDirty)
+        {
+            auto normalized = debugEffectTexturesRaw;
+            normalizeTexturesForBcUpload(normalized, {}, 0.0f, 0.0f, 1u);
+            renderer.upload_debug_effect_textures(normalized);
+            debugEffectTexturesDirty = false;
         }
 
         // Snap camera position to a fine grid to eliminate sub-pixel jitter
@@ -1249,9 +1552,153 @@ int main(int, char**)
             animatedObjectScene.clear_dirty();
         }
 
+        {
+            const float cosYaw = std::cos(cameraYaw);
+            const float sinYaw = std::sin(cameraYaw);
+            const float cosPitch = std::cos(cameraPitch);
+            const float sinPitch = std::sin(cameraPitch);
+            // World-space camera basis, matching the yaw-then-pitch rotation
+            // static_object.vert/effect_particle.vert apply to world deltas.
+            const float cameraRightWorld[3]{ cosYaw, 0.0f, -sinYaw };
+            const float cameraUpWorld[3]{ -sinPitch * sinYaw, cosPitch, -sinPitch * cosYaw };
+            const float cameraForwardWorld[3]{ cosPitch * sinYaw, sinPitch, cosPitch * cosYaw };
+            const float cameraPositionWorld[3]{ renderCameraX, renderCameraY, renderCameraZ };
+            effectParticleSystem.update(deltaSeconds, cameraPositionWorld,
+                cameraRightWorld, cameraUpWorld, cameraForwardWorld, fogCullDistance);
+
+            // WeatherMode -> WeatherParticleSystem kind/intensity. Storm/
+            // Snowstorm map to Heavy for now; Light/Medium are already wired
+            // in WeatherParticleSystem for a future finer-grained weather UI.
+            int weatherKind = 0;
+            auto weatherIntensity = phoenix::runtime::WeatherIntensity::Heavy;
+            if (weatherMode == WeatherMode::Storm)
+                weatherKind = 1;
+            else if (weatherMode == WeatherMode::Snowstorm)
+                weatherKind = 2;
+            weatherParticleSystem.set_weather(weatherKind, weatherIntensity);
+            weatherParticleSystem.update(deltaSeconds, cameraPositionWorld,
+                cameraRightWorld, cameraUpWorld, cameraForwardWorld);
+
+            // WeatherMode -> sun/moon body, brightness and tint. Overcast
+            // skies and storms are fully clouded over, so neither the sun
+            // nor its glow should be visible at all — not even dimmed.
+            // Dusk still gets a warm partial glow, dawn/afternoon a warmer
+            // tint, night swaps to the moon.
+            auto celestialBody = phoenix::runtime::CelestialBody::Sun;
+            float celestialStrength = 1.0f;
+            float celestialTint[3]{ 1.0f, 0.74f, 0.42f };
+            switch (weatherMode)
+            {
+                case WeatherMode::Storm:
+                case WeatherMode::Snowstorm:
+                case WeatherMode::Overcast:
+                    celestialBody = phoenix::runtime::CelestialBody::None;
+                    break;
+                case WeatherMode::Night:
+                    celestialBody = phoenix::runtime::CelestialBody::Moon;
+                    celestialTint[0] = 0.90f; celestialTint[1] = 0.93f; celestialTint[2] = 1.0f;
+                    break;
+                case WeatherMode::Dawn:
+                    celestialTint[0] = 1.0f; celestialTint[1] = 0.58f; celestialTint[2] = 0.32f;
+                    break;
+                case WeatherMode::Dusk:
+                    celestialStrength = 0.72f;
+                    celestialTint[0] = 0.92f; celestialTint[1] = 0.38f; celestialTint[2] = 0.28f;
+                    break;
+                case WeatherMode::MidAfternoon:
+                    celestialTint[0] = 1.0f; celestialTint[1] = 0.82f; celestialTint[2] = 0.52f;
+                    break;
+                default: break; // Default/Sunset: full strength, default warm tint
+            }
+            // Dungeons are indoor/underground — no sky at all (see the
+            // "Dungeons always use pitch-black sky and fog" fog logic
+            // elsewhere), so no sun/moon/stars either regardless of the
+            // selected weather mode.
+            const bool isDungeon = runtime.state().world.isDungeon;
+            if (isDungeon)
+                celestialBody = phoenix::runtime::CelestialBody::None;
+            celestialSystem.update(celestialBody, celestialStrength, celestialTint,
+                cameraPositionWorld, cameraRightWorld, cameraUpWorld, cameraForwardWorld, fogCullDistance);
+            starField.update(!isDungeon && weatherMode == WeatherMode::Night, cameraPositionWorld,
+                cameraRightWorld, cameraUpWorld, cameraForwardWorld, fogCullDistance, totalTime);
+
+            // Merge every source into the single-upload buffers
+            // update_effect_particles() expects — it fully replaces the GPU
+            // buffers each call, so all of them must go in together.
+            static std::vector<phoenix::renderer::TerrainVertex> combinedVertices;
+            static std::vector<std::uint32_t> combinedIndices;
+            static std::vector<phoenix::renderer::EffectParticleInstance> combinedInstances;
+            static std::vector<phoenix::renderer::EffectParticleBatch> combinedBatches;
+            combinedVertices = effectParticleSystem.vertices();
+            combinedIndices = effectParticleSystem.indices();
+            combinedInstances = effectParticleSystem.instances();
+            combinedBatches = effectParticleSystem.batches();
+
+            const auto append_source = [&](const std::vector<phoenix::renderer::TerrainVertex>& srcVertices,
+                const std::vector<std::uint32_t>& srcIndices,
+                const std::vector<phoenix::renderer::EffectParticleInstance>& srcInstances,
+                const std::vector<phoenix::renderer::EffectParticleBatch>& srcBatches) {
+                const auto vertexBase = static_cast<std::uint32_t>(combinedVertices.size());
+                const auto instanceBase = static_cast<std::uint32_t>(combinedInstances.size());
+                const auto indexBase = static_cast<std::uint32_t>(combinedIndices.size());
+
+                combinedVertices.insert(combinedVertices.end(), srcVertices.begin(), srcVertices.end());
+                for (const auto index : srcIndices)
+                    combinedIndices.push_back(vertexBase + index);
+                combinedInstances.insert(combinedInstances.end(), srcInstances.begin(), srcInstances.end());
+                for (auto batch : srcBatches)
+                {
+                    batch.firstIndex += indexBase;
+                    batch.firstInstance += instanceBase;
+                    combinedBatches.push_back(batch);
+                }
+            };
+
+            if (weatherParticleSystem.has_particles())
+                append_source(weatherParticleSystem.vertices(), weatherParticleSystem.indices(),
+                    weatherParticleSystem.instances(), weatherParticleSystem.batches());
+            if (celestialSystem.has_particles())
+                append_source(celestialSystem.vertices(), celestialSystem.indices(),
+                    celestialSystem.instances(), celestialSystem.batches());
+            if (starField.has_particles())
+                append_source(starField.vertices(), starField.indices(),
+                    starField.instances(), starField.batches());
+
+            renderer.update_effect_particles(combinedVertices, combinedIndices, combinedInstances, combinedBatches);
+        }
+
 
         if (imguiAvailable)
         {
+            // Lazily load (and cache) whichever data/effects file is currently
+            // selected in the debug panel, rebuilding its sequence-name list.
+            if (!effectLibraryFilePaths.empty() && selectedEffectFileIndex != loadedEffectFileIndex)
+            {
+                const auto fileIndex = static_cast<std::size_t>(
+                    std::clamp(selectedEffectFileIndex, 0, static_cast<int>(effectLibraryFilePaths.size()) - 1));
+                const auto& path = effectLibraryFilePaths[fileIndex];
+                const auto& entry = ensureEffectLibraryLoaded(path);
+
+                effectSequenceNames.clear();
+                const auto& sequences = entry.library.sequences;
+                effectSequenceNames.reserve(sequences.size());
+                for (std::size_t i = 0; i < sequences.size(); ++i)
+                {
+                    // .EFT sequence names are stored in an unconverted Korean
+                    // codepage, not UTF-8 — feeding the raw bytes to ImGui
+                    // renders as garbage "?" glyphs and isn't guaranteed to be
+                    // valid UTF-8 at all. Reduce to printable ASCII only.
+                    std::string label = std::to_string(i) + ": ";
+                    for (const unsigned char ch : sequences[i].name)
+                        label += (ch >= 0x20 && ch < 0x7F) ? static_cast<char>(ch) : '.';
+                    if (label.size() == std::to_string(i).size() + 2)
+                        label += "(unnamed)";
+                    effectSequenceNames.push_back(std::move(label));
+                }
+                selectedEffectSequenceIndex = 0;
+                loadedEffectFileIndex = selectedEffectFileIndex;
+            }
+
             const bool prevCharacterShadow = displaySettings.characterShadow;
             const auto panelResult = draw_editor_panel(
                 runtime,
@@ -1271,6 +1718,7 @@ int main(int, char**)
                 playableMode && characterLoaded && characterSystem.ready(),
                 botManager.bots.size(),
                 botManager.viewDistance,
+                botManager.effectsEnabled,
                 npcManager.catalog(),
                 npcManager.active_count(),
                 npcManager.status(),
@@ -1279,6 +1727,13 @@ int main(int, char**)
                 monsterManager.active_count(),
                 monsterManager.status(),
                 monsterViewDistance,
+                effectFileNames,
+                selectedEffectFileIndex,
+                effectSequenceNames,
+                selectedEffectSequenceIndex,
+                effectParticleSystem.debug_effect_count(),
+                effectSpawnYOffset,
+                effectComponentIndex,
                 assetsFullyLoaded.load());
 
             // The shadow toggle changes the character mesh topology (extra
@@ -1371,6 +1826,51 @@ int main(int, char**)
             }
             if (panelResult.clearMonsters)
                 monsterManager.clear_manual(renderer);   // keep the map's .svmap mobs
+
+            if (panelResult.effectSpawnRequested && loadedEffectFileIndex == selectedEffectFileIndex)
+            {
+                const auto& path = effectLibraryFilePaths[static_cast<std::size_t>(selectedEffectFileIndex)];
+                const auto cacheIt = effectLibraryCache.find(path.string());
+                if (cacheIt != effectLibraryCache.end())
+                {
+                    // Where the character actually stands, not the (offset,
+                    // over-the-shoulder) third-person camera position.
+                    float standX = cameraX, standY = cameraY, standZ = cameraZ, standYaw = cameraYaw;
+                    if (playableMode && characterLoaded && characterSystem.ready())
+                    {
+                        standX = characterSystem.world_x();
+                        standY = characterSystem.world_y();
+                        standZ = characterSystem.world_z();
+                        standYaw = characterSystem.world_yaw();
+                    }
+                    const float spawnPosition[3]{ standX, standY + effectSpawnYOffset, standZ };
+                    effectParticleSystem.spawn_debug_effect(
+                        cacheIt->second.library, cacheIt->second.textureLayers, cacheIt->second.meshes,
+                        selectedEffectSequenceIndex, spawnPosition, standYaw, panelResult.effectSpawnOneShot);
+                }
+            }
+            if (panelResult.effectComponentSpawnRequested && loadedEffectFileIndex == selectedEffectFileIndex)
+            {
+                const auto& path = effectLibraryFilePaths[static_cast<std::size_t>(selectedEffectFileIndex)];
+                const auto cacheIt = effectLibraryCache.find(path.string());
+                if (cacheIt != effectLibraryCache.end())
+                {
+                    float standX = cameraX, standY = cameraY, standZ = cameraZ, standYaw = cameraYaw;
+                    if (playableMode && characterLoaded && characterSystem.ready())
+                    {
+                        standX = characterSystem.world_x();
+                        standY = characterSystem.world_y();
+                        standZ = characterSystem.world_z();
+                        standYaw = characterSystem.world_yaw();
+                    }
+                    const float spawnPosition[3]{ standX, standY + effectSpawnYOffset, standZ };
+                    effectParticleSystem.spawn_debug_component(
+                        cacheIt->second.library, cacheIt->second.textureLayers, cacheIt->second.meshes,
+                        effectComponentIndex, spawnPosition, standYaw, false);
+                }
+            }
+            if (panelResult.clearEffects)
+                effectParticleSystem.clear_debug_effects();
 
             draw_weather_overlay(
                 weatherMode,

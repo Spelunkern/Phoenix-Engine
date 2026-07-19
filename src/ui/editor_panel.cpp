@@ -175,6 +175,7 @@ namespace phoenix::ui
         bool botControlsAvailable,
         std::size_t botCount,
         float& botViewDistance,
+        bool& botEffectsEnabled,
         const std::vector<phoenix::character::NpcCatalogEntry>& npcCatalog,
         std::size_t npcActiveCount,
         const std::string& npcStatus,
@@ -183,6 +184,13 @@ namespace phoenix::ui
         std::size_t monsterActiveCount,
         const std::string& monsterStatus,
         float& monsterViewDistance,
+        const std::vector<std::string>& effectFileNames,
+        int& selectedEffectFileIndex,
+        const std::vector<std::string>& effectSequenceNames,
+        int& selectedEffectSequenceIndex,
+        std::size_t effectActiveCount,
+        float& effectSpawnYOffset,
+        int& effectComponentIndex,
         bool assetsReady)
     {
         UnifiedPanelResult result{};
@@ -199,8 +207,8 @@ namespace phoenix::ui
             Bots,
             NPCs,
             Monsters,
-            Emotes,
             Animations,
+            Effects,
         };
         static Section activeSection = Section::Map;
 
@@ -225,13 +233,13 @@ namespace phoenix::ui
         sectionButton(Section::Map, "Map##nav"); ImGui::SameLine();
         sectionButton(Section::Display, "Display##nav"); ImGui::SameLine();
         sectionButton(Section::Sound, "Sound##nav"); ImGui::SameLine();
-        sectionButton(Section::Animations, "Animations##nav");
+        sectionButton(Section::Animations, "Animations##nav"); ImGui::SameLine();
+        sectionButton(Section::Effects, "Effects##nav");
         sectionButton(Section::Character, "Character##nav"); ImGui::SameLine();
         sectionButton(Section::Vehicle, "Vehicle##nav"); ImGui::SameLine();
         sectionButton(Section::Bots, "Bots##nav"); ImGui::SameLine();
         sectionButton(Section::NPCs, "NPCs##nav"); ImGui::SameLine();
-        sectionButton(Section::Monsters, "Monsters##nav"); ImGui::SameLine();
-        sectionButton(Section::Emotes, "Emotes##nav");
+        sectionButton(Section::Monsters, "Monsters##nav");
         ImGui::Separator();
 
         if (activeSection == Section::Map)
@@ -527,6 +535,7 @@ namespace phoenix::ui
                     result.clearBots = true;
                 ImGui::SetNextItemWidth(180.0f);
                 ImGui::SliderFloat("View dist", &botViewDistance, 20.0f, 300.0f, "%.0f m");
+                ImGui::Checkbox("Bot cast effects", &botEffectsEnabled);
             }
             else
             {
@@ -621,17 +630,6 @@ namespace phoenix::ui
                 }
                 ImGui::SetNextItemWidth(180.0f);
                 ImGui::SliderFloat("Cull dist", &monsterViewDistance, 20.0f, 300.0f, "%.0f m");
-            }
-        }
-        else if (activeSection == Section::Emotes)
-        {
-            for (int i = 1; i <= 10; ++i)
-            {
-                char label[16];
-                std::snprintf(label, sizeof(label), "Anim %d", i);
-                if (ImGui::Button(label, ImVec2(60.0f, 0.0f)))
-                    result.emoteTriggered = i;
-                if (i % 5 != 0) ImGui::SameLine();
             }
         }
         else if (activeSection == Section::Animations)
@@ -808,6 +806,78 @@ namespace phoenix::ui
                 }
                 if (ImGui::Button("Play"))
                     result.animationTriggered = choices[static_cast<std::size_t>(selectedAnimation)].index;
+            }
+        }
+        else if (activeSection == Section::Effects)
+        {
+            ImGui::Text("Active: %d", static_cast<int>(effectActiveCount));
+            if (effectFileNames.empty())
+            {
+                ImGui::TextDisabled("No .eft/.ef2/.ef3 files found under data/effects.");
+            }
+            else
+            {
+                selectedEffectFileIndex = std::clamp(selectedEffectFileIndex, 0, static_cast<int>(effectFileNames.size()) - 1);
+                ImGui::SetNextItemWidth(240.0f);
+                if (ImGui::BeginCombo("File", effectFileNames[static_cast<std::size_t>(selectedEffectFileIndex)].c_str()))
+                {
+                    for (int i = 0; i < static_cast<int>(effectFileNames.size()); ++i)
+                    {
+                        const bool selected = selectedEffectFileIndex == i;
+                        if (ImGui::Selectable(effectFileNames[static_cast<std::size_t>(i)].c_str(), selected))
+                            selectedEffectFileIndex = i;
+                        if (selected)
+                            ImGui::SetItemDefaultFocus();
+                    }
+                    ImGui::EndCombo();
+                }
+
+                if (effectSequenceNames.empty())
+                {
+                    ImGui::TextDisabled("This file has no effect sequences.");
+                }
+                else
+                {
+                    selectedEffectSequenceIndex = std::clamp(
+                        selectedEffectSequenceIndex, 0, static_cast<int>(effectSequenceNames.size()) - 1);
+                    ImGui::SetNextItemWidth(240.0f);
+                    if (ImGui::BeginCombo("Effect", effectSequenceNames[static_cast<std::size_t>(selectedEffectSequenceIndex)].c_str()))
+                    {
+                        for (int i = 0; i < static_cast<int>(effectSequenceNames.size()); ++i)
+                        {
+                            const bool selected = selectedEffectSequenceIndex == i;
+                            if (ImGui::Selectable(effectSequenceNames[static_cast<std::size_t>(i)].c_str(), selected))
+                                selectedEffectSequenceIndex = i;
+                            if (selected)
+                                ImGui::SetItemDefaultFocus();
+                        }
+                        ImGui::EndCombo();
+                    }
+                    ImGui::SetNextItemWidth(150.0f);
+                    ImGui::SliderFloat("Y offset", &effectSpawnYOffset, -50.0f, 300.0f, "%.0f");
+                    ImGui::TextDisabled("Spawns at the character's position, offset on Y.");
+                    if (ImGui::Button("Spawn (stays)", ImVec2(140.0f, 0.0f)))
+                    {
+                        result.effectSpawnRequested = true;
+                        result.effectSpawnOneShot = false;
+                    }
+                    ImGui::SameLine();
+                    if (ImGui::Button("Spawn (one-shot)", ImVec2(150.0f, 0.0f)))
+                    {
+                        result.effectSpawnRequested = true;
+                        result.effectSpawnOneShot = true;
+                    }
+                }
+                if (ImGui::Button("Clear All", ImVec2(295.0f, 0.0f)))
+                    result.clearEffects = true;
+
+                ImGui::Separator();
+                ImGui::TextDisabled("Diagnostic: spawn one raw component directly");
+                ImGui::SetNextItemWidth(100.0f);
+                ImGui::InputInt("Component #", &effectComponentIndex);
+                effectComponentIndex = std::max(0, effectComponentIndex);
+                if (ImGui::Button("Spawn component", ImVec2(295.0f, 0.0f)))
+                    result.effectComponentSpawnRequested = true;
             }
         }
         result.characterChanged = selectedCharacterOption != prevCharOption

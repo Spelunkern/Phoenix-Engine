@@ -59,6 +59,12 @@ namespace phoenix::ui
         int monsterSpawnCount{ 1 };
         bool monsterSpawnRandom{};
         bool clearMonsters{};
+        bool effectSpawnRequested{};
+        bool effectSpawnOneShot{};
+        bool clearEffects{};
+        // Diagnostic isolation: spawn one raw component (library.effects
+        // index) directly, skipping sequence expansion.
+        bool effectComponentSpawnRequested{};
     };
 
     // Nearest existing index in a sorted/unsorted list (keeps part selections valid
@@ -101,6 +107,7 @@ namespace phoenix::ui
         bool botControlsAvailable,
         std::size_t botCount,
         float& botViewDistance,
+        bool& botEffectsEnabled,
         const std::vector<phoenix::character::NpcCatalogEntry>& npcCatalog,
         std::size_t npcActiveCount,
         const std::string& npcStatus,
@@ -109,5 +116,24 @@ namespace phoenix::ui
         std::size_t monsterActiveCount,
         const std::string& monsterStatus,
         float& monsterViewDistance,
+        // Debug "Effects" panel: one entry per effect_library().sequences[i],
+        // typically "<i>: <raw sequence name>" (names may be garbled — the
+        // .EFT format stores them in a Korean codepage this UI doesn't
+        // transcode — but the index is always usable for lookup).
+        // Debug "Effects" panel: full data/effects catalog (effectFileNames,
+        // from PhoenixRuntime::effect_library_files()), then the sequences of
+        // whichever file is currently selected (rebuilt by the caller when
+        // selectedEffectFileIndex changes). Names may be garbled — the .EFT
+        // format stores them in a Korean codepage this UI doesn't transcode —
+        // but the index is always usable for lookup.
+        const std::vector<std::string>& effectFileNames,
+        int& selectedEffectFileIndex,
+        const std::vector<std::string>& effectSequenceNames,
+        int& selectedEffectSequenceIndex,
+        std::size_t effectActiveCount,
+        float& effectSpawnYOffset,
+        // Diagnostic isolation: raw component index (library.effects) to
+        // spawn directly, bypassing sequence expansion.
+        int& effectComponentIndex,
         bool assetsReady);
 }

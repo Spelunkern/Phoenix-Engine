@@ -47,6 +47,13 @@ namespace phoenix::ui
         int fpsCapIndex{};
         float fps_cap_seconds() const;
 
+        // MSAA + alpha-to-coverage toggle (see OpenGLRenderer::set_antialiasing_enabled).
+        // Persisted via app_settings.h alongside the other fields above.
+        // Hidden/disabled in the HUD if the GL context didn't get multisample
+        // buffers (set by main.cpp from SdlWindow::has_multisample_context()).
+        bool antialiasingEnabled{ true };
+        bool antialiasingAvailable{ true };
+
         void initialize_system_info();
         void push_frametime(float dt);
 

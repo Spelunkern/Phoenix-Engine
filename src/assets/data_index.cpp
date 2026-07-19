@@ -186,6 +186,17 @@ namespace phoenix::assets
             return path;
 
         const auto ext = lower_ascii(std::filesystem::path(textureName).extension().string());
+        if (ext == ".tga" || ext == ".bmp" || ext == ".dds")
+        {
+            // .png is the engine's canonical converted-asset format (see
+            // data/effects, data/sky) — original .wld/table references still
+            // name the legacy extension, so it's always tried first here
+            // alongside the older .dds/.tga/.bmp fallbacks.
+            textureName.replace(textureName.size() - 4, 4, ".png");
+            path = assets.resolve(textureName);
+            if (!path.empty())
+                return path;
+        }
         if (ext == ".tga")
         {
             textureName.replace(textureName.size() - 4, 4, ".dds");

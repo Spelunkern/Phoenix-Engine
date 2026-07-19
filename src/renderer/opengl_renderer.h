@@ -52,6 +52,34 @@ namespace phoenix::renderer
         std::uint32_t instanceCount{};
     };
 
+    // Per-instance data for one effect particle: right/up/forward are the
+    // world-space basis vectors already scaled+rotated (so the shader only
+    // needs worldPos = position + right*localX + up*localY + forward*localZ —
+    // for a billboard quad localZ is always 0, so forward is unused/zero).
+    // color is straight (non-premultiplied) RGBA sampled from the effect's
+    // keyframes.
+    struct EffectParticleInstance
+    {
+        float right[4]{};
+        float up[4]{};
+        float forward[4]{};
+        float position[4]{};
+        float color[4]{};
+    };
+
+    // Like ObjectBatch, but effect particles are drawn with a blend mode taken
+    // from the .EFT component (D3DBLEND-style enum values straight from the
+    // file); the renderer maps them to GL blend factors per batch.
+    struct EffectParticleBatch
+    {
+        std::uint32_t firstIndex{};
+        std::uint32_t indexCount{};
+        std::uint32_t firstInstance{};
+        std::uint32_t instanceCount{};
+        std::int32_t sourceBlend{};
+        std::int32_t destinationBlend{};
+    };
+
     struct BatchBoundsGpu
     {
         float x{};
@@ -114,6 +142,16 @@ namespace phoenix::renderer
             const std::vector<BatchBoundsGpu>& bounds);
         bool indirect_draw_ready() const;
         void set_animated_object_batches(const std::vector<ObjectBatch>& batches);
+        // Rebuilds the effect-particle draw buffers from scratch; called once
+        // per frame from the CPU particle simulation (cheap: particle counts
+        // are small, unlike the terrain/static-object meshes). Vertices carry
+        // one quad per distinct (texture, blend) batch; `batches` groups the
+        // instance range that shares each quad.
+        bool update_effect_particles(
+            const std::vector<TerrainVertex>& vertices,
+            const std::vector<std::uint32_t>& indices,
+            const std::vector<EffectParticleInstance>& instances,
+            const std::vector<EffectParticleBatch>& batches);
         void set_terrain_draw_ranges(const std::vector<TerrainDrawRange>& ranges);
         bool set_character_mesh(const std::vector<TerrainVertex>& vertices, const std::vector<std::uint32_t>& indices);
         // Fast mesh swap: reuses existing GPU buffers when large enough, no vkDeviceWaitIdle.
@@ -161,11 +199,22 @@ namespace phoenix::renderer
         bool upload_terrain_textures(const std::vector<DdsTexture>& textures,
             const std::function<void()>& pump = {});
         bool upload_terrain_texture_layers(std::uint32_t firstLayer, const std::vector<DdsTexture>& textures);
+        // Dedicated array for the "Effects" debug panel (see effect_particle
+        // .frag's high-bit texture-layer convention). Recreates the array
+        // wholesale from the full accumulated texture list each call — the
+        // caller (main.cpp) appends new files' textures to the end and never
+        // reorders, so earlier debug spawns' layer indices stay valid.
+        bool upload_debug_effect_textures(const std::vector<DdsTexture>& textures);
         bool upload_field_lightmaps(const std::vector<DdsTexture>& lightmaps, std::uint32_t sectionCount);
         void disable_field_lightmaps();
         void set_sky_settings(const float* fogColor, float fogStartDistance, float fogEndDistance, bool hasWorldSky);
         void set_sky_texture_layers(std::uint32_t skyLayer, std::uint32_t primaryCloudLayer, std::uint32_t secondaryCloudLayer);
         void set_sky_tuning(const float* values, std::uint32_t count);
+        // Live toggle for MSAA + alpha-to-coverage — safe to call every
+        // frame regardless of whether the context actually has multisample
+        // buffers (glEnable/glDisable(GL_MULTISAMPLE) is a no-op without
+        // them, never an error).
+        void set_antialiasing_enabled(bool enabled);
         void set_water_layer(std::uint32_t waterLayer);
         void set_water_animation(std::uint32_t baseLayer, std::uint32_t frameCount, float tileSize);
         void update_water_time(float totalTime);
@@ -205,6 +254,7 @@ namespace phoenix::renderer
     private:
         bool create_terrain_pipeline();
         bool create_static_object_pipeline();
+        bool create_effect_particle_pipeline();
         bool create_skinned_character_pipeline();
         bool create_cull_compute_pipeline();
         bool create_sky_pipeline();

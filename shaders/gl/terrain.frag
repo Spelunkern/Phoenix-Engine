@@ -16,6 +16,15 @@ layout(binding = 0) uniform sampler2DArray terrainTexture;
 layout(std430, binding = 1) readonly buffer TerrainMap { uint words[]; } terrainMap;
 layout(binding = 2) uniform sampler2DArray lightmapTexture;
 
+// Interleaved-gradient-noise dither (Jimenez, "Next Generation Post
+// Processing in Call of Duty: Advanced Warfare") — one mad+two fract+one mul
+// per pixel, breaks up 8-bit banding in the sky/fog's smooth gradients
+// without needing a temporal or blue-noise texture.
+float ditherNoise(vec2 fragCoord)
+{
+    return fract(52.9829189 * fract(dot(fragCoord, vec2(0.06711056, 0.00583715))));
+}
+
 uint terrainMapLoad(uint cx, uint cz, uint mapSide)
 {
     uint index = cz * mapSide + cx;
@@ -110,6 +119,11 @@ void main()
     vec3 color = vec3(0.0);
     float alpha = 1.0;
     bool applyLightmap = true;
+    // Purely a look pass (saturation + a mild warm tint), not lighting —
+    // same formula/values as static_object.frag's assetGrade, so terrain
+    // and map objects read as one consistent style. Skipped for characters
+    // rendered through this shader (isCharacter branch below).
+    bool applyGrade = true;
 
     if (vTextureLayer == 0xFFFFFFFDu && mapSide > 1u)
     {
@@ -209,6 +223,7 @@ void main()
             bool isCharacter = (vColor.r < 0.01 && vColor.g < 0.01 && vColor.b < 0.05);
             if (isCharacter)
             {
+                applyGrade = false;
                 bool flatLit = vColor.b > 0.01;
                 if (alphaCutout && textureColor.a - 0.08 < 0.0)
                     discard;
@@ -232,19 +247,21 @@ void main()
                     vec3 n = normalize(vNormal);
                     float nDotL = dot(n, charLightDir);
                     float diffuse = clamp(nDotL, 0.0, 1.0);
-                    float wrap = clamp((nDotL + 0.4) / 1.4, 0.0, 1.0);
-                    float shade = mix(diffuse, wrap, camera.tuning2.w);
+                    // Player character reverted to plain diffuse (no wrap,
+                    // no specular/rim) — the enhanced look read wrong on
+                    // the player specifically, even though the identical
+                    // formula was kept for monsters/NPCs (skinned_character.
+                    // frag) and reads fine there. Hardcoded here (rather
+                    // than reverting camera.tuning2.w/tuning3.xy) so this
+                    // stays decoupled from characterShading, which
+                    // skinned_character.frag's isCharacter branch still
+                    // relies on.
+                    float shade = diffuse;
 
                     float hemi = n.y * 0.5 + 0.5;
                     vec3 ambient = mix(ambientGround, ambientSky, hemi) * weatherTint;
 
                     lit = color * (ambient + shade * camera.tuning1.w * keyColor);
-
-                    vec3 viewDir = normalize(camera.positionYaw.xyz - vWorldPos);
-                    vec3 halfVec = normalize(charLightDir + viewDir);
-                    float spec = pow(clamp(dot(n, halfVec), 0.0, 1.0), 24.0) * camera.tuning3.x * (0.25 + 0.75 * diffuse);
-                    float rim = pow(1.0 - clamp(dot(n, viewDir), 0.0, 1.0), 3.0) * camera.tuning3.y * (0.4 + 0.6 * hemi);
-                    lit += spec + rim * (0.5 + 0.5 * skyColor);
                 }
 
                 if (!alphaCutout)
@@ -279,7 +296,24 @@ void main()
         color *= lm;
     }
 
+    if (applyGrade)
+    {
+        float luma = dot(color, vec3(0.299, 0.587, 0.114));
+        color = clamp(mix(vec3(luma), color, 1.12) * vec3(1.03, 1.00, 0.97), 0.0, 1.0);
+    }
+
     color = applyUnderwaterView(color, vWorldPos);
     color = mix(color, skyColor, vFogFactor);
+
+    // Subtle screen-space vignette — pure framing/aesthetic, applied last so
+    // it darkens the final composited pixel (fog included) uniformly.
+    vec2 screenUv = gl_FragCoord.xy * camera.screenInfo.zw;
+    float vignette = 1.0 - smoothstep(0.4, 1.0, length(screenUv - 0.5) * 1.35);
+    color *= mix(0.55, 1.0, vignette);
+
+    // Dither at the very end, after every other color operation, so it
+    // breaks up banding in the final quantized-to-8-bit output.
+    color += (ditherNoise(gl_FragCoord.xy) - 0.5) / 255.0;
+
     outColor = vec4(color, alpha);
 }

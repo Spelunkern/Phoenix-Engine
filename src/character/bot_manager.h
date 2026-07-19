@@ -14,6 +14,7 @@
 #include <cstring>
 #include <filesystem>
 #include <format>
+#include <functional>
 #include <map>
 #include <random>
 #include <string>
@@ -235,6 +236,19 @@ namespace phoenix::character
         float viewDistance{ 100.0f };
         std::size_t lastBotCount{};
         std::uint32_t frameCounter{};
+
+        // Whether a rolled "cast" actually spawns onCastEffect's visual —
+        // false still plays the cast pose/animation, just silently skips the
+        // callback. Lets the UI kill bot spell-effect spam without touching
+        // any of the AI/animation logic.
+        bool effectsEnabled{ true };
+
+        // Invoked (world position + facing yaw) whenever a bot's random idle
+        // behavior rolls "cast" — the caller owns everything effect-related
+        // (which .eft to pick, spawning, cleanup); BotManager only knows
+        // "a bot wants to cast something now". Left unset, casting is a
+        // no-op (just the existing kPoseCast animation, no visual effect).
+        std::function<void(float x, float y, float z, float yaw)> onCastEffect;
 
         static std::size_t poseAnimIndex(BotPose pose, const phoenix::character::CharacterData& d)
         {
@@ -639,7 +653,11 @@ namespace phoenix::character
                 bot.sinYaw = std::sin(bot.yaw);
                 bot.cosYaw = std::cos(bot.yaw);
                 bot.moveTimer = randomFloat(1.0f, 4.0f);
-                bot.actionTimer = randomFloat(4.0f, 12.0f);
+                // Short initial delay (vs. the steady-state range in
+                // update()) so a freshly-spawned crowd starts showing idle
+                // actions/cast effects within a couple seconds instead of
+                // ramping up over the first ~12s.
+                bot.actionTimer = randomFloat(1.0f, 3.5f);
                 bot.moveSpeed = 0.0f;
                 bot.currentAction = 1;
                 bot.pose = 1;
@@ -752,9 +770,15 @@ namespace phoenix::character
                 if (bot.currentAction == 0 && bot.actionTimer <= 0.0f)
                 {
                     // 0=idle, 1=move, 2=attack, 3=cast, 4=emote, 5=jump, 6=die, 7=damage, 8=sit
-                    static constexpr std::uint16_t idleActions[] = { 2, 3, 4, 4, 5, 7, 8 };
+                    // "3" (cast) is now nearly half the weighted options, and
+                    // the timer below is short — only bots within
+                    // viewDistance/the view cone actually run this AI tick at
+                    // all (see the culling comment in update()), so getting
+                    // the on-screen crowd to read as "frequently casting"
+                    // needs a fairly aggressive per-bot rate to begin with.
+                    static constexpr std::uint16_t idleActions[] = { 2, 3, 3, 3, 3, 3, 4, 4, 5, 7, 8 };
                     bot.currentAction = idleActions[static_cast<std::size_t>(randomInt(0, static_cast<int>(std::size(idleActions)) - 1))];
-                    bot.actionTimer = randomFloat(5.0f, 14.0f);
+                    bot.actionTimer = randomFloat(1.5f, 3.5f);
                 }
                 if (bot.currentAction == 0)
                     bot.moveSpeed = approach(bot.moveSpeed, 0.0f, 10.0f * dt);
@@ -796,7 +820,12 @@ namespace phoenix::character
                     break;
                 }
                 case 2: bot.pose = kPoseAttack1 + static_cast<std::uint16_t>(randomInt(0, 1)); bot.currentAction = 0; break;
-                case 3: bot.pose = kPoseCast; bot.currentAction = 0; break;
+                case 3:
+                    bot.pose = kPoseCast;
+                    bot.currentAction = 0;
+                    if (effectsEnabled && onCastEffect)
+                        onCastEffect(bot.x, bot.y, bot.z, bot.yaw);
+                    break;
                 case 4: bot.pose = static_cast<std::uint16_t>(kPoseEmote1 + randomInt(0, 4)); bot.currentAction = 0; break;
                 case 5: bot.pose = kPoseJump; bot.currentAction = 0; break;
                 case 6: bot.pose = kPoseDie; bot.currentAction = 0; break;

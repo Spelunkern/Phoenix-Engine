@@ -15,6 +15,13 @@ CAMERA_BLOCK
 layout(binding = 0) uniform sampler2DArray terrainTexture;
 layout(binding = 2) uniform sampler2DArray lightmapTexture;
 
+// Same interleaved-gradient-noise dither as terrain.frag — see there for
+// the reference.
+float ditherNoise(vec2 fragCoord)
+{
+    return fract(52.9829189 * fract(dot(fragCoord, vec2(0.06711056, 0.00583715))));
+}
+
 vec3 applyUnderwaterView(vec3 color, vec3 worldPos)
 {
     if (camera.positionYaw.y >= 0.0)
@@ -54,18 +61,42 @@ void main()
         bool isCharacter = (vColor.r < 0.01 && vColor.g < 0.01 && vColor.b < 0.01);
         if (isCharacter)
         {
+            // Same wrap-diffuse + hemisphere-ambient + Blinn-Phong specular
+            // + Fresnel rim model as terrain.frag's character branch (used
+            // by the player) — monsters/NPCs draw through this shader
+            // instead, so armor/weapons/capes on them now pick up the same
+            // highlight and rim light instead of flat diffuse.
             assetGrade = false;
             if (alphaCutout && textureColor.a - 0.08 < 0.0)
                 discard;
             color = textureColor.rgb;
+
             vec3 n = normalize(vNormal);
             vec3 charLightDir = vec3(-0.33, 0.80, -0.26);
-            float diffuse = clamp(dot(n, charLightDir), 0.0, 1.0);
-            vec3 lit = color * (0.56 + diffuse * 0.72);
+            float nDotL = dot(n, charLightDir);
+            float diffuse = clamp(nDotL, 0.0, 1.0);
+            float wrap = clamp((nDotL + 0.4) / 1.4, 0.0, 1.0);
+            float shade = mix(diffuse, wrap, camera.tuning2.w);
+
+            float hemi = n.y * 0.5 + 0.5;
+            vec3 keyColor = camera.tuning0.rgb;
+            vec3 ambientGround = camera.tuning1.rgb;
+            vec3 ambientSky = camera.tuning2.rgb;
+            vec3 weatherTint = vec3(camera.tuning3.z) + camera.tuning3.w * skyColor;
+            vec3 ambient = mix(ambientGround, ambientSky, hemi) * weatherTint;
+
+            vec3 lit = color * (ambient + shade * camera.tuning1.w * keyColor);
+
+            vec3 viewDir = normalize(camera.positionYaw.xyz - vWorldPos);
+            vec3 halfVec = normalize(charLightDir + viewDir);
+            float spec = pow(clamp(dot(n, halfVec), 0.0, 1.0), 24.0) * camera.tuning3.x * (0.25 + 0.75 * diffuse);
+            float rim = pow(1.0 - clamp(dot(n, viewDir), 0.0, 1.0), 3.0) * camera.tuning3.y * (0.4 + 0.6 * hemi);
+            lit += spec + rim * (0.5 + 0.5 * skyColor);
+
             if (!alphaCutout)
                 color = clamp(lit + color * textureColor.a * 0.30, 0.0, 1.0);
             else
-                color = lit;
+                color = clamp(lit, 0.0, 1.0);
         }
         else
         {
@@ -98,5 +129,14 @@ void main()
 
     color = applyUnderwaterView(color, vWorldPos);
     color = mix(color, skyColor, vFogFactor);
+
+    // Subtle screen-space vignette — a lens/framing effect applied to the
+    // whole scene (see terrain.frag/static_object.frag for the same term).
+    vec2 screenUv = gl_FragCoord.xy * camera.screenInfo.zw;
+    float vignette = 1.0 - smoothstep(0.4, 1.0, length(screenUv - 0.5) * 1.35);
+    color *= mix(0.55, 1.0, vignette);
+
+    color += (ditherNoise(gl_FragCoord.xy) - 0.5) / 255.0;
+
     outColor = vec4(color, 1.0);
 }

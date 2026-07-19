@@ -2,6 +2,7 @@
 #include "renderer/dds_loader.h"
 
 #include "assets/data_index.h"
+#include "renderer/png_loader.h"
 
 #include <algorithm>
 #include <climits>
@@ -362,6 +363,28 @@ namespace phoenix::renderer
     {
         auto extension = path.extension().string();
         for (auto& c : extension) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+
+        // PNG is the engine's canonical format for converted/authored assets
+        // (see data/effects, data/sky) — every call site here still just
+        // asks for "the texture at this path" via load_dds, so decode PNGs
+        // transparently instead of forcing every caller to branch on
+        // extension. Downstream (BC3 normalization, etc.) already handles
+        // uncompressed RGBA DdsTextures, which is exactly what this produces.
+        if (extension == ".png")
+        {
+            const auto png = load_png(path);
+            DdsTexture result{};
+            if (!png.valid)
+                return result;
+            result.width = png.width;
+            result.height = png.height;
+            result.vkFormat = kDdsFormatR8G8B8A8Unorm;
+            result.compressed = false;
+            result.rgba = png.rgba;
+            result.valid = !result.rgba.empty();
+            return result;
+        }
+
         if (extension != ".dds")
             return {};
 

@@ -382,6 +382,19 @@ namespace phoenix::ui
                 flush_app_settings();
         }
 
+        if (hud.antialiasingAvailable)
+        {
+            if (ImGui::Checkbox("Anti-aliasing", &hud.antialiasingEnabled) && hud.renderer)
+            {
+                hud.renderer->set_antialiasing_enabled(hud.antialiasingEnabled);
+                flush_app_settings();
+            }
+        }
+        else
+        {
+            ImGui::TextDisabled("Anti-aliasing unavailable");
+        }
+
         ImGui::End();
     }
 }

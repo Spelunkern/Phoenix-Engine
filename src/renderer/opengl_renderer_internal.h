@@ -135,8 +135,14 @@ namespace phoenix::renderer
         GLuint terrainProgram{};
         GLuint staticObjectProgram{};
         GLuint skinnedCharacterProgram{};
+        GLuint effectParticleProgram{};
         GLuint skyProgram{};
         bool skyReady{};
+        // Tracks the last value passed to set_antialiasing_enabled so the
+        // effect-particle draw (which deliberately disables MSAA/alpha-to-
+        // coverage around itself — see render_frame) knows what to restore
+        // afterward instead of just assuming it was on.
+        bool antialiasingEnabled{};
 
         // --- VAOs ---
         GLuint terrainVao{};
@@ -147,6 +153,7 @@ namespace phoenix::renderer
         GLuint botCharacterVao{};
         GLuint monsterCharacterVao{};
         GLuint npcCharacterVao{};
+        GLuint effectParticleVao{};
         GLuint emptyVao{}; // for sky (no vertex attribs, gl_VertexID driven)
 
         // --- camera uniform buffer (matches the old 60-float / 15-vec4 push
@@ -211,6 +218,12 @@ namespace phoenix::renderer
         bool npcCharacterVisible{};
         GlBuffer npcPaletteBuffer[kMaxFramesInFlight];
 
+        GlBuffer effectParticleVertexBuffer;
+        GlBuffer effectParticleIndexBuffer;
+        GlBuffer effectParticleInstanceBuffer;
+        std::vector<EffectParticleBatch> effectParticleBatches;
+        bool effectParticlesReady{};
+
         // --- textures ---
         GLuint terrainSampler{};
         GlTexture terrainTextureArray;
@@ -230,6 +243,27 @@ namespace phoenix::renderer
         GlTexture lightmapTexture;
         std::uint32_t lightmapSectionCount{};
         bool lightmapReady{};
+
+        // Dedicated, independent array for the "Effects" debug panel — never
+        // shares layers with terrainTextureArray (which is fixed-size once
+        // the map's own textures are uploaded). Recreated wholesale each time
+        // the panel adds a new file's textures; see upload_debug_effect_textures().
+        // Dedicated sampler (not terrainSampler): the debug array is uploaded
+        // with a single mip level, but terrainSampler's MIN_FILTER expects a
+        // full mipmap chain (LINEAR_MIPMAP_LINEAR). A mismatched min filter
+        // makes the texture "mipmap incomplete" per GL rules whenever a
+        // fragment's computed LOD needs mip>0 (i.e. any sufficiently large or
+        // distant billboard) — sampling then returns opaque black instead of
+        // the actual texture, which read as flat colored squares.
+        GLuint debugEffectSampler{};
+        GlTexture debugEffectTextureArray;
+        std::uint32_t debugEffectTextureLayerCount{};
+        std::uint32_t debugEffectTextureWidth{};
+        std::uint32_t debugEffectTextureHeight{};
+        std::uint32_t debugEffectTextureMipLevels{};
+        std::uint32_t debugEffectTextureFormat{};
+        bool debugEffectTextureCompressed{};
+        bool debugEffectTexturesReady{};
 
         // --- preview image (pre-scene UI, e.g. login screen) ---
         GLuint previewTexture{};
@@ -280,18 +314,36 @@ namespace phoenix::renderer
             0.82f, 1.10f, 0.22f, 0.06f,
         };
         float waterStyle[4]{ 0.10f, 0.18f, 0.22f, 0.62f }; // natural water tint
+        // tuning2.w (wrap-lighting blend) and tuning3.xy (specular/rim
+        // strength) were 0 — the terrain.frag character-lighting branch
+        // (used by the player, see the terrainProgram+constants character
+        // draw in render_frame) already computed a Blinn-Phong specular
+        // and a Fresnel rim term, but multiplied by zero, so neither ever
+        // actually showed. Turning these on is what makes armor/weapons
+        // pick up a highlight instead of flat diffuse.
         float characterShading[16]{
             1.0f, 1.0f, 1.0f, 1.0f,
             0.56f, 0.56f, 0.56f, 0.72f,
-            0.56f, 0.56f, 0.56f, 0.0f,
-            0.0f, 0.0f, 1.0f, 0.0f,
+            0.56f, 0.56f, 0.56f, 0.35f,
+            0.35f, 0.22f, 1.0f, 0.0f,
         };
+        // tuning0.rgb/.w feed static_object.frag's assetGrade pass (a pure
+        // look pass: saturation via mix(luma,color,w), then an rgb tint
+        // multiply) — was (1,1,1,1), a no-op, until this matched the same
+        // subtle warm/saturated grade added to terrain.frag's plain-terrain
+        // path, so terrain and map objects (trees, rocks, buildings) read
+        // as one consistent style.
         float assetShading[16]{
-            1.0f, 1.0f, 1.0f, 1.0f,
+            1.03f, 1.00f, 0.97f, 1.12f,
             0.50f, 0.50f, 1.7f, 1.0f,
             0.0f, 0.0f, 0.0f, 0.0f,
             0.0f, 0.0f, 0.0f, 0.0f,
         };
+        // (screenWidth, screenHeight, 1/w, 1/h) — see common_camera.glsl's
+        // screenInfo. Refreshed every frame in render_frame() from
+        // surfaceWidth/surfaceHeight, so the stored default here never
+        // actually reaches the shader.
+        float screenInfo[4]{ 1920.0f, 1080.0f, 1.0f / 1920.0f, 1.0f / 1080.0f };
 
         std::string adapterName;
     };

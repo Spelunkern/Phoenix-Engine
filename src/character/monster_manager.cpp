@@ -543,15 +543,22 @@ namespace phoenix::character
     void MonsterManager::clear(phoenix::renderer::OpenGLRenderer& renderer)
     {
         placements_.clear();
+        placements_.shrink_to_fit();
         streamedPlacements_ = 0;
         visualLoads_.clear();
         failedModels_.clear();
         active_.clear();
+        active_.shrink_to_fit();
         labels_.clear();
+        labels_.shrink_to_fit();
         renderVertices_.clear();
+        renderVertices_.shrink_to_fit();
         renderIndices_.clear();
+        renderIndices_.shrink_to_fit();
         instances_.clear();
+        instances_.shrink_to_fit();
         instanceBatches_.clear();
+        instanceBatches_.shrink_to_fit();
         visibleCount_ = 0;
         renderer.update_monster_character_instances(instances_, instanceBatches_);
         renderer.set_monster_character_visible(false);

@@ -9,7 +9,7 @@ namespace phoenix::ui
     // values (the initial character mesh build happens during the loading
     // sequence, well before the first ImGui frame) — this loads the ini
     // immediately rather than waiting for the automatic on-first-NewFrame load.
-    void register_app_settings(bool& characterShadow, int& fpsCapIndex);
+    void register_app_settings(bool& characterShadow, int& fpsCapIndex, bool& antialiasingEnabled);
 
     // Forces an immediate write to imgui.ini. Needed on hard-exit paths
     // (std::_Exit after closing mid-load, or on normal quit) that skip
