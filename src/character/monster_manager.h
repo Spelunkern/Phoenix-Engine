@@ -91,6 +91,7 @@ namespace phoenix::character
             float x{};
             float y{};
             float z{};
+            float baseY{};
             const std::string* name{};
         };
         const std::vector<MonsterLabel>& labels() const { return labels_; }

@@ -2011,6 +2011,24 @@ int main(int, char**)
                 phoenix::renderer::ScreenPoint sp{};
                 if (!project_world_to_screen(currentView, label.x, label.y, label.z, w, h, sp))
                     continue;
+                phoenix::renderer::ScreenPoint feet{};
+                if (!project_world_to_screen(currentView, label.x, label.baseY, label.z, w, h, feet))
+                    continue;
+
+                // Mobs expose their name only while the pointer is over the
+                // projected creature, matching the Godot client and avoiding a
+                // permanent field of labels. Derive the hit area from the actual
+                // head/feet projection so it remains stable at every distance.
+                const ImVec2 mouse = ImGui::GetIO().MousePos;
+                const float bodyHeight = std::clamp(std::abs(feet.y - sp.y), 10.0f, 180.0f);
+                const float halfWidth = std::clamp(bodyHeight * 0.34f, 7.0f, 55.0f);
+                const float top = std::min(sp.y, feet.y) - 4.0f;
+                const float bottom = std::max(sp.y, feet.y) + 5.0f;
+                const bool hovered = !imguiWantsMouse
+                    && mouse.x >= sp.x - halfWidth && mouse.x <= sp.x + halfWidth
+                    && mouse.y >= top && mouse.y <= bottom;
+                if (!hovered)
+                    continue;
                 if (label.name && !label.name->empty())
                     drawCentered(sp.x, sp.y - labelPixelGap - labelFontSize, label.name->c_str(), nameCol);
             }

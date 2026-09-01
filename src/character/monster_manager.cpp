@@ -1594,7 +1594,8 @@ namespace phoenix::character
             {
                 const auto& entry = catalog_[monster.catalogIndex];
                 labels_.push_back({ monster.x,
-                    monster.y + visual.modelTopY * monster.scale, monster.z, &entry.name });
+                    monster.y + visual.modelTopY * monster.scale, monster.z,
+                    monster.y, &entry.name });
             }
 
             // Palette dedup: reuse an identical pose's palette base; otherwise
