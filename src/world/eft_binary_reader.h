@@ -136,6 +136,24 @@ namespace phoenix::world::detail
             return value;
         }
 
+        // Validate a list against the bytes actually left in the file rather
+        // than an authoring-era index ceiling. The individual record readers
+        // continue to validate every field and reject truncated data.
+        std::uint32_t count_for_remaining(std::size_t minimumBytesPerItem,
+            std::uint32_t safetyMaximum = 1000000)
+        {
+            const auto value = u32();
+            const auto bytesLeft = offset <= data.size() ? data.size() - offset : 0;
+            const auto byteBound = minimumBytesPerItem > 0
+                ? bytesLeft / minimumBytesPerItem : bytesLeft;
+            if (!ok || value > safetyMaximum || static_cast<std::size_t>(value) > byteBound)
+            {
+                ok = false;
+                return 0;
+            }
+            return value;
+        }
+
         bool remaining() const { return offset < data.size(); }
     };
 }

@@ -35,7 +35,6 @@ namespace phoenix::runtime
     {
         constexpr std::uint32_t kAssetTextureLayerBase = 66;
         constexpr std::uint32_t kAssetCutoutLayerBase = 2048;
-        constexpr std::uint32_t kMaxAssetTextureLayers = 960;
         constexpr float kManiTicksPerSecond = 30.0f;
         // VANI (vertex-animated decor) render cutoff: an extra distance rule on
         // top of the universal fog/view distance, same as any other asset.
@@ -764,7 +763,7 @@ namespace phoenix::runtime
         if (const auto it = state_.textureSlotByPath.find(key); it != state_.textureSlotByPath.end())
             return cacheResult(kAssetTextureLayerBase + cutoutOffset + it->second);
 
-        if (state_.assetTexturePaths.size() >= kMaxAssetTextureLayers)
+        if (state_.assetTexturePaths.size() >= maxAssetTextureLayers_)
             return cacheResult(0xFFFFFFFFu);
 
         const auto slot = static_cast<std::uint32_t>(state_.assetTexturePaths.size());

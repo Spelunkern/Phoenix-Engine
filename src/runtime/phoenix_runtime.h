@@ -365,6 +365,7 @@ namespace phoenix::runtime
         const std::vector<AudioAsset>& audio_assets() const { return state_.audioAssets; }
         std::size_t selected_world_map() const { return state_.selectedWorldMap; }
         const PhoenixRuntimeState& state() const { return state_; }
+        void set_asset_texture_capacity(std::uint32_t capacity) { maxAssetTextureLayers_ = capacity; }
         const phoenix::world::EftLibrary& effect_library() const { return state_.effectLibrary; }
         const std::vector<std::uint32_t>& effect_texture_layers() const { return state_.effectTextureLayers; }
         const std::vector<phoenix::world::EftMesh>& effect_meshes() const { return state_.effectMeshes; }
@@ -412,6 +413,7 @@ namespace phoenix::runtime
         float terrain_height(float worldX, float worldZ) const;
 
         PhoenixRuntimeState state_;
+        std::uint32_t maxAssetTextureLayers_{ 960 };
         RuntimeCamera camera_{};
         // Memoises resolve_asset_texture_layer by textureName so the per-mesh
         // world build doesn't re-resolve+stat the same texture thousands of

@@ -100,6 +100,10 @@ namespace
     constexpr std::size_t kPrimaryCloudTextureLayer = 64;
     constexpr std::size_t kSecondaryCloudTextureLayer = 65;
     constexpr std::size_t kAssetTextureLayerBase = 66;
+    constexpr std::size_t kCharacterTextureSlotReserve = 32;
+    constexpr std::size_t kBotTextureSlotReserve = 256;
+    constexpr std::size_t kNpcTextureSlotReserve = 96;
+    constexpr std::size_t kMonsterTextureSlotReserve = 256;
 
 }
 
@@ -195,6 +199,12 @@ int main(int, char**)
 
     phoenix::runtime::PhoenixRuntime runtime;
     runAsyncVoid([&]() { runtime.initialize(executableDir, false); }, 0.06f, "Indexing data");
+    const auto reservedDynamicLayers = kCharacterTextureSlotReserve + kBotTextureSlotReserve
+        + kNpcTextureSlotReserve + kMonsterTextureSlotReserve;
+    const auto arrayLayerLimit = renderer.max_texture_array_layers();
+    runtime.set_asset_texture_capacity(arrayLayerLimit > kAssetTextureLayerBase + reservedDynamicLayers
+        ? static_cast<std::uint32_t>(arrayLayerLimit - kAssetTextureLayerBase - reservedDynamicLayers)
+        : 1u);
     showLoading(0.12f, "Indexing data");
 
     // Character system. Its catalog preload runs after the world load (each phase
@@ -565,10 +575,6 @@ int main(int, char**)
 
     // Warms effectLibraryCache/debugEffectTexturesRaw for every bot-castable
     // file in ONE batched pass (called once, right after botEffectFilePaths
-    constexpr std::size_t kCharacterTextureSlotReserve = 32;
-    constexpr std::size_t kBotTextureSlotReserve = 256;
-    constexpr std::size_t kNpcTextureSlotReserve = 96;
-    constexpr std::size_t kMonsterTextureSlotReserve = 256;
     std::size_t npcTextureBaseSlot = 0;
     std::size_t monsterTextureBaseSlot = 0;
 

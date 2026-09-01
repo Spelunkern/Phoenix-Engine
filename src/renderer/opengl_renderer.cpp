@@ -334,6 +334,10 @@ namespace phoenix::renderer
         const char* renderer = reinterpret_cast<const char*>(glGetString_(GL_RENDERER));
         impl_->adapterName = renderer ? renderer : "Unknown GL device";
         adapterName_ = impl_->adapterName;
+        GLint maxArrayLayers = 0;
+        glGetIntegerv_(GL_MAX_ARRAY_TEXTURE_LAYERS, &maxArrayLayers);
+        if (maxArrayLayers > 0)
+            impl_->maxImageArrayLayers = static_cast<std::uint32_t>(maxArrayLayers);
 
         glEnable_(GL_DEPTH_TEST);
         glDepthFunc_(GL_LESS);
@@ -497,6 +501,11 @@ namespace phoenix::renderer
     std::uint32_t OpenGLRenderer::surface_height() const
     {
         return impl_ ? impl_->surfaceHeight : 0;
+    }
+
+    std::uint32_t OpenGLRenderer::max_texture_array_layers() const
+    {
+        return impl_ ? impl_->maxImageArrayLayers : 0;
     }
 
     std::uint64_t OpenGLRenderer::vram_total_bytes() const

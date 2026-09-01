@@ -271,6 +271,7 @@ namespace phoenix::renderer
         const std::string& adapter_name() const { return adapterName_; }
         std::uint32_t surface_width() const;
         std::uint32_t surface_height() const;
+        std::uint32_t max_texture_array_layers() const;
         std::uint64_t vram_total_bytes() const;
         std::uint64_t vram_used_bytes() const;
 

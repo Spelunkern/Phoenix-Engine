@@ -44,7 +44,7 @@ namespace phoenix::world
             SeffRecord record{};
             record.id = reader.i32();
 
-            const auto effectCount = reader.count(256);
+            const auto effectCount = reader.count_for_remaining(56);
             record.effects.reserve(effectCount);
             for (std::uint32_t i = 0; i < effectCount && reader.ok; ++i)
                 record.effects.push_back(read_seff_effect(reader, format));
@@ -72,7 +72,7 @@ namespace phoenix::world
         library.timeStamp.minute = static_cast<std::int16_t>(reader.u16());
         library.timeStamp.second = static_cast<std::int16_t>(reader.u16());
 
-        const auto recordCount = reader.count(256);
+        const auto recordCount = reader.count_for_remaining(8);
         library.records.reserve(recordCount);
         for (std::uint32_t i = 0; i < recordCount && reader.ok; ++i)
             library.records.push_back(read_seff_record(reader, library.format));

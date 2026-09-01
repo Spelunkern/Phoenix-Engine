@@ -144,22 +144,22 @@ namespace phoenix::world
         else
             return library;
 
-        const auto meshCount = reader.count(256);
+        const auto meshCount = reader.count_for_remaining(4);
         library.meshNames.reserve(meshCount);
         for (std::uint32_t i = 0; i < meshCount && reader.ok; ++i)
             library.meshNames.push_back(reader.string(4096));
 
-        const auto textureCount = reader.count(512);
+        const auto textureCount = reader.count_for_remaining(4);
         library.textureNames.reserve(textureCount);
         for (std::uint32_t i = 0; i < textureCount && reader.ok; ++i)
             library.textureNames.push_back(reader.string(4096));
 
-        const auto effectCount = reader.count(1024);
+        const auto effectCount = reader.count_for_remaining(128);
         library.effects.reserve(effectCount);
         for (std::uint32_t i = 0; i < effectCount && reader.ok; ++i)
             library.effects.push_back(read_effect(reader, library.format));
 
-        const auto sequenceCount = reader.count(256);
+        const auto sequenceCount = reader.count_for_remaining(8);
         library.sequences.reserve(sequenceCount);
         for (std::uint32_t i = 0; i < sequenceCount && reader.ok; ++i)
             library.sequences.push_back(read_sequence(reader));
