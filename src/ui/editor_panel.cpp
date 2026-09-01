@@ -498,7 +498,7 @@ namespace phoenix::ui
         static Section activeSection = Section::Map;
 
         px::SetNextWindowPos(px::Vec2(8.0f, 8.0f), px::FirstUseEver);
-        px::SetNextWindowSize(px::Vec2(300.0f, 0.0f), px::FirstUseEver);
+        px::SetNextWindowSize(px::Vec2(388.0f, 0.0f), px::FirstUseEver);
         if (!px::Begin("Phoenix Engine", nullptr, px::AlwaysAutoResize))
         {
             px::End();
