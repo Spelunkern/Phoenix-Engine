@@ -183,20 +183,6 @@ namespace phoenix::renderer
         scene.batchBounds.swap(tmpBounds);
     }
 
-    std::vector<BatchBoundsGpu> extract_gpu_bounds(
-        const phoenix::runtime::StaticObjectScene& scene)
-    {
-        std::vector<BatchBoundsGpu> gpuBounds(scene.batchBounds.size());
-        for (std::size_t i = 0; i < scene.batchBounds.size(); ++i)
-        {
-            gpuBounds[i].x = scene.batchBounds[i].x;
-            gpuBounds[i].y = scene.batchBounds[i].y;
-            gpuBounds[i].z = scene.batchBounds[i].z;
-            gpuBounds[i].radius = scene.batchBounds[i].radius;
-        }
-        return gpuBounds;
-    }
-
     void build_visible_object_batches(
         const phoenix::runtime::StaticObjectScene& scene,
         const CameraView& view,

@@ -52,9 +52,6 @@ namespace phoenix::renderer
         float camY,
         float camZ);
 
-    std::vector<BatchBoundsGpu> extract_gpu_bounds(
-        const phoenix::runtime::StaticObjectScene& scene);
-
     void build_visible_object_batches(
         const phoenix::runtime::StaticObjectScene& scene,
         const CameraView& view,

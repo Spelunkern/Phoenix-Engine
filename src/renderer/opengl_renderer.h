@@ -78,14 +78,6 @@ namespace phoenix::renderer
         std::int32_t destinationBlend{};
     };
 
-    struct BatchBoundsGpu
-    {
-        float x{};
-        float y{};
-        float z{};
-        float radius{};
-    };
-
     struct TerrainDrawRange
     {
         std::uint32_t firstIndex{};
@@ -182,13 +174,6 @@ namespace phoenix::renderer
             const TerrainVertex* vertices, std::uint32_t firstVertex, std::uint32_t vertexCount);
         bool update_terrain_indices(const std::vector<std::uint32_t>& indices);
         void set_static_object_batches(const std::vector<ObjectBatch>& batches);
-        bool upload_indirect_draw_data(
-            const std::vector<ObjectBatch>& batches,
-            const std::vector<BatchBoundsGpu>& bounds);
-        void update_indirect_draw_data(
-            const std::vector<ObjectBatch>& batches,
-            const std::vector<BatchBoundsGpu>& bounds);
-        bool indirect_draw_ready() const;
         void set_animated_object_batches(const std::vector<ObjectBatch>& batches);
         // Rebuilds the effect-particle draw buffers from scratch; called once
         // per frame from the CPU particle simulation (cheap: particle counts
@@ -309,7 +294,6 @@ namespace phoenix::renderer
         bool create_static_object_pipeline();
         bool create_effect_particle_pipeline();
         bool create_skinned_character_pipeline();
-        bool create_cull_compute_pipeline();
         bool create_sky_pipeline();
         bool create_descriptor_resources();
         bool create_preview_buffer(std::size_t byteSize);

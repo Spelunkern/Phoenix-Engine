@@ -484,7 +484,6 @@ namespace phoenix::renderer
         impl_->shadowTerrainProgram = build_program("shaders/gl/shadow_terrain.vert", "shaders/gl/shadow_depth.frag");
         impl_->shadowStaticProgram = build_program("shaders/gl/shadow_static.vert", "shaders/gl/shadow_depth.frag");
         impl_->shadowSkinnedProgram = build_program("shaders/gl/shadow_skinned.vert", "shaders/gl/shadow_depth.frag");
-        create_cull_compute_pipeline(); // stub: GPU culling stays disabled, see internal header note
         create_descriptor_resources();
 
         if (impl_->shadowTerrainProgram && impl_->shadowStaticProgram && impl_->shadowSkinnedProgram)
@@ -740,16 +739,6 @@ namespace phoenix::renderer
             return true; // non-fatal, matches the skinned-character pipeline's fallback
         }
         glCreateVertexArrays_(1, &impl_->effectParticleVao);
-        return true;
-    }
-
-    bool OpenGLRenderer::create_cull_compute_pipeline()
-    {
-        // GPU frustum culling is intentionally not wired up:
-        // the original Vulkan renderer's upload_indirect_draw_data() early-
-        // returns false permanently ("single indirect buffer is not frame-
-        // safe"). Visibility therefore remains CPU-authored, while the visible
-        // commands are still submitted together with OpenGL multi-draw indirect.
         return true;
     }
 
@@ -1109,33 +1098,6 @@ namespace phoenix::renderer
             impl_->objectIndirectCount, impl_->objectBatches);
         impl_->objectsReady = !impl_->objectBatches.empty()
             && impl_->objectVertexBuffer.id && impl_->objectIndexBuffer.id && impl_->objectInstanceBuffer.id;
-    }
-
-    bool OpenGLRenderer::upload_indirect_draw_data(
-        const std::vector<ObjectBatch>&,
-        const std::vector<BatchBoundsGpu>&)
-    {
-        // Kept disabled permanently, matching the original Vulkan renderer
-        // (see the note in opengl_renderer_internal.h / create_cull_compute_pipeline).
-        static bool loggedDisabled = false;
-        if (!loggedDisabled)
-        {
-            log_line("GL: GPU frustum culling disabled (parity with original single-buffer limitation)");
-            loggedDisabled = true;
-        }
-        return false;
-    }
-
-    void OpenGLRenderer::update_indirect_draw_data(
-        const std::vector<ObjectBatch>&,
-        const std::vector<BatchBoundsGpu>&)
-    {
-        // No-op: indirectReady is always false (see upload_indirect_draw_data).
-    }
-
-    bool OpenGLRenderer::indirect_draw_ready() const
-    {
-        return impl_ && impl_->indirectReady;
     }
 
     void OpenGLRenderer::set_animated_object_batches(const std::vector<ObjectBatch>& batches)

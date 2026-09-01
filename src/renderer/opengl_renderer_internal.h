@@ -302,15 +302,6 @@ namespace phoenix::renderer
         std::uint32_t previewHeight{};
         bool previewReady{};
 
-        // --- GPU frustum culling: kept as unused stub state, matching the
-        // original Vulkan renderer where upload_indirect_draw_data() early-
-        // returns false permanently ("single indirect buffer is not frame-
-        // safe" — see the comment preserved in opengl_renderer.cpp). Indirect
-        // draw / compute culling is therefore intentionally never exercised;
-        // static objects always draw via the direct per-batch path.
-        bool indirectReady{};
-        std::uint32_t indirectBatchCount{};
-
         // --- GPU timing queries ---
         GLuint timestampQueryBegin[kMaxFramesInFlight]{};
         GLuint timestampQueryEnd[kMaxFramesInFlight]{};

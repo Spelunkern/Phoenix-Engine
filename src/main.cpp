@@ -84,7 +84,6 @@ namespace
     using phoenix::renderer::build_visible_animated_batches;
     using phoenix::renderer::build_visible_object_batches;
     using phoenix::renderer::build_visible_terrain_ranges;
-    using phoenix::renderer::extract_gpu_bounds;
     using phoenix::renderer::project_world_to_screen;
     using phoenix::renderer::sort_scene_front_to_back;
     using phoenix::renderer::sphere_visible;
@@ -1054,17 +1053,11 @@ int main(int, char**)
         effectSequenceNames.clear();
         objectInstanceCount = static_cast<std::uint32_t>(staticObjectScene.instances.size());
         objectBatchCount = static_cast<std::uint32_t>(staticObjectScene.batches.size());
-        {
-        }
-        const bool staticObjectsReady = renderer.set_static_object_mesh(
+        renderer.set_static_object_mesh(
             staticObjectScene.vertices,
             staticObjectScene.indices,
             staticObjectScene.instances,
             staticObjectScene.batches);
-
-        // Upload indirect draw data for GPU frustum culling.
-        if (staticObjectsReady)
-            renderer.upload_indirect_draw_data(staticObjectScene.batches, extract_gpu_bounds(staticObjectScene));
 
         // Upload animated object mesh to GPU. Always called, even when this map has
         // no vertex-animated (VANI) objects: set_animated_object_mesh() destroys the
@@ -1559,22 +1552,15 @@ int main(int, char**)
             if (visibleTerrainIndexCount > 0)
                 terrainIndexCount = visibleTerrainIndexCount;
 
-            if (renderer.indirect_draw_ready())
-            {
-                objectBatchCount = static_cast<std::uint32_t>(staticObjectScene.batches.size());
-            }
-            else
-            {
-                static std::vector<phoenix::renderer::ObjectBatch> visibleBatches;
-                visibleBatches.clear();
-                build_visible_object_batches(staticObjectScene, currentView, visibleBatches);
-                renderer.set_static_object_batches(visibleBatches);
-                std::uint32_t visibleObjectInstances{};
-                for (const auto& batch : visibleBatches)
-                    visibleObjectInstances += batch.instanceCount;
-                objectInstanceCount = visibleObjectInstances;
-                objectBatchCount = static_cast<std::uint32_t>(visibleBatches.size());
-            }
+            static std::vector<phoenix::renderer::ObjectBatch> visibleBatches;
+            visibleBatches.clear();
+            build_visible_object_batches(staticObjectScene, currentView, visibleBatches);
+            renderer.set_static_object_batches(visibleBatches);
+            std::uint32_t visibleObjectInstances{};
+            for (const auto& batch : visibleBatches)
+                visibleObjectInstances += batch.instanceCount;
+            objectInstanceCount = visibleObjectInstances;
+            objectBatchCount = static_cast<std::uint32_t>(visibleBatches.size());
 
             if (!animatedObjectScene.batches.empty())
             {
