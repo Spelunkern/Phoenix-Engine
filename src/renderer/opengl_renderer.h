@@ -94,6 +94,25 @@ namespace phoenix::renderer
         std::uint32_t indexCount{};
     };
 
+    // Sky, cloud and water values shared by the full-screen sky and terrain
+    // shaders. Each member is one std140 vec4 so the structure can be copied
+    // directly behind the camera block without fragile per-field packing.
+    struct EnvironmentStyle
+    {
+        float horizonCurve[4]{};       // horizon rgb, sky curve
+        float zenithMidWeight[4]{};    // zenith rgb, intermediate-band weight
+        float midHeight[4]{};          // intermediate-band rgb, band height
+        float groundCloudCover[4]{};   // below-horizon rgb, cloud coverage
+        float cloudColorOpacity[4]{};  // lit cloud rgb, opacity
+        float cloudShadeSpeed[4]{};    // shaded cloud rgb, movement speed
+        float cloudShape[4]{};         // scale, softness, churn, curvature
+        float cloudMotion[4]{};        // wind xy, horizon fade, reserved
+        float waterShallowAlpha[4]{};  // shallow rgb, alpha
+        float waterDeepAlpha[4]{};     // deep rgb, alpha
+        float waterSurface[4]{};       // ripple scale/speed/strength, Fresnel power
+        float waterOptics[4]{};        // Fresnel opacity, underside fade, depth distance, roughness
+    };
+
     class OpenGLRenderer
     {
     public:
@@ -209,7 +228,7 @@ namespace phoenix::renderer
         void disable_field_lightmaps();
         void set_sky_settings(const float* fogColor, float fogStartDistance, float fogEndDistance, bool hasWorldSky);
         void set_sky_texture_layers(std::uint32_t skyLayer, std::uint32_t primaryCloudLayer, std::uint32_t secondaryCloudLayer);
-        void set_sky_tuning(const float* values, std::uint32_t count);
+        void set_environment_style(const EnvironmentStyle& style);
         // Live toggle for MSAA + alpha-to-coverage — safe to call every
         // frame regardless of whether the context actually has multisample
         // buffers (glEnable/glDisable(GL_MULTISAMPLE) is a no-op without

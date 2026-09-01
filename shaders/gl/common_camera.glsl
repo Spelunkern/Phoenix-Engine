@@ -10,10 +10,18 @@ layout(std140, binding = 0) uniform CameraConstants
     vec4 fogDistances;
     vec4 skyLayers;
     vec4 waterInfo;
-    vec4 skyTuning0;
-    vec4 skyTuning1;
-    vec4 skyTuning2;
-    vec4 waterStyle;
+    vec4 skyHorizonCurve;
+    vec4 skyZenithMidWeight;
+    vec4 skyMidHeight;
+    vec4 skyGroundCloudCover;
+    vec4 cloudColorOpacity;
+    vec4 cloudShadeSpeed;
+    vec4 cloudShape;
+    vec4 cloudMotion;
+    vec4 waterShallowAlpha;
+    vec4 waterDeepAlpha;
+    vec4 waterSurface;
+    vec4 waterOptics;
 } camera;
 
 // Neutral material lighting used by terrain, world assets and characters.

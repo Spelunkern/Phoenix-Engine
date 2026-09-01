@@ -156,8 +156,7 @@ namespace phoenix::renderer
         GLuint effectParticleVao{};
         GLuint emptyVao{}; // for sky (no vertex attribs, gl_VertexID driven)
 
-        // --- camera uniform buffer (matches the old 60-float / 15-vec4 push
-        // constant block; std140, binding = 0) ---
+        // --- camera/environment uniform buffer (19 std140 vec4s, binding 0) ---
         GLuint cameraUbo{};
 
         // --- terrain ---
@@ -226,6 +225,7 @@ namespace phoenix::renderer
 
         // --- textures ---
         GLuint terrainSampler{};
+        GLuint environmentNoiseTexture{};
         GlTexture terrainTextureArray;
         std::uint32_t terrainTextureLayerCount{};
         std::uint32_t terrainTextureWidth{};
@@ -308,12 +308,20 @@ namespace phoenix::renderer
             0.0f, 0.0f, 0.0f, 0.0f,
             0.0f, 0.0f, 0.0f, 0.0f, // waterInfo: baseLayer, frameCount, time, tileSize
         };
-        float skyTuning[12]{
-            0.62f, 0.0f, 1.0f, 0.0f,
-            1.35f, 0.78f, 0.34f, 0.12f,
-            0.82f, 1.10f, 0.22f, 0.06f,
+        EnvironmentStyle environmentStyle{
+            { 0.76f, 0.85f, 0.94f, 0.24f },
+            { 0.13f, 0.34f, 0.72f, 0.30f },
+            { 0.43f, 0.65f, 0.88f, 0.30f },
+            { 0.30f, 0.28f, 0.26f, 0.30f },
+            { 1.00f, 0.99f, 0.96f, 1.00f },
+            { 0.58f, 0.65f, 0.76f, 0.95f },
+            { 0.34f, 0.46f, 0.25f, 40.0f },
+            { 0.60f, 0.20f, 0.10f, 0.0f },
+            { 0.18f, 0.46f, 0.54f, 0.18f },
+            { 0.025f, 0.13f, 0.27f, 0.94f },
+            { 0.05f, 0.030f, 0.58f, 4.0f },
+            { 0.75f, 0.22f, 6.0f, 0.04f },
         };
-        float waterStyle[4]{ 0.10f, 0.18f, 0.22f, 0.62f }; // natural water tint
         std::string adapterName;
     };
 }

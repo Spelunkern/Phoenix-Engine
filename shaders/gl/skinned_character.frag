@@ -27,7 +27,7 @@ vec3 applyUnderwaterView(vec3 color, vec3 worldPos)
     if (camera.positionYaw.y >= 0.0)
         return color;
 
-    vec3 waterTint = clamp(camera.waterStyle.rgb * 1.25 + vec3(0.02, 0.05, 0.08), 0.0, 1.0);
+    vec3 waterTint = clamp(camera.waterDeepAlpha.rgb * 1.25 + vec3(0.02, 0.05, 0.08), 0.0, 1.0);
     float viewDistance = length(worldPos - camera.positionYaw.xyz);
     float cameraDepth = clamp(-camera.positionYaw.y * 0.10, 0.0, 1.0);
     float pixelDepth = clamp(-worldPos.y * 0.05, 0.0, 1.0);

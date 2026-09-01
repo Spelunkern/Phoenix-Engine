@@ -57,6 +57,16 @@ namespace phoenix::renderer
             return result;
         }
 
+        std::string inject_environment_functions(const std::string& source, const std::string& functions)
+        {
+            std::string result = source;
+            const std::string marker = "ENVIRONMENT_FUNCTIONS";
+            const auto pos = result.find(marker);
+            if (pos != std::string::npos)
+                result.replace(pos, marker.size(), functions);
+            return result;
+        }
+
         bool read_text_file(const std::filesystem::path& relativePath, std::string& out)
         {
             const auto cwd = std::filesystem::current_path();
@@ -84,7 +94,7 @@ namespace phoenix::renderer
 
         GLuint build_program(const char* vertRelPath, const char* fragRelPath)
         {
-            std::string vertSrc, fragSrc, cameraBlock;
+            std::string vertSrc, fragSrc, cameraBlock, environmentFunctions;
             if (!read_text_file(vertRelPath, vertSrc) || !read_text_file(fragRelPath, fragSrc))
                 return 0;
             if (!read_text_file("shaders/gl/common_camera.glsl", cameraBlock))
@@ -92,6 +102,14 @@ namespace phoenix::renderer
 
             vertSrc = inject_camera_block(vertSrc, cameraBlock);
             fragSrc = inject_camera_block(fragSrc, cameraBlock);
+            if (vertSrc.find("ENVIRONMENT_FUNCTIONS") != std::string::npos
+                || fragSrc.find("ENVIRONMENT_FUNCTIONS") != std::string::npos)
+            {
+                if (!read_text_file("shaders/gl/common_environment.glsl", environmentFunctions))
+                    return 0;
+                vertSrc = inject_environment_functions(vertSrc, environmentFunctions);
+                fragSrc = inject_environment_functions(fragSrc, environmentFunctions);
+            }
 
             GLuint vs = compile_shader(GL_VERTEX_SHADER, vertSrc);
             GLuint fs = vs ? compile_shader(GL_FRAGMENT_SHADER, fragSrc) : 0;
@@ -122,7 +140,92 @@ namespace phoenix::renderer
             return program;
         }
 
-        constexpr std::size_t kCameraConstantFloatCount = 44;
+        constexpr std::size_t kCameraConstantFloatCount = 76;
+
+        std::uint32_t hash_grid(std::uint32_t x, std::uint32_t y, std::uint32_t seed)
+        {
+            std::uint32_t value = x * 0x8da6b343u ^ y * 0xd8163841u ^ seed * 0xcb1ab31fu;
+            value ^= value >> 13u;
+            value *= 0x85ebca6bu;
+            value ^= value >> 16u;
+            return value;
+        }
+
+        float periodic_value_noise(float x, float y, std::uint32_t period, std::uint32_t seed)
+        {
+            const auto x0 = static_cast<std::uint32_t>(std::floor(x)) % period;
+            const auto y0 = static_cast<std::uint32_t>(std::floor(y)) % period;
+            const auto x1 = (x0 + 1u) % period;
+            const auto y1 = (y0 + 1u) % period;
+            auto random01 = [seed](std::uint32_t gx, std::uint32_t gy) {
+                return static_cast<float>(hash_grid(gx, gy, seed) & 0x00ffffffu)
+                    / static_cast<float>(0x00ffffffu);
+            };
+            auto tx = x - std::floor(x);
+            auto ty = y - std::floor(y);
+            tx = tx * tx * (3.0f - 2.0f * tx);
+            ty = ty * ty * (3.0f - 2.0f * ty);
+            const auto top = random01(x0, y0) + (random01(x1, y0) - random01(x0, y0)) * tx;
+            const auto bottom = random01(x0, y1) + (random01(x1, y1) - random01(x0, y1)) * tx;
+            return top + (bottom - top) * ty;
+        }
+
+        std::vector<std::uint8_t> make_environment_normal_noise(std::uint32_t side)
+        {
+            std::vector<float> height(static_cast<std::size_t>(side) * side);
+            for (std::uint32_t y = 0; y < side; ++y)
+            {
+                for (std::uint32_t x = 0; x < side; ++x)
+                {
+                    float value = 0.0f;
+                    float amplitude = 0.5f;
+                    float totalAmplitude = 0.0f;
+                    std::uint32_t period = 4u;
+                    for (std::uint32_t octave = 0; octave < 4u; ++octave)
+                    {
+                        const auto fx = static_cast<float>(x) * static_cast<float>(period) / static_cast<float>(side);
+                        const auto fy = static_cast<float>(y) * static_cast<float>(period) / static_cast<float>(side);
+                        value += periodic_value_noise(fx, fy, period, 0x50484f45u + octave * 977u) * amplitude;
+                        totalAmplitude += amplitude;
+                        amplitude *= 0.5f;
+                        period *= 2u;
+                    }
+                    height[static_cast<std::size_t>(y) * side + x] = value / totalAmplitude;
+                }
+            }
+
+            std::vector<std::uint8_t> rgba(static_cast<std::size_t>(side) * side * 4u);
+            const auto wrap = [side](int value) {
+                value %= static_cast<int>(side);
+                return static_cast<std::uint32_t>(value < 0 ? value + static_cast<int>(side) : value);
+            };
+            for (std::uint32_t y = 0; y < side; ++y)
+            {
+                for (std::uint32_t x = 0; x < side; ++x)
+                {
+                    const auto sample = [&](int sx, int sy) {
+                        return height[static_cast<std::size_t>(wrap(sy)) * side + wrap(sx)];
+                    };
+                    const auto dx = sample(static_cast<int>(x) + 1, static_cast<int>(y))
+                        - sample(static_cast<int>(x) - 1, static_cast<int>(y));
+                    const auto dz = sample(static_cast<int>(x), static_cast<int>(y) + 1)
+                        - sample(static_cast<int>(x), static_cast<int>(y) - 1);
+                    float nx = -dx * 6.0f;
+                    float ny = 1.0f;
+                    float nz = -dz * 6.0f;
+                    const auto inverseLength = 1.0f / std::sqrt(nx * nx + ny * ny + nz * nz);
+                    nx *= inverseLength;
+                    ny *= inverseLength;
+                    nz *= inverseLength;
+                    const auto offset = (static_cast<std::size_t>(y) * side + x) * 4u;
+                    rgba[offset + 0u] = static_cast<std::uint8_t>(std::clamp(nx * 0.5f + 0.5f, 0.0f, 1.0f) * 255.0f);
+                    rgba[offset + 1u] = static_cast<std::uint8_t>(std::clamp(nz * 0.5f + 0.5f, 0.0f, 1.0f) * 255.0f);
+                    rgba[offset + 2u] = static_cast<std::uint8_t>(std::clamp(ny * 0.5f + 0.5f, 0.0f, 1.0f) * 255.0f);
+                    rgba[offset + 3u] = static_cast<std::uint8_t>(std::clamp(height[static_cast<std::size_t>(y) * side + x], 0.0f, 1.0f) * 255.0f);
+                }
+            }
+            return rgba;
+        }
 
         void set_camera_ubo(GLuint ubo, const float* constants)
         {
@@ -347,6 +450,23 @@ namespace phoenix::renderer
         GLfloat maxAniso = 1.0f;
         glGetFloatv_(GL_MAX_TEXTURE_MAX_ANISOTROPY, &maxAniso);
         glSamplerParameterf_(impl_->terrainSampler, GL_TEXTURE_MAX_ANISOTROPY, std::min(16.0f, maxAniso > 0.0f ? maxAniso : 1.0f));
+
+        // One tiny procedural texture supplies both the seamless cloud noise
+        // (alpha) and the generated water normal map (rgb). It mirrors the
+        // Godot implementation without adding an external runtime asset.
+        constexpr std::uint32_t environmentNoiseSide = 256u;
+        const auto environmentNoise = make_environment_normal_noise(environmentNoiseSide);
+        glGenTextures_(1, &impl_->environmentNoiseTexture);
+        glBindTexture_(GL_TEXTURE_2D, impl_->environmentNoiseTexture);
+        glTexParameteri_(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR);
+        glTexParameteri_(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+        glTexParameteri_(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT);
+        glTexParameteri_(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_REPEAT);
+        glTexImage2D_(GL_TEXTURE_2D, 0, GL_RGBA8,
+            static_cast<GLsizei>(environmentNoiseSide), static_cast<GLsizei>(environmentNoiseSide),
+            0, GL_RGBA, GL_UNSIGNED_BYTE, environmentNoise.data());
+        glGenerateMipmap_(GL_TEXTURE_2D);
+        glBindTexture_(GL_TEXTURE_2D, 0);
 
         // No mipmaps: the debug effect array is always uploaded with a single
         // level (see upload_debug_effect_textures), so MIN_FILTER must not
@@ -1660,12 +1780,10 @@ namespace phoenix::renderer
         impl_->skyConstants[8] = secondaryCloudLayer != UINT32_MAX ? static_cast<float>(secondaryCloudLayer) : -1.0f;
     }
 
-    void OpenGLRenderer::set_sky_tuning(const float* values, std::uint32_t count)
+    void OpenGLRenderer::set_environment_style(const EnvironmentStyle& style)
     {
-        if (!impl_ || !values) return;
-        const auto copyCount = std::min<std::uint32_t>(count, static_cast<std::uint32_t>(std::size(impl_->skyTuning)));
-        for (std::uint32_t i = 0; i < copyCount; ++i)
-            impl_->skyTuning[i] = values[i];
+        if (!impl_) return;
+        impl_->environmentStyle = style;
     }
 
     void OpenGLRenderer::set_antialiasing_enabled(bool enabled)
@@ -1725,8 +1843,8 @@ namespace phoenix::renderer
             float constants[kCameraConstantFloatCount]{};
             std::memcpy(constants, impl_->cameraConstants, sizeof(impl_->cameraConstants));
             std::memcpy(constants + 12, impl_->skyConstants, sizeof(impl_->skyConstants));
-            std::memcpy(constants + 28, impl_->skyTuning, sizeof(impl_->skyTuning));
-            std::memcpy(constants + 40, impl_->waterStyle, sizeof(impl_->waterStyle));
+            static_assert(sizeof(EnvironmentStyle) == sizeof(float) * 48u);
+            std::memcpy(constants + 28, &impl_->environmentStyle, sizeof(impl_->environmentStyle));
 
             // Every draw call below re-specified its program and re-uploaded the
             // camera UBO even when back-to-back draws share both (e.g. monster then
@@ -1762,6 +1880,8 @@ namespace phoenix::renderer
                 glBindTextureUnit_(3, impl_->debugEffectTextureArray.id);
                 glBindSampler_(3, impl_->debugEffectSampler);
             }
+            glBindTextureUnit_(4, impl_->environmentNoiseTexture);
+            glBindSampler_(4, impl_->terrainSampler);
             glBindBufferBase_(GL_SHADER_STORAGE_BUFFER, 1, impl_->terrainMapBuffer.id);
 
             // sky
@@ -2033,6 +2153,7 @@ namespace phoenix::renderer
         if (impl_->debugEffectTextureArray.id) glDeleteTextures_(1, &impl_->debugEffectTextureArray.id);
         if (impl_->lightmapTexture.id) glDeleteTextures_(1, &impl_->lightmapTexture.id);
         if (impl_->previewTexture) glDeleteTextures_(1, &impl_->previewTexture);
+        if (impl_->environmentNoiseTexture) glDeleteTextures_(1, &impl_->environmentNoiseTexture);
         for (auto& icon : impl_->imguiIconTextures)
             if (icon.texture) glDeleteTextures_(1, &icon.texture);
 

@@ -37,52 +37,136 @@ namespace phoenix::ui
             dungeon ? 0.0f : world.fogColor[1],
             dungeon ? 0.0f : world.fogColor[2],
         };
-        std::array<float, 12> skyTuning{
-            0.62f, 0.0f, 1.0f, 0.0f,
-            1.35f, 0.78f, 0.34f, 0.12f,
-            0.82f, 1.10f, 0.22f, 0.06f,
+        phoenix::renderer::EnvironmentStyle environment{
+            { 0.76f, 0.85f, 0.94f, 0.24f },
+            { 0.13f, 0.34f, 0.72f, 0.30f },
+            { 0.43f, 0.65f, 0.88f, 0.30f },
+            { 0.30f, 0.28f, 0.26f, 0.30f },
+            { 1.00f, 0.99f, 0.96f, 1.00f },
+            { 0.58f, 0.65f, 0.76f, 0.95f },
+            { 0.34f, 0.46f, 0.25f, 40.0f },
+            { 0.60f, 0.20f, 0.10f, 0.0f },
+            { 0.18f, 0.46f, 0.54f, 0.18f },
+            { 0.025f, 0.13f, 0.27f, 0.94f },
+            { 0.05f, 0.030f, 0.58f, 4.0f },
+            { 0.75f, 0.22f, 6.0f, 0.04f },
+        };
+        const auto set4 = [](float (&target)[4], float x, float y, float z, float w) {
+            target[0] = x; target[1] = y; target[2] = z; target[3] = w;
         };
         if (weatherMode == WeatherMode::Storm)
         {
             weatherFog = { 0.20f, 0.22f, 0.25f };
-            skyTuning[3] = 1.0f;
+            set4(environment.horizonCurve, 0.34f, 0.36f, 0.40f, 0.40f);
+            set4(environment.zenithMidWeight, 0.13f, 0.15f, 0.19f, 0.0f);
+            set4(environment.midHeight, 0.0f, 0.0f, 0.0f, 0.35f);
+            set4(environment.groundCloudCover, 0.14f, 0.15f, 0.16f, 0.90f);
+            set4(environment.cloudColorOpacity, 0.46f, 0.48f, 0.54f, 1.0f);
+            set4(environment.cloudShadeSpeed, 0.20f, 0.21f, 0.25f, 2.2f);
+            set4(environment.cloudShape, 0.23f, 0.54f, 0.25f, 40.0f);
+            set4(environment.waterShallowAlpha, 0.16f, 0.24f, 0.24f, 0.18f);
+            set4(environment.waterDeepAlpha, 0.03f, 0.07f, 0.08f, 0.94f);
+            set4(environment.waterSurface, 0.05f, 0.075f, 1.60f, 4.0f);
         }
         else if (weatherMode == WeatherMode::Snowstorm)
         {
             weatherFog = { 0.55f, 0.57f, 0.60f };
-            skyTuning[3] = 2.0f;
+            set4(environment.horizonCurve, 0.86f, 0.89f, 0.93f, 0.42f);
+            set4(environment.zenithMidWeight, 0.52f, 0.62f, 0.74f, 0.0f);
+            set4(environment.midHeight, 0.0f, 0.0f, 0.0f, 0.35f);
+            set4(environment.groundCloudCover, 0.34f, 0.36f, 0.38f, 0.70f);
+            set4(environment.cloudColorOpacity, 0.94f, 0.96f, 1.00f, 1.0f);
+            set4(environment.cloudShadeSpeed, 0.68f, 0.72f, 0.80f, 1.1f);
+            set4(environment.cloudShape, 0.27f, 0.50f, 0.25f, 40.0f);
+            set4(environment.waterShallowAlpha, 0.30f, 0.44f, 0.50f, 0.18f);
+            set4(environment.waterDeepAlpha, 0.07f, 0.16f, 0.24f, 0.94f);
+            set4(environment.waterSurface, 0.05f, 0.026f, 0.50f, 4.0f);
         }
         else if (weatherMode == WeatherMode::Sunset)
         {
             weatherFog = { 0.78f, 0.42f, 0.24f };
-            skyTuning[3] = 3.0f;
+            set4(environment.horizonCurve, 1.00f, 0.52f, 0.28f, 0.34f);
+            set4(environment.zenithMidWeight, 0.16f, 0.20f, 0.48f, 0.65f);
+            set4(environment.midHeight, 0.82f, 0.40f, 0.50f, 0.24f);
+            set4(environment.groundCloudCover, 0.24f, 0.18f, 0.18f, 0.45f);
+            set4(environment.cloudColorOpacity, 1.00f, 0.84f, 0.70f, 1.0f);
+            set4(environment.cloudShadeSpeed, 0.50f, 0.40f, 0.46f, 0.7f);
+            set4(environment.cloudShape, 0.34f, 0.40f, 0.25f, 40.0f);
+            set4(environment.waterShallowAlpha, 0.34f, 0.32f, 0.38f, 0.18f);
+            set4(environment.waterDeepAlpha, 0.07f, 0.07f, 0.18f, 0.94f);
+            set4(environment.waterSurface, 0.05f, 0.024f, 0.50f, 4.0f);
         }
         else if (weatherMode == WeatherMode::Night)
         {
             weatherFog = { 0.035f, 0.045f, 0.075f };
-            skyTuning[3] = 4.0f;
+            set4(environment.horizonCurve, 0.075f, 0.100f, 0.180f, 0.28f);
+            set4(environment.zenithMidWeight, 0.018f, 0.035f, 0.085f, 0.0f);
+            set4(environment.midHeight, 0.0f, 0.0f, 0.0f, 0.35f);
+            set4(environment.groundCloudCover, 0.045f, 0.050f, 0.070f, 0.0f);
+            set4(environment.cloudColorOpacity, 0.42f, 0.46f, 0.58f, 0.0f);
+            set4(environment.cloudShadeSpeed, 0.16f, 0.18f, 0.26f, 0.5f);
+            set4(environment.cloudShape, 0.33f, 0.42f, 0.25f, 40.0f);
+            set4(environment.waterShallowAlpha, 0.22f, 0.32f, 0.46f, 0.18f);
+            set4(environment.waterDeepAlpha, 0.10f, 0.17f, 0.28f, 0.94f);
+            set4(environment.waterSurface, 0.05f, 0.018f, 0.40f, 4.0f);
         }
         else if (weatherMode == WeatherMode::Dawn)
         {
             weatherFog = { 0.62f, 0.48f, 0.42f };
-            skyTuning[3] = 5.0f;
+            set4(environment.horizonCurve, 0.98f, 0.72f, 0.48f, 0.30f);
+            set4(environment.zenithMidWeight, 0.10f, 0.20f, 0.48f, 0.55f);
+            set4(environment.midHeight, 0.55f, 0.42f, 0.62f, 0.26f);
+            set4(environment.groundCloudCover, 0.24f, 0.20f, 0.20f, 0.40f);
+            set4(environment.cloudColorOpacity, 1.00f, 0.90f, 0.82f, 1.0f);
+            set4(environment.cloudShadeSpeed, 0.58f, 0.50f, 0.56f, 0.8f);
+            set4(environment.cloudShape, 0.33f, 0.42f, 0.25f, 40.0f);
+            set4(environment.waterShallowAlpha, 0.28f, 0.36f, 0.44f, 0.18f);
+            set4(environment.waterDeepAlpha, 0.05f, 0.09f, 0.20f, 0.94f);
+            set4(environment.waterSurface, 0.05f, 0.022f, 0.45f, 4.0f);
         }
         else if (weatherMode == WeatherMode::Dusk)
         {
             weatherFog = { 0.38f, 0.22f, 0.32f };
-            skyTuning[3] = 6.0f;
+            set4(environment.horizonCurve, 0.74f, 0.44f, 0.38f, 0.36f);
+            set4(environment.zenithMidWeight, 0.10f, 0.13f, 0.32f, 0.55f);
+            set4(environment.midHeight, 0.46f, 0.32f, 0.54f, 0.22f);
+            set4(environment.groundCloudCover, 0.18f, 0.16f, 0.18f, 0.38f);
+            set4(environment.cloudColorOpacity, 0.72f, 0.72f, 0.82f, 1.0f);
+            set4(environment.cloudShadeSpeed, 0.34f, 0.34f, 0.44f, 0.6f);
+            set4(environment.cloudShape, 0.34f, 0.40f, 0.25f, 40.0f);
+            set4(environment.waterShallowAlpha, 0.16f, 0.22f, 0.34f, 0.18f);
+            set4(environment.waterDeepAlpha, 0.02f, 0.05f, 0.14f, 0.94f);
+            set4(environment.waterSurface, 0.05f, 0.024f, 0.50f, 4.0f);
         }
         else if (weatherMode == WeatherMode::MidAfternoon)
         {
             weatherFog = { 0.82f, 0.72f, 0.52f };
-            skyTuning[3] = 7.0f;
+            set4(environment.horizonCurve, 0.88f, 0.82f, 0.68f, 0.20f);
+            set4(environment.zenithMidWeight, 0.20f, 0.42f, 0.76f, 0.0f);
+            set4(environment.midHeight, 0.0f, 0.0f, 0.0f, 0.35f);
+            set4(environment.groundCloudCover, 0.30f, 0.27f, 0.23f, 0.30f);
+            set4(environment.cloudColorOpacity, 1.00f, 0.98f, 0.94f, 1.0f);
+            set4(environment.cloudShadeSpeed, 0.66f, 0.68f, 0.72f, 1.0f);
+            set4(environment.cloudShape, 0.31f, 0.44f, 0.25f, 40.0f);
+            set4(environment.waterShallowAlpha, 0.18f, 0.44f, 0.50f, 0.18f);
+            set4(environment.waterDeepAlpha, 0.03f, 0.12f, 0.24f, 0.94f);
+            set4(environment.waterSurface, 0.05f, 0.030f, 0.55f, 4.0f);
         }
         else if (weatherMode == WeatherMode::Overcast)
         {
             weatherFog = { 0.52f, 0.54f, 0.56f };
-            skyTuning[3] = 8.0f;
+            set4(environment.horizonCurve, 0.66f, 0.68f, 0.70f, 0.45f);
+            set4(environment.zenithMidWeight, 0.44f, 0.47f, 0.52f, 0.0f);
+            set4(environment.midHeight, 0.0f, 0.0f, 0.0f, 0.35f);
+            set4(environment.groundCloudCover, 0.26f, 0.26f, 0.26f, 0.85f);
+            set4(environment.cloudColorOpacity, 0.80f, 0.82f, 0.85f, 1.0f);
+            set4(environment.cloudShadeSpeed, 0.52f, 0.55f, 0.60f, 1.4f);
+            set4(environment.cloudShape, 0.25f, 0.52f, 0.25f, 40.0f);
+            set4(environment.waterShallowAlpha, 0.20f, 0.30f, 0.34f, 0.18f);
+            set4(environment.waterDeepAlpha, 0.04f, 0.09f, 0.14f, 0.94f);
+            set4(environment.waterSurface, 0.05f, 0.042f, 0.85f, 4.0f);
         }
-        renderer.set_sky_tuning(skyTuning.data(), static_cast<std::uint32_t>(skyTuning.size()));
+        renderer.set_environment_style(environment);
         if (!fogEnabled && !dungeon)
         {
             renderer.set_sky_settings(

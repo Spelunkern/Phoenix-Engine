@@ -12,6 +12,8 @@ out vec4 outColor;
 
 CAMERA_BLOCK
 
+ENVIRONMENT_FUNCTIONS
+
 layout(binding = 0) uniform sampler2DArray terrainTexture;
 layout(std430, binding = 1) readonly buffer TerrainMap { uint words[]; } terrainMap;
 layout(binding = 2) uniform sampler2DArray lightmapTexture;
@@ -96,7 +98,7 @@ vec3 applyUnderwaterView(vec3 color, vec3 worldPos)
     if (camera.positionYaw.y >= 0.0)
         return color;
 
-    vec3 waterTint = clamp(camera.waterStyle.rgb * 1.25 + vec3(0.02, 0.05, 0.08), 0.0, 1.0);
+    vec3 waterTint = clamp(camera.waterDeepAlpha.rgb * 1.25 + vec3(0.02, 0.05, 0.08), 0.0, 1.0);
     float viewDistance = length(worldPos - camera.positionYaw.xyz);
     float cameraDepth = clamp(-camera.positionYaw.y * 0.10, 0.0, 1.0);
     float pixelDepth = clamp(-worldPos.y * 0.05, 0.0, 1.0);
@@ -193,22 +195,42 @@ void main()
         if (isWater)
         {
             float t = camera.waterInfo.z;
-            vec2 wp = vWorldPos.xz;
-            vec2 d1 = wp * 0.08 + vec2(t * 0.6, t * 0.3);
-            vec2 d2 = wp * 0.12 + vec2(-t * 0.4, t * 0.5);
-            float ripple = sin(d1.x + d1.y) * 0.5 + sin(d2.x - d2.y) * 0.5;
-            vec3 base = camera.waterStyle.rgb;
-            float highlight = clamp(ripple * 0.4 + 0.5, 0.0, 1.0);
-            vec3 c = mix(base * 0.85, base * 1.15, highlight);
-            c += vec3(0.04, 0.06, 0.08) * highlight * highlight;
+            vec2 worldUv = vWorldPos.xz;
+            float rippleScale = camera.waterSurface.x;
+            float rippleSpeed = camera.waterSurface.y;
+            vec2 uvA = worldUv * rippleScale + vec2(1.0, 0.35) * t * rippleSpeed;
+            vec2 uvB = worldUv * rippleScale * 1.43
+                + vec2(-0.6, 0.8) * t * rippleSpeed * 0.7;
+            vec3 rippleMap = mix(texture(environmentNormalNoise, uvA).rgb,
+                texture(environmentNormalNoise, uvB).rgb, 0.5);
+            vec3 tangentRipple = rippleMap * 2.0 - 1.0;
+            vec3 rippleNormal = normalize(vec3(tangentRipple.x * camera.waterSurface.z,
+                max(tangentRipple.z, 0.15), tangentRipple.y * camera.waterSurface.z));
+
+            vec3 viewDirection = normalize(camera.positionYaw.xyz - vWorldPos);
+            float fresnel = pow(1.0 - clamp(dot(vec3(0.0, 1.0, 0.0), viewDirection), 0.0, 1.0),
+                camera.waterSurface.w);
+            vec3 reflectedDirection = reflect(-viewDirection, rippleNormal);
+            vec3 reflectedSky = environmentSkyRadiance(reflectedDirection);
+
+            // The direct-to-window backend has no sampleable scene depth. A
+            // stable midpoint keeps the shallow/deep palette without a second
+            // rendering pass or a framebuffer copy.
+            float depthFade = 0.55;
+            vec3 c = mix(camera.waterShallowAlpha.rgb, camera.waterDeepAlpha.rgb, depthFade);
+            c = mix(c, reflectedSky, clamp(0.18 + fresnel * 0.62, 0.0, 0.82));
+            float alpha = mix(camera.waterShallowAlpha.w, camera.waterDeepAlpha.w, depthFade);
+            alpha = mix(alpha, 1.0, fresnel * camera.waterOptics.x);
             if (camera.positionYaw.y < 0.0)
             {
                 float depth = clamp(-camera.positionYaw.y * 0.10, 0.0, 1.0);
-                c = mix(c * vec3(0.70, 0.92, 1.18), base * 1.45 + vec3(0.02, 0.05, 0.08), 0.45 + depth * 0.25);
-                outColor = vec4(clamp(c, 0.0, 1.0), clamp(camera.waterStyle.a + 0.18 + depth * 0.16, 0.0, 1.0));
+                c = mix(c * vec3(0.70, 0.92, 1.18), camera.waterDeepAlpha.rgb * 1.45
+                    + vec3(0.02, 0.05, 0.08), 0.45 + depth * 0.25);
+                alpha = mix(camera.waterShallowAlpha.w, camera.waterDeepAlpha.w, camera.waterOptics.y);
+                outColor = vec4(clamp(c, 0.0, 1.0), clamp(alpha, 0.0, 1.0));
                 return;
             }
-            outColor = vec4(c, camera.waterStyle.a);
+            outColor = vec4(clamp(c, 0.0, 1.0), clamp(alpha, 0.0, 1.0));
             return;
         }
         else
