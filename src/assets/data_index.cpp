@@ -236,7 +236,7 @@ namespace phoenix::assets
         const auto resolved = resolve_existing_path_case_insensitive(path);
         if (!resolved.empty())
             return std::ifstream(resolved, mode);
-        return stream;
+        return {};
     }
 
     std::vector<std::uint8_t> read_file_binary(const std::filesystem::path& path)

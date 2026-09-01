@@ -83,12 +83,6 @@ namespace phoenix::world
             return skip_fixed_list(data, offset, 256);
         }
 
-        bool skip_names_and_object_instances(const std::vector<std::uint8_t>& data, std::size_t& offset)
-        {
-            return skip_names(data, offset)
-                && skip_fixed_list(data, offset, 40);
-        }
-
         bool read_names(
             const std::vector<std::uint8_t>& data,
             std::size_t& offset,

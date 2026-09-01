@@ -94,15 +94,6 @@ namespace phoenix::character
             return assets::resolve_existing_path_case_insensitive(path);
         }
 
-        // Read a little-endian uint32 from a raw byte pointer.
-        std::uint32_t read_u32_le(const std::uint8_t* data, std::size_t offset)
-        {
-            return static_cast<std::uint32_t>(data[offset])
-                | (static_cast<std::uint32_t>(data[offset + 1]) << 8)
-                | (static_cast<std::uint32_t>(data[offset + 2]) << 16)
-                | (static_cast<std::uint32_t>(data[offset + 3]) << 24);
-        }
-
         // ---- Minimal math library ----
 
         struct Vec3
@@ -786,7 +777,7 @@ namespace phoenix::character
         {
             std::string mesh;
             std::filesystem::path texture;
-            bool alphaCutout;
+            bool alphaCutout{};
         };
 
         std::optional<ResolvedPart> resolve_part_from_table(
@@ -1015,12 +1006,12 @@ namespace phoenix::character
         {
             std::string mesh;
             std::filesystem::path texture;
-            bool alphaCutout;
+            bool alphaCutout{};
         };
 
         // Resolve parts from CSV tables (MLT converted to CSV).
         // Helmet and hair are mutually exclusive: if helmet is visible, hair is hidden.
-        struct PartSpec { std::string_view partFile; int index; };
+        struct PartSpec { std::string_view partFile; int index{}; };
         std::vector<PartSpec> partSpecs{
             { "upper",   appearance.upperIndex },
             { "lower",   appearance.lowerIndex },
@@ -3082,7 +3073,7 @@ namespace phoenix::character
                 clothRestLeft_.assign(n, 0.0f);
                 for (std::uint32_t i = 0; i < n; ++i)
                 {
-                    for (int a = 0; a < 3; ++a)
+                    for (std::size_t a = 0; a < 3; ++a)
                     {
                         clothWorld_[i * 3 + a] = worldVertices_[off + i].position[a];
                         clothPrev_[i * 3 + a]  = worldVertices_[off + i].position[a];
@@ -3248,7 +3239,7 @@ namespace phoenix::character
                         const float s = kMaxVelStep / std::sqrt(v2);
                         vx *= s; vy *= s; vz *= s;
                     }
-                    for (int a = 0; a < 3; ++a)
+                    for (std::size_t a = 0; a < 3; ++a)
                         clothPrev_[i * 3 + a] = clothWorld_[i * 3 + a];
                     clothWorld_[i * 3 + 0] += vx;
                     clothWorld_[i * 3 + 1] += vy + kGStep;
@@ -3295,7 +3286,7 @@ namespace phoenix::character
             const float renderAlpha = std::clamp(clothAccum_ / kFixedDt, 0.0f, 1.0f);
             for (std::uint32_t i = 0; i < n; ++i)
             {
-                for (int axis = 0; axis < 3; ++axis)
+                for (std::size_t axis = 0; axis < 3; ++axis)
                     worldVertices_[off + i].position[axis] = std::lerp(
                         clothPrev_[i * 3 + axis], clothWorld_[i * 3 + axis], renderAlpha);
             }

@@ -97,7 +97,7 @@ namespace phoenix::renderer
         constexpr std::uint32_t kChunkQ = phoenix::runtime::PhoenixRuntime::kTerrainChunkQuads;
         const float cullDist = view.distance;
 
-        struct SortEntry { float distSq; TerrainDrawRange range; };
+        struct SortEntry { float distSq{}; TerrainDrawRange range; };
         static std::vector<SortEntry> sorted;
         sorted.clear();
 

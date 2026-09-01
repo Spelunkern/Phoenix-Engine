@@ -237,32 +237,6 @@ namespace phoenix::character
             return { m.m[3][0], m.m[3][1], m.m[3][2] };
         }
 
-        Vec3 transform_point(const Mat4& m, Vec3 v)
-        {
-            return {
-                m.m[0][0] * v.x + m.m[1][0] * v.y + m.m[2][0] * v.z + m.m[3][0],
-                m.m[0][1] * v.x + m.m[1][1] * v.y + m.m[2][1] * v.z + m.m[3][1],
-                m.m[0][2] * v.x + m.m[1][2] * v.y + m.m[2][2] * v.z + m.m[3][2],
-            };
-        }
-
-        Vec3 transform_normal(const Mat4& m, Vec3 v)
-        {
-            return {
-                m.m[0][0] * v.x + m.m[1][0] * v.y + m.m[2][0] * v.z,
-                m.m[0][1] * v.x + m.m[1][1] * v.y + m.m[2][1] * v.z,
-                m.m[0][2] * v.x + m.m[1][2] * v.y + m.m[2][2] * v.z,
-            };
-        }
-
-        Vec3 normalize_vec3(Vec3 v)
-        {
-            const float len = std::sqrt(v.x * v.x + v.y * v.y + v.z * v.z);
-            if (len <= 0.0001f)
-                return {};
-            return { v.x / len, v.y / len, v.z / len };
-        }
-
         Quat sample_rotation(const world::CharacterAnimationBone& bone, float frame)
         {
             if (bone.rotationFrames.empty())
@@ -1579,7 +1553,7 @@ namespace phoenix::character
         poseKeys.clear();
         // Visible entities with their built instance, kept per-entity so they can
         // be grouped by model into contiguous instanced draws below.
-        struct VisInst { std::uint32_t model; phoenix::renderer::ObjectInstance inst; };
+        struct VisInst { std::uint32_t model{}; phoenix::renderer::ObjectInstance inst; };
         static std::vector<VisInst> vis;
         vis.clear();
         // Pass 1 (serial): cull, advance animation, dedup poses; the heavy bone

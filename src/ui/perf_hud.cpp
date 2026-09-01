@@ -255,28 +255,31 @@ namespace phoenix::ui
 
         const auto fpsColor = hud.fpsSmoothed >= 60.0f ? px::Color(0.2f,1.0f,0.4f,1.0f)
             : hud.fpsSmoothed >= 30.0f ? px::Color(1.0f,0.85f,0.2f,1.0f) : px::Color(1.0f,0.3f,0.3f,1.0f);
-        px::TextColored(fpsColor, "FPS: %.0f", hud.fpsSmoothed);
+        px::TextColored(fpsColor, "FPS: %.0f", static_cast<double>(hud.fpsSmoothed));
 
-        px::TextColored(pctColor(hud.cpuPercent), "CPU: %.0f%%", hud.cpuPercent);
+        px::TextColored(pctColor(hud.cpuPercent), "CPU: %.0f%%", static_cast<double>(hud.cpuPercent));
         px::SameLine(130.0f);
         px::Text("%u cores", hud.cpuCores);
 
         if (hud.vramTotalMB > 0.0f)
         {
             const float vp = (hud.vramUsedMB / hud.vramTotalMB) * 100.0f;
-            px::TextColored(pctColor(vp), "VRAM: %.0f%%", vp);
+            px::TextColored(pctColor(vp), "VRAM: %.0f%%", static_cast<double>(vp));
             px::SameLine(130.0f);
-            px::Text("%.0f/%.0f MB", hud.vramUsedMB, hud.vramTotalMB);
+            px::Text("%.0f/%.0f MB", static_cast<double>(hud.vramUsedMB),
+                static_cast<double>(hud.vramTotalMB));
         }
 
-        px::TextColored(pctColor(hud.ramPercent), "RAM: %.0f%%", hud.ramPercent);
+        px::TextColored(pctColor(hud.ramPercent), "RAM: %.0f%%", static_cast<double>(hud.ramPercent));
         px::SameLine(130.0f);
-        px::Text("%.1f/%.1f GB", hud.ramUsedMB / 1024.0f, hud.ramTotalMB / 1024.0f);
-        px::Text("Process: %.0f MB", hud.processRamMB);
+        px::Text("%.1f/%.1f GB", static_cast<double>(hud.ramUsedMB / 1024.0f),
+            static_cast<double>(hud.ramTotalMB / 1024.0f));
+        px::Text("Process: %.0f MB", static_cast<double>(hud.processRamMB));
 
         px::Separator();
         px::TextDisabled("Map: %s", hud.mapId.empty() ? "?" : hud.mapId.c_str());
-        px::Text("XYZ: %.1f  %.1f  %.1f", hud.worldX, hud.worldY, hud.worldZ);
+        px::Text("XYZ: %.1f  %.1f  %.1f", static_cast<double>(hud.worldX),
+            static_cast<double>(hud.worldY), static_cast<double>(hud.worldZ));
 
         px::End();
     }

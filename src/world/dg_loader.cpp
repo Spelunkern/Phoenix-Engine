@@ -20,6 +20,11 @@ namespace phoenix::world
             std::size_t offset{};
             bool ok{ true };
 
+            explicit Reader(const std::vector<std::uint8_t>& source)
+                : data(source)
+            {
+            }
+
             bool can_read(std::size_t bytes)
             {
                 if (!ok || offset > data.size() || bytes > data.size() - offset)

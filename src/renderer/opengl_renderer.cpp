@@ -332,6 +332,11 @@ namespace phoenix::renderer
 
     bool OpenGLRenderer::initialize(SDL_Window* window, std::uint32_t width, std::uint32_t height)
     {
+        if (impl_)
+        {
+            log_line("GL: renderer is already initialized");
+            return false;
+        }
         impl_ = new Impl{};
         impl_->window = window;
         impl_->glContext = SDL_GL_GetCurrentContext();
@@ -1159,10 +1164,13 @@ namespace phoenix::renderer
     {
         if (!ready_ || !impl_->animatedObjectsReady || !vertices || vertexCount == 0)
             return false;
-        const auto byteOffset = static_cast<GLintptr>(firstVertex) * sizeof(TerrainVertex);
-        const auto byteSize = static_cast<GLsizeiptr>(vertexCount) * sizeof(TerrainVertex);
-        if (static_cast<std::size_t>(byteOffset + byteSize) > impl_->animatedObjectVertexBytes)
+        const auto byteOffsetSize = static_cast<std::size_t>(firstVertex) * sizeof(TerrainVertex);
+        const auto byteSizeValue = static_cast<std::size_t>(vertexCount) * sizeof(TerrainVertex);
+        if (byteOffsetSize > impl_->animatedObjectVertexBytes
+            || byteSizeValue > impl_->animatedObjectVertexBytes - byteOffsetSize)
             return false;
+        const auto byteOffset = static_cast<GLintptr>(byteOffsetSize);
+        const auto byteSize = static_cast<GLsizeiptr>(byteSizeValue);
         glNamedBufferSubData_(impl_->animatedObjectVertexBuffer.id, byteOffset, byteSize, vertices + firstVertex);
         return true;
     }
@@ -1289,10 +1297,13 @@ namespace phoenix::renderer
     {
         if (!ready_ || !impl_->botCharacterReady || !vertices || vertexCount == 0)
             return false;
-        const auto byteOffset = static_cast<GLintptr>(firstVertex) * sizeof(TerrainVertex);
-        const auto byteSize = static_cast<GLsizeiptr>(vertexCount) * sizeof(TerrainVertex);
-        if (static_cast<std::size_t>(byteOffset + byteSize) > impl_->botCharacterVertexBuffer.byteSize)
+        const auto byteOffsetSize = static_cast<std::size_t>(firstVertex) * sizeof(TerrainVertex);
+        const auto byteSizeValue = static_cast<std::size_t>(vertexCount) * sizeof(TerrainVertex);
+        if (byteOffsetSize > impl_->botCharacterVertexBuffer.byteSize
+            || byteSizeValue > impl_->botCharacterVertexBuffer.byteSize - byteOffsetSize)
             return false;
+        const auto byteOffset = static_cast<GLintptr>(byteOffsetSize);
+        const auto byteSize = static_cast<GLsizeiptr>(byteSizeValue);
         glNamedBufferSubData_(impl_->botCharacterVertexBuffer.id, byteOffset, byteSize, vertices + firstVertex);
         return true;
     }
@@ -1351,10 +1362,13 @@ namespace phoenix::renderer
     {
         if (!ready_ || !impl_->monsterCharacterReady || !vertices || vertexCount == 0)
             return false;
-        const auto byteOffset = static_cast<GLintptr>(firstVertex) * sizeof(TerrainVertex);
-        const auto byteSize = static_cast<GLsizeiptr>(vertexCount) * sizeof(TerrainVertex);
-        if (static_cast<std::size_t>(byteOffset + byteSize) > impl_->monsterCharacterVertexBuffer.byteSize)
+        const auto byteOffsetSize = static_cast<std::size_t>(firstVertex) * sizeof(TerrainVertex);
+        const auto byteSizeValue = static_cast<std::size_t>(vertexCount) * sizeof(TerrainVertex);
+        if (byteOffsetSize > impl_->monsterCharacterVertexBuffer.byteSize
+            || byteSizeValue > impl_->monsterCharacterVertexBuffer.byteSize - byteOffsetSize)
             return false;
+        const auto byteOffset = static_cast<GLintptr>(byteOffsetSize);
+        const auto byteSize = static_cast<GLsizeiptr>(byteSizeValue);
         glNamedBufferSubData_(impl_->monsterCharacterVertexBuffer.id, byteOffset, byteSize, vertices + firstVertex);
         return true;
     }
@@ -1941,13 +1955,20 @@ namespace phoenix::renderer
         std::vector<std::uint8_t> buffer(totalBytes, 0);
         std::memcpy(buffer.data(), data.data(), mapBytes);
 
-        auto* tileSizeDst = reinterpret_cast<float*>(buffer.data() + mapBytesPadded);
         for (std::uint32_t i = 0; i < kMaxTileSizes; ++i)
-            tileSizeDst[i] = (i < tileSizeCount && tileSizes) ? std::max(1.0f, tileSizes[i]) : 8.0f;
+        {
+            const float tileSize = (i < tileSizeCount && tileSizes)
+                ? std::max(1.0f, tileSizes[i]) : 8.0f;
+            std::memcpy(buffer.data() + mapBytesPadded + static_cast<std::size_t>(i) * sizeof(float),
+                &tileSize, sizeof(tileSize));
+        }
 
-        auto* splatDst = reinterpret_cast<std::uint32_t*>(buffer.data() + mapBytesPadded + tileSizeBytes);
-        splatDst[0] = alphaMaskLayerFlags;
-        splatDst[1] = std::min(splatLayerCount, kMaxTileSizes);
+        const std::uint32_t splatValues[2]{
+            alphaMaskLayerFlags,
+            std::min(splatLayerCount, kMaxTileSizes),
+        };
+        std::memcpy(buffer.data() + mapBytesPadded + tileSizeBytes,
+            splatValues, sizeof(splatValues));
 
         impl_->terrainMapBuffer = make_static_buffer(buffer.data(), totalBytes);
         glBindBufferBase_(GL_SHADER_STORAGE_BUFFER, 1, impl_->terrainMapBuffer.id);

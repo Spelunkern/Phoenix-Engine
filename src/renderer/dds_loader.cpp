@@ -244,12 +244,12 @@ namespace phoenix::renderer
                     std::uint8_t pixels[16 * 4]{};
                     decode_bc1_block(src + (static_cast<std::size_t>(by) * blocksW + bx) * 8, pixels);
 
-                    for (int py = 0; py < 4; ++py)
+                    for (std::uint32_t py = 0; py < 4; ++py)
                     {
                         const auto row = by * 4 + py;
                         if (row >= height)
                             break;
-                        for (int px = 0; px < 4; ++px)
+                        for (std::uint32_t px = 0; px < 4; ++px)
                         {
                             const auto col = bx * 4 + px;
                             if (col >= width)
@@ -282,12 +282,12 @@ namespace phoenix::renderer
                     for (int i = 0; i < 16; ++i)
                         pixels[i * 4 + 3] = alphas[i];
 
-                    for (int py = 0; py < 4; ++py)
+                    for (std::uint32_t py = 0; py < 4; ++py)
                     {
                         const auto row = by * 4 + py;
                         if (row >= height)
                             break;
-                        for (int px = 0; px < 4; ++px)
+                        for (std::uint32_t px = 0; px < 4; ++px)
                         {
                             const auto col = bx * 4 + px;
                             if (col >= width)
@@ -320,12 +320,12 @@ namespace phoenix::renderer
                     for (int i = 0; i < 16; ++i)
                         pixels[i * 4 + 3] = alphas[i];
 
-                    for (int py = 0; py < 4; ++py)
+                    for (std::uint32_t py = 0; py < 4; ++py)
                     {
                         const auto row = by * 4 + py;
                         if (row >= height)
                             break;
-                        for (int px = 0; px < 4; ++px)
+                        for (std::uint32_t px = 0; px < 4; ++px)
                         {
                             const auto col = bx * 4 + px;
                             if (col >= width)
@@ -609,9 +609,10 @@ namespace phoenix::renderer
         {
             // Gather 4×4 pixel block.
             std::uint8_t px[16][4];
-            for (int y = 0; y < 4; ++y)
-                for (int x = 0; x < 4; ++x)
-                    std::memcpy(px[y * 4 + x], rgba + y * stride + x * 4, 4);
+            for (std::size_t y = 0; y < 4; ++y)
+                for (std::size_t x = 0; x < 4; ++x)
+                    std::memcpy(px[y * 4 + x],
+                        rgba + y * static_cast<std::size_t>(stride) + x * 4, 4);
 
             // ── Alpha block (8 bytes) ──
             std::uint8_t minA = 255, maxA = 0;
@@ -753,7 +754,7 @@ namespace phoenix::renderer
                 const auto x1 = std::min(srcW - 1, x0 + 1);
                 const float tx = std::clamp(sx - static_cast<float>(x0), 0.0f, 1.0f);
                 const auto dstOff = (static_cast<std::size_t>(y) * dstW + x) * 4;
-                for (int c = 0; c < 4; ++c)
+                for (std::size_t c = 0; c < 4; ++c)
                 {
                     const float c00 = src[(static_cast<std::size_t>(y0) * srcW + x0) * 4 + c];
                     const float c10 = src[(static_cast<std::size_t>(y0) * srcW + x1) * 4 + c];
@@ -918,9 +919,9 @@ namespace phoenix::renderer
                         const auto sx = x * 2, sy = y * 2;
                         const auto sx1 = std::min(sx + 1, mipW - 1);
                         const auto sy1 = std::min(sy + 1, mipH - 1);
-                        for (int c = 0; c < 4; ++c)
+                        for (std::uint32_t c = 0; c < 4; ++c)
                         {
-                            const unsigned v = currentRgba[(sy  * mipW + sx ) * 4 + c]
+                            const auto v = static_cast<std::uint32_t>(currentRgba[(sy * mipW + sx) * 4 + c])
                                              + currentRgba[(sy  * mipW + sx1) * 4 + c]
                                              + currentRgba[(sy1 * mipW + sx ) * 4 + c]
                                              + currentRgba[(sy1 * mipW + sx1) * 4 + c];

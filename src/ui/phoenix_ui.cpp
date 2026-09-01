@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cstdarg>
 #include <cstdio>
+#include <cstring>
 #include <functional>
 #include <string_view>
 #include <unordered_map>
@@ -150,7 +151,7 @@ namespace phoenix::ui::px
             Rect item{};
             if (context.comboActive)
             {
-                item = { context.comboX, context.comboY + context.comboRow * kItemHeight,
+                item = { context.comboX, context.comboY + static_cast<float>(context.comboRow) * kItemHeight,
                     context.comboWidth, kItemHeight };
                 ++context.comboRow;
                 return item;
@@ -208,7 +209,7 @@ namespace phoenix::ui::px
             return false;
         }
 
-        void text_line(std::string text, Color color, bool bullet)
+        void text_line(std::string_view text, Color color, bool bullet)
         {
             const auto item = place_item(
                 context.activeWindow ? context.activeWindow->width - kPadding * 2.0f : 240.0f,
@@ -459,7 +460,13 @@ namespace phoenix::ui::px
         add_rect(track, { 0.07f, 0.10f, 0.12f, 0.96f }, context.contentClip);
         add_rect({ track.x, track.y, track.w * fraction, track.h }, { 0.10f, 0.43f, 0.66f, 0.95f }, context.contentClip);
         char valueText[64]{};
-        std::snprintf(valueText, sizeof(valueText), format, value ? *value : 0.0f);
+        const auto formattedValue = static_cast<double>(value ? *value : 0.0f);
+        if (format && std::strcmp(format, "%.2f") == 0)
+            std::snprintf(valueText, sizeof(valueText), "%.2f", formattedValue);
+        else if (format && std::strcmp(format, "%.0f m") == 0)
+            std::snprintf(valueText, sizeof(valueText), "%.0f m", formattedValue);
+        else
+            std::snprintf(valueText, sizeof(valueText), "%.0f", formattedValue);
         add_text(track.x + 6.0f, track.y + 3.0f, valueText, { 0.96f, 0.97f, 0.98f, 1.0f }, context.contentClip);
         add_text(item.x, item.y + kItemHeight + 1.0f, visible_label(label), { 0.72f, 0.77f, 0.81f, 1.0f }, context.contentClip);
         return changed;
@@ -523,7 +530,7 @@ namespace phoenix::ui::px
             }
             add_rect(item, { 0.07f, 0.10f, 0.12f, 0.96f }, context.contentClip);
             char number[32]{};
-            std::snprintf(number, sizeof(number), "%.2f", value[component]);
+            std::snprintf(number, sizeof(number), "%.2f", static_cast<double>(value[component]));
             add_text(item.x + 4.0f, item.y + 3.0f, number, { 0.93f, 0.95f, 0.97f, 1.0f }, context.contentClip);
         }
         return changed;
@@ -582,7 +589,7 @@ namespace phoenix::ui::px
         const int visibleRow = logicalRow - context.comboScroll;
         if (visibleRow < 0 || visibleRow >= 11)
             return false;
-        const Rect item{ context.comboX, context.comboY + visibleRow * kItemHeight,
+        const Rect item{ context.comboX, context.comboY + static_cast<float>(visibleRow) * kItemHeight,
             context.comboWidth, kItemHeight };
         const auto id = hash_id(std::to_string(logicalRow), item_id(label));
         const bool clicked = interact(id, item);
@@ -601,7 +608,8 @@ namespace phoenix::ui::px
         const int maxScroll = std::max(0, context.comboRow - 11);
         context.comboScroll = std::clamp(context.comboScroll, 0, maxScroll);
         context.comboScrollById[context.comboId] = context.comboScroll;
-        const float height = std::min(242.0f, std::min(context.comboRow, 11) * kItemHeight + 2.0f);
+        const float height = std::min(242.0f,
+            static_cast<float>(std::min(context.comboRow, 11)) * kItemHeight + 2.0f);
         context.overlay[context.comboBackgroundIndex].height = height;
         context.comboActive = false;
         context.sink = &context.commands;

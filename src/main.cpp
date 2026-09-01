@@ -619,7 +619,7 @@ int main(int, char**)
         const auto skyTexturePath = runtime.texture_path_for(runtime.state().world.skyFileName);
         const auto primaryCloudTexturePath = runtime.texture_path_for(runtime.state().world.primaryCloudFileName);
         const auto secondaryCloudTexturePath = runtime.texture_path_for(runtime.state().world.secondaryCloudFileName);
-        const auto assetTexturePaths = runtime.asset_texture_paths();
+        const auto& assetTexturePaths = runtime.asset_texture_paths();
 
         runtime.load_water_animation();
         const auto& waterAnim = runtime.water_animation();
@@ -760,21 +760,6 @@ int main(int, char**)
         showLoading(0.68f, "Uploading textures");
         if (!terrainTextures.empty())
         {
-            // Log pre-normalisation format census.
-            {
-                std::uint32_t countBc1{}, countBc3{}, countRgba{}, countInvalid{};
-                std::map<std::string, std::uint32_t> sizeDistribution;
-                for (const auto& t : terrainTextures)
-                {
-                    if (!t.valid) { ++countInvalid; continue; }
-                    auto sizeKey = std::to_string(t.width) + "x" + std::to_string(t.height);
-                    sizeDistribution[sizeKey]++;
-                    if (t.compressed && t.vkFormat == phoenix::renderer::kDdsFormatBc1RgbaUnormBlock) ++countBc1;
-                    else if (t.compressed && (t.vkFormat == phoenix::renderer::kDdsFormatBc3UnormBlock || t.vkFormat == phoenix::renderer::kDdsFormatBc2UnormBlock)) ++countBc3;
-                    else ++countRgba;
-                }
-            }
-
             showLoading(0.70f, "Normalising textures to BC3");
             normalizeTexturesForBcUpload(terrainTextures, "Normalising textures to BC3", 0.70f, 0.735f);
 
@@ -1089,15 +1074,12 @@ int main(int, char**)
         // ---- Release CPU-side data already uploaded to GPU ----
         // Vertices and indices are now in GPU buffers; free CPU copies.
         {
-            std::size_t freedMB = 0;
-            const auto countBytes = [](auto& vec) {
-                const auto bytes = vec.capacity() * sizeof(typename std::remove_reference_t<decltype(vec)>::value_type);
+            const auto releaseVector = [](auto& vec) {
                 vec.clear();
                 vec.shrink_to_fit();
-                return bytes;
             };
-            freedMB += countBytes(staticObjectScene.vertices);
-            freedMB += countBytes(staticObjectScene.indices);
+            releaseVector(staticObjectScene.vertices);
+            releaseVector(staticObjectScene.indices);
         }
 
         // Upload character mesh (initial bind pose).
@@ -1689,8 +1671,11 @@ int main(int, char**)
                     // renders as garbage "?" glyphs and isn't guaranteed to be
                     // valid UTF-8 at all. Reduce to printable ASCII only.
                     std::string label = std::to_string(i) + ": ";
-                    for (const unsigned char ch : sequences[i].name)
+                    for (const char raw : sequences[i].name)
+                    {
+                        const auto ch = static_cast<unsigned char>(raw);
                         label += (ch >= 0x20 && ch < 0x7F) ? static_cast<char>(ch) : '.';
+                    }
                     if (label.size() == std::to_string(i).size() + 2)
                         label += "(unnamed)";
                     effectSequenceNames.push_back(std::move(label));

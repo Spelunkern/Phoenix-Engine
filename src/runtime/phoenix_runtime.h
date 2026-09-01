@@ -321,7 +321,7 @@ namespace phoenix::runtime
         void update_animated_object_scene(AnimatedObjectScene& scene, float totalTime,
             float cameraX, float cameraY, float cameraZ, float viewDistance) const;
         std::vector<std::filesystem::path> terrain_texture_paths() const;
-        std::vector<std::filesystem::path> asset_texture_paths() const;
+        const std::vector<std::filesystem::path>& asset_texture_paths() const;
 
         // Field lightmap/alpha layer paths (Data/World/field/<mapId>/).
         // Returns up to 4 lightmap paths (one per section, 2x2 for big maps, 1x1 for small).

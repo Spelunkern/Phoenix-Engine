@@ -106,9 +106,9 @@ namespace phoenix::runtime
             {
                 if (tri.normalY < WorldCollisionMesh::kWalkableNormalY)
                     continue;
-                sx += (tri.v0[0] + tri.v1[0] + tri.v2[0]) / 3.0;
-                sy += (tri.v0[1] + tri.v1[1] + tri.v2[1]) / 3.0;
-                sz += (tri.v0[2] + tri.v1[2] + tri.v2[2]) / 3.0;
+                sx += static_cast<double>(tri.v0[0] + tri.v1[0] + tri.v2[0]) / 3.0;
+                sy += static_cast<double>(tri.v0[1] + tri.v1[1] + tri.v2[1]) / 3.0;
+                sz += static_cast<double>(tri.v0[2] + tri.v1[2] + tri.v2[2]) / 3.0;
                 ++n;
             }
             if (n > 0)

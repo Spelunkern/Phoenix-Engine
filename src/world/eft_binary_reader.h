@@ -21,6 +21,11 @@ namespace phoenix::world::detail
         std::size_t offset{};
         bool ok{ true };
 
+        explicit EftReader(const std::vector<std::uint8_t>& source)
+            : data(source)
+        {
+        }
+
         std::uint32_t u32()
         {
             if (!ok || offset + 4 > data.size())

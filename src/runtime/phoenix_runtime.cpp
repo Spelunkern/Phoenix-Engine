@@ -24,7 +24,6 @@
 #include <limits>
 #include <map>
 #include <numbers>
-#include <numeric>
 #include <optional>
 #include <unordered_map>
 #include <unordered_set>
@@ -265,97 +264,6 @@ namespace phoenix::runtime
             vertex.uv[1] = uv ? uv[1] : 0.0f;
             vertex.textureLayer = textureLayer;
             vertices.push_back(vertex);
-        }
-
-        std::uint32_t read_le_u32(const std::vector<std::uint8_t>& data, std::size_t offset)
-        {
-            if (offset + 4 > data.size())
-                return 0;
-            return static_cast<std::uint32_t>(data[offset])
-                | (static_cast<std::uint32_t>(data[offset + 1]) << 8)
-                | (static_cast<std::uint32_t>(data[offset + 2]) << 16)
-                | (static_cast<std::uint32_t>(data[offset + 3]) << 24);
-        }
-
-        std::array<float, 3> rgb565(std::uint16_t value)
-        {
-            return {
-                static_cast<float>((value >> 11) & 0x1F) / 31.0f,
-                static_cast<float>((value >> 5) & 0x3F) / 63.0f,
-                static_cast<float>(value & 0x1F) / 31.0f,
-            };
-        }
-
-        std::array<float, 3> average_dds_bc_color(const std::filesystem::path& path)
-        {
-            auto data = assets::read_file_binary(path);
-            if (data.size() < 128 || read_le_u32(data, 0) != 0x20534444u)
-                return { 0.34f, 0.48f, 0.22f };
-
-            const auto height = read_le_u32(data, 12);
-            const auto width = read_le_u32(data, 16);
-            const auto fourCc = read_le_u32(data, 84);
-            const auto isDxt1 = fourCc == 0x31545844u;
-            const auto isDxt3 = fourCc == 0x33545844u;
-            const auto isDxt5 = fourCc == 0x35545844u;
-            if (width == 0 || height == 0 || (!isDxt1 && !isDxt3 && !isDxt5))
-                return { 0.34f, 0.48f, 0.22f };
-
-            const auto blockBytes = isDxt1 ? 8u : 16u;
-            const auto blocksWide = std::max<std::uint32_t>(1, (width + 3) / 4);
-            const auto blocksHigh = std::max<std::uint32_t>(1, (height + 3) / 4);
-            const auto blockCount = static_cast<std::size_t>(blocksWide) * blocksHigh;
-            const auto payloadOffset = std::size_t{ 128 };
-            if (payloadOffset + blockCount * blockBytes > data.size())
-                return { 0.34f, 0.48f, 0.22f };
-
-            std::array<double, 3> sum{};
-            double samples = 0.0;
-            for (std::size_t block = 0; block < blockCount; ++block)
-            {
-                const auto offset = payloadOffset + block * blockBytes + (isDxt1 ? 0u : 8u);
-                const auto c0 = static_cast<std::uint16_t>(data[offset] | (data[offset + 1] << 8));
-                const auto c1 = static_cast<std::uint16_t>(data[offset + 2] | (data[offset + 3] << 8));
-                const auto a = rgb565(c0);
-                const auto b = rgb565(c1);
-                std::array<std::array<float, 3>, 4> palette{};
-                palette[0] = a;
-                palette[1] = b;
-                if (isDxt1 && c0 <= c1)
-                {
-                    for (std::size_t i = 0; i < 3; ++i)
-                    {
-                        palette[2][i] = (a[i] + b[i]) * 0.5f;
-                        palette[3][i] = palette[2][i];
-                    }
-                }
-                else
-                {
-                    for (std::size_t i = 0; i < 3; ++i)
-                    {
-                        palette[2][i] = (2.0f * a[i] + b[i]) / 3.0f;
-                        palette[3][i] = (a[i] + 2.0f * b[i]) / 3.0f;
-                    }
-                }
-
-                const auto bits = read_le_u32(data, offset + 4);
-                for (std::uint32_t pixel = 0; pixel < 16; ++pixel)
-                {
-                    const auto index = (bits >> (pixel * 2u)) & 0x3u;
-                    sum[0] += palette[index][0];
-                    sum[1] += palette[index][1];
-                    sum[2] += palette[index][2];
-                    samples += 1.0;
-                }
-            }
-
-            if (samples <= 0.0)
-                return { 0.34f, 0.48f, 0.22f };
-            return {
-                static_cast<float>(sum[0] / samples),
-                static_cast<float>(sum[1] / samples),
-                static_cast<float>(sum[2] / samples),
-            };
         }
 
         std::vector<std::filesystem::path> terrain_detail_paths_for_map(
@@ -1710,7 +1618,7 @@ namespace phoenix::runtime
         return paths;
     }
 
-    std::vector<std::filesystem::path> PhoenixRuntime::asset_texture_paths() const
+    const std::vector<std::filesystem::path>& PhoenixRuntime::asset_texture_paths() const
     {
         return state_.assetTexturePaths;
     }
@@ -2058,7 +1966,7 @@ namespace phoenix::runtime
                     const auto qMaxX = std::min(grid, qMinX + kChunkQ);
                     const auto qMaxZ = std::min(grid, qMinZ + kChunkQ);
 
-                    for (int lod = 0; lod < kTerrainLodLevels; ++lod)
+                    for (std::size_t lod = 0; lod < kTerrainLodLevels; ++lod)
                     {
                         const auto stride = strides[lod];
                         const auto firstIdx = static_cast<std::uint32_t>(indices.size());

@@ -11,6 +11,8 @@
 #define STB_IMAGE_IMPLEMENTATION
 #include "stb_image.h"
 
+#include <limits>
+
 namespace phoenix::renderer
 {
     PngImage load_png(const std::filesystem::path& path)
@@ -18,7 +20,7 @@ namespace phoenix::renderer
         PngImage image;
 
         const auto fileData = phoenix::assets::read_file_binary(path);
-        if (fileData.empty())
+        if (fileData.empty() || fileData.size() > static_cast<std::size_t>(std::numeric_limits<int>::max()))
             return image;
 
         int width = 0, height = 0, sourceChannels = 0;
@@ -27,9 +29,17 @@ namespace phoenix::renderer
         if (!pixels)
             return image;
 
+        constexpr int kMaxTextureDimension = 32768;
+        if (width <= 0 || height <= 0 || width > kMaxTextureDimension || height > kMaxTextureDimension)
+        {
+            stbi_image_free(pixels);
+            return image;
+        }
+
         image.width = static_cast<std::uint32_t>(width);
         image.height = static_cast<std::uint32_t>(height);
-        image.rgba.assign(pixels, pixels + static_cast<std::size_t>(width) * height * 4);
+        image.rgba.assign(pixels,
+            pixels + static_cast<std::size_t>(width) * static_cast<std::size_t>(height) * 4);
         stbi_image_free(pixels);
         image.valid = true;
         return image;
