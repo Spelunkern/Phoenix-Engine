@@ -143,10 +143,15 @@ namespace phoenix::platform
                 break;
 
             case SDL_MOUSEMOTION:
-                if (hasMousePosition_)
+                if (relativeMouseMode_)
                 {
-                    mouseDeltaX_ += event.motion.x - lastMouseX_;
-                    mouseDeltaY_ += event.motion.y - lastMouseY_;
+                    mouseDeltaX_ += event.motion.xrel;
+                    mouseDeltaY_ += event.motion.yrel;
+                }
+                else if (hasMousePosition_)
+                {
+                    mouseDeltaX_ += event.motion.xrel;
+                    mouseDeltaY_ += event.motion.yrel;
                 }
                 lastMouseX_ = event.motion.x;
                 lastMouseY_ = event.motion.y;
@@ -218,6 +223,31 @@ namespace phoenix::platform
     std::pair<int, int> SdlWindow::mouse_position() const
     {
         return { lastMouseX_, lastMouseY_ };
+    }
+
+    void SdlWindow::set_relative_mouse_mode(bool enabled)
+    {
+        if (!window_ || relativeMouseMode_ == enabled)
+            return;
+        if (SDL_SetRelativeMouseMode(enabled ? SDL_TRUE : SDL_FALSE) == 0)
+        {
+            relativeMouseMode_ = enabled;
+            mouseDeltaX_ = 0;
+            mouseDeltaY_ = 0;
+            hasMousePosition_ = false;
+        }
+    }
+
+    void SdlWindow::warp_mouse(int x, int y)
+    {
+        if (!window_)
+            return;
+        SDL_WarpMouseInWindow(window_, x, y);
+        lastMouseX_ = x;
+        lastMouseY_ = y;
+        hasMousePosition_ = true;
+        mouseDeltaX_ = 0;
+        mouseDeltaY_ = 0;
     }
 
     std::pair<int, int> SdlWindow::client_size() const

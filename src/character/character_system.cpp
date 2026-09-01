@@ -64,6 +64,10 @@ namespace phoenix::character
         constexpr float kTurnRate = 12.0f;
         constexpr float kLookTurnRate = 18.0f;
         constexpr float kZoomResponse = 12.0f;
+        constexpr float kSpecialStepSettleTime = 0.12f;
+        constexpr float kMountedCameraDistanceScale = 1.35f;
+        constexpr float kCameraClearance = 0.35f;
+        constexpr float kCameraPullOutResponse = 4.0f;
 
         float turn_toward(float current, float desired, float rate, float delta)
         {
@@ -976,8 +980,8 @@ namespace phoenix::character
         mountAnimationSeconds_ = 0.0f;
         mountActiveAnimation_ = 0;
         mountIdleTimer_ = 0.0f;
-        cameraTerrainLift_ = 0.0f;
-        cameraTerrainLiftInitialized_ = false;
+        collisionCameraDistance_ = cameraDistance_;
+        collisionCameraInitialized_ = false;
 
         // Apply per-character default attach bones (ranged weapons on archer/hunter
         // classes use a different bone). Still overridable live from the UI.
@@ -1842,6 +1846,39 @@ namespace phoenix::character
         // Block movement while sitting/transitioning or during a dodge.
         const bool movementLocked = sitState_ > 0 || dodgePlayTimer_ > 0.0f;
         const bool moving = !movementLocked && moveLength > 0.001f;
+        const bool backwardsOrSideways = !forwardPressed
+            && (backwardPressed || (leftPressed != rightPressed));
+
+        int specialStepRequest = 0;
+        if (moving && !data_.hasMount && !inWater_)
+        {
+            if (backwardPressed && !leftPressed && !rightPressed)
+                specialStepRequest = 1;
+            else if (leftPressed && !forwardPressed && !backwardPressed)
+                specialStepRequest = 2;
+            else if (rightPressed && !forwardPressed && !backwardPressed)
+                specialStepRequest = 3;
+        }
+        if (specialStepRequest == 0)
+        {
+            specialStepRequest_ = 0;
+            specialStepActive_ = 0;
+            specialStepElapsed_ = 0.0f;
+        }
+        else if (specialStepRequest != specialStepRequest_)
+        {
+            const bool switchingSpecialStep = specialStepActive_ != 0;
+            specialStepRequest_ = specialStepRequest;
+            specialStepElapsed_ = 0.0f;
+            if (!switchingSpecialStep)
+                specialStepActive_ = specialStepRequest;
+        }
+        else
+        {
+            specialStepElapsed_ += clampedDelta;
+            if (specialStepElapsed_ >= kSpecialStepSettleTime)
+                specialStepActive_ = specialStepRequest_;
+        }
 
         // ---- Terrain + water ----
         float groundY = 0.0f;
@@ -1913,8 +1950,6 @@ namespace phoenix::character
             moveX /= moveLength;
             moveY = inWater_ ? moveY / moveLength : 0.0f;
             moveZ /= moveLength;
-            const bool backwardsOrSideways = !forwardPressed
-                && (backwardPressed || (leftPressed != rightPressed));
             float speed = data_.hasMount
                 ? (input.fast ? kMountFastSpeed : kMountSpeed)
                 : (inWater_ ? kSwimSpeed : (input.fast ? kFastRunSpeed : kRunSpeed));
@@ -1944,8 +1979,6 @@ namespace phoenix::character
         {
             float adjustedX = characterX_;
             float adjustedZ = characterZ_;
-            const bool backwardsOrSideways = !forwardPressed
-                && (backwardPressed || (leftPressed != rightPressed));
             float speed = data_.hasMount
                 ? (input.fast ? kMountFastSpeed : kMountSpeed)
                 : (inWater_ ? kSwimSpeed : (input.fast ? kFastRunSpeed : kRunSpeed));
@@ -2425,12 +2458,14 @@ namespace phoenix::character
             desiredAnimation = data_.jumpAnimation;
         else if (moving)
         {
-            if (backwardPressed)
+            if (specialStepActive_ == 1)
                 desiredAnimation = data_.backAnimation;
-            else if (leftPressed && !forwardPressed)
+            else if (specialStepActive_ == 2)
                 desiredAnimation = data_.leftAnimation;
-            else if (rightPressed && !forwardPressed)
+            else if (specialStepActive_ == 3)
                 desiredAnimation = data_.rightAnimation;
+            else if (backwardsOrSideways)
+                desiredAnimation = data_.walkAnimation;
             else
                 desiredAnimation = input.fast ? weaponRunAnim() : data_.walkAnimation;
         }
@@ -3365,8 +3400,11 @@ namespace phoenix::character
         animationBlendDuration_ = 0.0f;
         grounded_ = true;
         groundInitialized_ = false;
-        cameraTerrainLift_ = 0.0f;
-        cameraTerrainLiftInitialized_ = false;
+        collisionCameraDistance_ = cameraDistance_;
+        collisionCameraInitialized_ = false;
+        specialStepRequest_ = 0;
+        specialStepActive_ = 0;
+        specialStepElapsed_ = 0.0f;
         inWater_ = false;
         sitState_ = 0;
         activeEmote_ = 0;
@@ -3385,8 +3423,11 @@ namespace phoenix::character
         smoothY_ = y;
         smoothZ_ = z;
         smoothCameraY_ = y + 1.25f;
-        cameraTerrainLift_ = 0.0f;
-        cameraTerrainLiftInitialized_ = false;
+        collisionCameraDistance_ = cameraDistance_;
+        collisionCameraInitialized_ = false;
+        specialStepRequest_ = 0;
+        specialStepActive_ = 0;
+        specialStepElapsed_ = 0.0f;
         characterYaw_ = yaw;
         cameraYaw_ = yaw;
         verticalVelocity_ = 0.0f;
@@ -3417,51 +3458,51 @@ namespace phoenix::character
         const float dirY = std::sin(cameraPitch_);
         const float dirZ = std::cos(cameraPitch_) * std::cos(cameraYaw_);
 
-        x = smoothX_ - dirX * cameraDistance_;
-        y = lookTargetY - dirY * cameraDistance_;
-        z = smoothZ_ - dirZ * cameraDistance_;
-
         yaw = cameraYaw_;
         pitch = cameraPitch_;
 
-        // Smooth terrain avoidance for the orbit camera.
+        const float wantedDistance = cameraDistance_
+            * (data_.hasMount ? kMountedCameraDistanceScale : 1.0f);
+        float unblockedDistance = wantedDistance;
+
+        // Match Godot's camera collision: move toward the character when the
+        // line of sight meets terrain instead of changing the requested angle
+        // by raising the camera. Entry is immediate; recovery is smoothed.
         if (heightFn_)
         {
-            constexpr float kCameraClearance = 2.0f;
-            float desiredLift = 0.0f;
-            const float terrainAtCam = heightFn_(x, z, heightUserData_);
-            const float minY = terrainAtCam + kCameraClearance;
-            if (y < minY)
-                desiredLift = std::max(desiredLift, minY - y);
-
-            // Also check midpoint between character and camera to catch ridges.
-            const float midX = (smoothX_ + x) * 0.5f;
-            const float midZ = (smoothZ_ + z) * 0.5f;
-            const float midTerrainY = heightFn_(midX, midZ, heightUserData_) + kCameraClearance;
-            const float midCamY = (lookTargetY + y + desiredLift) * 0.5f;
-            if (midCamY < midTerrainY)
+            constexpr int kCameraCollisionSteps = 10;
+            float lastClear = 0.0f;
+            for (int step = 1; step <= kCameraCollisionSteps; ++step)
             {
-                // Ridge between character and camera — push camera up more.
-                const float lift = midTerrainY * 2.0f - lookTargetY - y;
-                desiredLift = std::max(desiredLift, lift);
+                const float distance = wantedDistance
+                    * static_cast<float>(step) / static_cast<float>(kCameraCollisionSteps);
+                const float sampleX = smoothX_ - dirX * distance;
+                const float sampleY = lookTargetY - dirY * distance;
+                const float sampleZ = smoothZ_ - dirZ * distance;
+                if (sampleY < heightFn_(sampleX, sampleZ, heightUserData_) + kCameraClearance)
+                    break;
+                lastClear = distance;
             }
-
-            const float dt = std::clamp(lastDeltaSeconds_, 0.001f, 0.05f);
-            if (!cameraTerrainLiftInitialized_)
-            {
-                cameraTerrainLift_ = desiredLift;
-                cameraTerrainLiftInitialized_ = true;
-            }
-            else
-            {
-                const float response = desiredLift > cameraTerrainLift_ ? 18.0f : 6.0f;
-                const float blend = 1.0f - std::exp(-response * dt);
-                cameraTerrainLift_ += (desiredLift - cameraTerrainLift_) * blend;
-                if (cameraTerrainLift_ < 0.001f)
-                    cameraTerrainLift_ = 0.0f;
-            }
-            y += cameraTerrainLift_;
+            unblockedDistance = std::max(lastClear, 0.75f);
         }
+
+        if (!collisionCameraInitialized_)
+        {
+            collisionCameraDistance_ = unblockedDistance;
+            collisionCameraInitialized_ = true;
+        }
+        else if (unblockedDistance < collisionCameraDistance_)
+            collisionCameraDistance_ = unblockedDistance;
+        else
+        {
+            const float dt = std::clamp(lastDeltaSeconds_, 0.001f, 0.05f);
+            collisionCameraDistance_ += (unblockedDistance - collisionCameraDistance_)
+                * (1.0f - std::exp(-kCameraPullOutResponse * dt));
+        }
+
+        x = smoothX_ - dirX * collisionCameraDistance_;
+        y = lookTargetY - dirY * collisionCameraDistance_;
+        z = smoothZ_ - dirZ * collisionCameraDistance_;
     }
 
     int CharacterSystem::animation_bone_count() const

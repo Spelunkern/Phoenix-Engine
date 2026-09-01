@@ -462,8 +462,8 @@ namespace phoenix::character
         // water surface is Y=0). swimStartY: the character begins swimming once it
         // sinks to/below this height. floatLevelY: the height it bobs up to and
         // floats at while swimming. Kept separate so each can be matched to native.
-        float swimStartY{ -1.6f };
-        float floatLevelY{ -1.5f };
+        float swimStartY{ -1.35f };
+        float floatLevelY{ -1.25f };
 
         // Bone attachment indices — adjustable at runtime via ImGui.
         int weaponBoneIndex{ 11 };   // default: right wrist
@@ -540,8 +540,8 @@ namespace phoenix::character
         float smoothX_{};         // EMA-smoothed render position
         float smoothY_{};
         float smoothZ_{};
-        mutable float cameraTerrainLift_{};
-        mutable bool cameraTerrainLiftInitialized_{};
+        mutable float collisionCameraDistance_{ 6.2f };
+        mutable bool collisionCameraInitialized_{};
         float animationSeconds_{};
         std::size_t activeAnimation_{};
         std::size_t previousAnimation_{};
@@ -590,6 +590,11 @@ namespace phoenix::character
         bool lastBackward_{};
         bool lastLeft_{};
         bool lastRight_{};
+        // Pure back/left/right clips settle briefly when rapidly switching
+        // between them, matching the Godot controller and avoiding restarts.
+        int specialStepRequest_{};   // 0 none, 1 back, 2 left, 3 right
+        int specialStepActive_{};
+        float specialStepElapsed_{};
         float dodgePlayTimer_{};   // >0 while dodge animation is playing
         std::size_t dodgeAnimation_{};
         float dodgeDirX_{};

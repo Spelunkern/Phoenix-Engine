@@ -28,6 +28,8 @@ namespace phoenix::platform
         std::pair<int, int> consume_mouse_delta();
         int consume_mouse_wheel_delta();
         std::pair<int, int> mouse_position() const;
+        void set_relative_mouse_mode(bool enabled);
+        void warp_mouse(int x, int y);
         std::pair<int, int> client_size() const;
         bool is_minimized() const { return minimized_; }
         bool consume_restore_event();
@@ -48,6 +50,7 @@ namespace phoenix::platform
         int lastMouseX_{};
         int lastMouseY_{};
         bool hasMousePosition_{};
+        bool relativeMouseMode_{};
         int mouseDeltaX_{};
         int mouseDeltaY_{};
         int mouseWheelDelta_{};

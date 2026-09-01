@@ -1166,6 +1166,13 @@ int main(int, char**)
     auto lastFrame = clock::now();
     float totalTime = 0.0f;
     bool playToggleWasDown = false;
+    bool orbitPointerWasDown = false;
+    bool orbitCapturePending = false;
+    bool orbitMouseCaptured = false;
+    int orbitStartX = 0;
+    int orbitStartY = 0;
+    float orbitDragX = 0.0f;
+    float orbitDragY = 0.0f;
     auto lastClientSize = window.client_size();
     bool windowWasMinimized = window.is_minimized();
 
@@ -1257,6 +1264,41 @@ int main(int, char**)
         const auto [mouseDx, mouseDy] = window.consume_mouse_delta();
         const auto mouseWheel = window.consume_mouse_wheel_delta();
 
+        const bool orbitPointerDown = !imguiWantsMouse && playableMode
+            && characterLoaded && characterSystem.ready()
+            && (window.is_mouse_button_down(0) || window.is_mouse_button_down(1));
+        if (orbitPointerDown && !orbitPointerWasDown)
+        {
+            const auto [mouseX, mouseY] = window.mouse_position();
+            orbitStartX = mouseX;
+            orbitStartY = mouseY;
+            orbitDragX = 0.0f;
+            orbitDragY = 0.0f;
+            orbitCapturePending = true;
+        }
+        if (orbitCapturePending && orbitPointerDown)
+        {
+            orbitDragX += static_cast<float>(mouseDx);
+            orbitDragY += static_cast<float>(mouseDy);
+            if (orbitDragX * orbitDragX + orbitDragY * orbitDragY >= 9.0f)
+            {
+                window.set_relative_mouse_mode(true);
+                orbitMouseCaptured = true;
+                orbitCapturePending = false;
+            }
+        }
+        if (!orbitPointerDown && orbitPointerWasDown)
+        {
+            orbitCapturePending = false;
+            if (orbitMouseCaptured)
+            {
+                window.set_relative_mouse_mode(false);
+                window.warp_mouse(orbitStartX, orbitStartY);
+                orbitMouseCaptured = false;
+            }
+        }
+        orbitPointerWasDown = orbitPointerDown;
+
         float cameraX{};
         float cameraY{};
         float cameraZ{};
@@ -1282,11 +1324,10 @@ int main(int, char**)
                 pInput.pitchDown = window.is_key_down(SDLK_DOWN);
                 pInput.sit = window.is_key_down(SDLK_c);
             }
-            pInput.cameraOrbit = !imguiWantsMouse
-                && (window.is_mouse_button_down(0) || window.is_mouse_button_down(1));
-            pInput.cameraTurn = !imguiWantsMouse && window.is_mouse_button_down(1);
-            pInput.mouseDx = !imguiWantsMouse ? static_cast<float>(mouseDx) : 0.0f;
-            pInput.mouseDy = !imguiWantsMouse ? static_cast<float>(mouseDy) : 0.0f;
+            pInput.cameraOrbit = orbitMouseCaptured;
+            pInput.cameraTurn = orbitMouseCaptured && window.is_mouse_button_down(1);
+            pInput.mouseDx = orbitMouseCaptured ? static_cast<float>(mouseDx) : 0.0f;
+            pInput.mouseDy = orbitMouseCaptured ? static_cast<float>(mouseDy) : 0.0f;
             pInput.mouseWheel = !imguiWantsMouse ? static_cast<float>(mouseWheel) : 0.0f;
 
             // Apply pending emote from ImGui (set last frame's panel result).
