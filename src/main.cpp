@@ -137,11 +137,11 @@ int main(int, char**)
     perfHud.gpuName = renderer.adapter_name();
     perfHud.renderer = &renderer;
     perfHud.antialiasingAvailable = window.has_multisample_context();
-    phoenix::ui::DisplaySettings displaySettings{};
+    phoenix::ui::GraphicsSettings graphicsSettings{};
     if (imguiAvailable)
-        phoenix::ui::register_app_settings(displaySettings.characterShadow, perfHud.fpsCapIndex, perfHud.antialiasingEnabled);
+        phoenix::ui::register_app_settings(graphicsSettings.worldShadows, perfHud.fpsCapIndex, perfHud.antialiasingEnabled);
     renderer.set_antialiasing_enabled(perfHud.antialiasingAvailable && perfHud.antialiasingEnabled);
-    renderer.set_shadows_enabled(displaySettings.characterShadow);
+    renderer.set_shadows_enabled(graphicsSettings.worldShadows);
 
     // Closing the window must work even mid-load: skip all teardown and let
     // the OS reclaim the process — waiting on loaders/GPU only delays the user.
@@ -355,7 +355,7 @@ int main(int, char**)
         if (!characterLoaded || !characterSystem.ready())
             return;
         phoenix::app::set_character_mesh(renderer, characterSystem, playableMode,
-            displaySettings.characterShadow);
+            graphicsSettings.worldShadows);
     };
 
     const auto releaseDecodedTextureRam = [](std::vector<phoenix::renderer::DdsTexture>& textures) {
@@ -596,7 +596,7 @@ int main(int, char**)
 
         // Fast mesh update: reuses existing GPU buffers, no vkDeviceWaitIdle.
         phoenix::app::update_character_mesh(renderer, characterSystem, playableMode,
-            displaySettings.characterShadow);
+            graphicsSettings.worldShadows);
         return true;
     };
 
@@ -1368,7 +1368,7 @@ int main(int, char**)
             }
 
             phoenix::app::update_character_vertices(renderer, characterSystem,
-                characterShadowScratch, displaySettings.characterShadow);
+                characterShadowScratch, graphicsSettings.worldShadows);
             if (!npcManager.active() && botManager.bots.empty())
             {
                 renderer.set_bot_character_visible(false);
@@ -1695,12 +1695,14 @@ int main(int, char**)
                 loadedEffectFileIndex = selectedEffectFileIndex;
             }
 
-            const bool prevCharacterShadow = displaySettings.characterShadow;
             const auto panelResult = draw_editor_panel(
                 runtime,
                 renderer,
                 fogEnabled,
-                displaySettings.characterShadow,
+                graphicsSettings.worldShadows,
+                perfHud.fpsCapIndex,
+                perfHud.antialiasingEnabled,
+                perfHud.antialiasingAvailable,
                 playMapSounds,
                 playMapMusic,
                 masterVolume,
@@ -1731,9 +1733,6 @@ int main(int, char**)
                 effectSpawnYOffset,
                 effectComponentIndex,
                 assetsFullyLoaded.load());
-
-            if (prevCharacterShadow != displaySettings.characterShadow)
-                renderer.set_shadows_enabled(displaySettings.characterShadow);
 
             if (panelResult.loadRequested)
                 pendingMapLoad = static_cast<std::size_t>(std::max(0, selectedMapIndex));

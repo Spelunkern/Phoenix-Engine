@@ -1,4 +1,5 @@
 #include "ui/editor_panel.h"
+#include "ui/app_settings.h"
 #include "ui/cpu_profiler.h"
 
 #include "imgui.h"
@@ -441,7 +442,10 @@ namespace phoenix::ui
         const phoenix::runtime::PhoenixRuntime& runtime,
         phoenix::renderer::OpenGLRenderer& renderer,
         bool& fogEnabled,
-        bool& showCharacterShadow,
+        bool& worldShadows,
+        int& fpsCapIndex,
+        bool& antialiasingEnabled,
+        bool antialiasingAvailable,
         bool& playMapSounds,
         bool& playMapMusic,
         float& masterVolume,
@@ -480,7 +484,7 @@ namespace phoenix::ui
         enum class Section : int
         {
             Map,
-            Display,
+            Graphics,
             Sound,
             Character,
             Vehicle,
@@ -511,7 +515,7 @@ namespace phoenix::ui
         };
 
         sectionButton(Section::Map, "Map##nav"); ImGui::SameLine();
-        sectionButton(Section::Display, "Display##nav"); ImGui::SameLine();
+        sectionButton(Section::Graphics, "Graphics##nav"); ImGui::SameLine();
         sectionButton(Section::Sound, "Sound##nav"); ImGui::SameLine();
         sectionButton(Section::Animations, "Animations##nav"); ImGui::SameLine();
         sectionButton(Section::Effects, "Effects##nav");
@@ -562,9 +566,31 @@ namespace phoenix::ui
                 weatherMode = static_cast<WeatherMode>(std::clamp(weatherIndex, 0, 12));
             result.weatherChanged = weatherMode != previousWeatherMode;
         }
-        else if (activeSection == Section::Display)
+        else if (activeSection == Section::Graphics)
         {
-            ImGui::Checkbox("Character shadow", &showCharacterShadow);
+            if (ImGui::Checkbox("World shadows", &worldShadows))
+            {
+                renderer.set_shadows_enabled(worldShadows);
+                flush_app_settings();
+            }
+
+            if (antialiasingAvailable)
+            {
+                if (ImGui::Checkbox("Anti-aliasing", &antialiasingEnabled))
+                {
+                    renderer.set_antialiasing_enabled(antialiasingEnabled);
+                    flush_app_settings();
+                }
+            }
+            else
+            {
+                ImGui::TextDisabled("Anti-aliasing unavailable");
+            }
+
+            const char* caps[] = { "Off", "30", "60", "75", "90", "120", "144", "165", "240", "360" };
+            ImGui::SetNextItemWidth(110.0f);
+            if (ImGui::Combo("FPS cap", &fpsCapIndex, caps, IM_ARRAYSIZE(caps)))
+                flush_app_settings();
         }
         else if (activeSection == Section::Sound)
         {

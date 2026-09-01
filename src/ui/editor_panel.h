@@ -85,11 +85,11 @@ namespace phoenix::ui
         float viewDistance,
         WeatherMode weatherMode);
 
-    // Display options persisted via app_settings.h (a custom section inside
+    // Graphics options persisted via app_settings.h (a custom section inside
     // the shared imgui.ini).
-    struct DisplaySettings
+    struct GraphicsSettings
     {
-        bool characterShadow{ true };
+        bool worldShadows{ true };
     };
 
     // The main ImGui control panel (world map, weather, character).
@@ -97,7 +97,10 @@ namespace phoenix::ui
         const phoenix::runtime::PhoenixRuntime& runtime,
         phoenix::renderer::OpenGLRenderer& renderer,
         bool& fogEnabled,
-        bool& showCharacterShadow,
+        bool& worldShadows,
+        int& fpsCapIndex,
+        bool& antialiasingEnabled,
+        bool antialiasingAvailable,
         bool& playMapSounds,
         bool& playMapMusic,
         float& masterVolume,

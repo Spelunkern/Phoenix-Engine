@@ -2,7 +2,6 @@
 
 #include "app/bootstrap.h"
 #include "renderer/png_loader.h"
-#include "ui/app_settings.h"
 
 #include "imgui.h"
 
@@ -371,29 +370,6 @@ namespace phoenix::ui
         ImGui::Separator();
         ImGui::TextDisabled("Map: %s", hud.mapId.empty() ? "?" : hud.mapId.c_str());
         ImGui::Text("XYZ: %.1f  %.1f  %.1f", hud.worldX, hud.worldY, hud.worldZ);
-
-        ImGui::Separator();
-        {
-            const char* caps[] = { "Off", "30", "60", "75", "90", "120", "144", "165", "240", "360" };
-            const int prev = hud.fpsCapIndex;
-            ImGui::SetNextItemWidth(80.0f);
-            if (ImGui::Combo("FPS Cap", &hud.fpsCapIndex, caps, static_cast<int>(sizeof(caps) / sizeof(caps[0])))
-                && hud.fpsCapIndex != prev && hud.renderer)
-                flush_app_settings();
-        }
-
-        if (hud.antialiasingAvailable)
-        {
-            if (ImGui::Checkbox("Anti-aliasing", &hud.antialiasingEnabled) && hud.renderer)
-            {
-                hud.renderer->set_antialiasing_enabled(hud.antialiasingEnabled);
-                flush_app_settings();
-            }
-        }
-        else
-        {
-            ImGui::TextDisabled("Anti-aliasing unavailable");
-        }
 
         ImGui::End();
     }

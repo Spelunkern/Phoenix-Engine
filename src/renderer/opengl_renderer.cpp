@@ -1953,6 +1953,25 @@ namespace phoenix::renderer
         glBindFramebuffer_(GL_FRAMEBUFFER, 0);
         glViewport_(0, 0, static_cast<GLsizei>(impl_->surfaceWidth), static_cast<GLsizei>(impl_->surfaceHeight));
 
+        // ImGui is pixel-authored UI and must stay outside the world's MSAA /
+        // alpha-to-coverage policy. In particular, alpha-to-coverage makes text
+        // and thin widget borders look dithered. Restore the requested world
+        // state immediately afterwards for the next frame.
+        const auto renderImguiWithoutAntialiasing = [&]() {
+            if (!imguiReady_ || !imguiFrameStarted_)
+                return;
+            glDisable_(GL_MULTISAMPLE);
+            glDisable_(GL_SAMPLE_ALPHA_TO_COVERAGE);
+            ImGui::Render();
+            ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
+            if (impl_->antialiasingEnabled)
+            {
+                glEnable_(GL_MULTISAMPLE);
+                glEnable_(GL_SAMPLE_ALPHA_TO_COVERAGE);
+            }
+            imguiFrameStarted_ = false;
+        };
+
         if (hasScene || uiOnlyFrame)
         {
             glClearColor_(impl_->skyConstants[0], impl_->skyConstants[1], impl_->skyConstants[2], 1.0f);
@@ -2263,12 +2282,7 @@ namespace phoenix::renderer
                     glEnable_(GL_SAMPLE_ALPHA_TO_COVERAGE);
                 }
             }
-            if (imguiReady_ && imguiFrameStarted_)
-            {
-                ImGui::Render();
-                ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
-                imguiFrameStarted_ = false;
-            }
+            renderImguiWithoutAntialiasing();
         }
         else
         {
@@ -2296,12 +2310,7 @@ namespace phoenix::renderer
                 glClearColor_(0.09f, 0.11f, 0.13f, 1.0f);
                 glClear_(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
             }
-            if (imguiReady_ && imguiFrameStarted_)
-            {
-                ImGui::Render();
-                ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
-                imguiFrameStarted_ = false;
-            }
+            renderImguiWithoutAntialiasing();
         }
 
         SDL_GL_SwapWindow(impl_->window);

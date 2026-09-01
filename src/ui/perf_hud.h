@@ -42,8 +42,8 @@ namespace phoenix::ui
         float worldX{}, worldY{}, worldZ{};
         std::string mapId;
 
-        // FPS cap: 0=off, 1=30, 2=60, 3=120, 4=144. Persisted via app_settings.h
-        // (a custom section inside the shared imgui.ini).
+        // Graphics settings are edited in the unified Graphics panel and
+        // persisted via app_settings.h.
         int fpsCapIndex{};
         float fps_cap_seconds() const;
 
