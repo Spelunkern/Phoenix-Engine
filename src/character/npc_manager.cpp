@@ -452,6 +452,28 @@ namespace phoenix::character
         }
 
         {
+            // Phoenix-Godot's compact NPC catalog carries the canonical name
+            // keyed by the same (npc_type, npc_type_id) pair used by .svmap.
+            // Overlay names only; extracted visual/model metadata stays local.
+            std::unordered_map<std::uint64_t, std::string> canonicalNames;
+            if (auto names = phoenix::assets::open_ifstream(root / "catalog.txt"))
+            {
+                std::string line;
+                std::getline(names, line);
+                while (std::getline(names, line))
+                {
+                    if (line.empty())
+                        continue;
+                    const auto row = split_csv_line(line);
+                    if (row.size() < 7 || row[6].empty())
+                        continue;
+                    const auto type = parse_u32(row[2]);
+                    const auto typeId = parse_u32(row[4]);
+                    const std::uint64_t key = (static_cast<std::uint64_t>(type) << 32) | typeId;
+                    canonicalNames.insert_or_assign(key, row[6]);
+                }
+            }
+
             auto file = phoenix::assets::open_ifstream(root / "npcdata.csv");
             if (!file)
             {
@@ -475,14 +497,15 @@ namespace phoenix::character
                 entry.npcTypeName = row[3];
                 entry.npcTypeId = parse_u32(row[4]);
                 entry.modelIndex = parse_u32(row[5]);
-                entry.name = row[6];
+                const std::uint64_t typeKey =
+                    (static_cast<std::uint64_t>(entry.npcType) << 32) | entry.npcTypeId;
+                const auto canonical = canonicalNames.find(typeKey);
+                entry.name = canonical != canonicalNames.end() ? canonical->second : row[6];
                 entry.label = entry.name + "  [" + entry.npcId + " / model " + std::to_string(entry.modelIndex) + "]";
                 if (visualRows_.contains(entry.modelIndex))
                 {
                     // svmap stores (NpcType, NpcId); npcdata's npc_type/npc_type_id
                     // are that pair. Key the catalog by it so map placements resolve.
-                    const std::uint64_t typeKey =
-                        (static_cast<std::uint64_t>(entry.npcType) << 32) | entry.npcTypeId;
                     catalogByTypeKey_.emplace(typeKey, catalog_.size());
                     catalog_.push_back(std::move(entry));
                 }

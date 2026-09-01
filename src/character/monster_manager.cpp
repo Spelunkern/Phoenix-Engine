@@ -453,6 +453,25 @@ namespace phoenix::character
         }
 
         {
+            // A compact canonical catalog can override display names without
+            // replacing the extracted model/size rows. Phoenix-Godot exports
+            // this as monster/catalog.txt using the stable monster ID.
+            std::unordered_map<std::uint32_t, std::string> canonicalNames;
+            if (auto names = phoenix::assets::open_ifstream(root / "catalog.txt"))
+            {
+                std::string line;
+                std::getline(names, line);
+                while (std::getline(names, line))
+                {
+                    if (line.empty())
+                        continue;
+                    const auto row = split_csv_line(line);
+                    if (row.size() < 2 || row[1].empty())
+                        continue;
+                    canonicalNames.insert_or_assign(parse_u32(row[0]), row[1]);
+                }
+            }
+
             auto file = phoenix::assets::open_ifstream(root / "monsterdata.csv");
             if (!file)
             {
@@ -471,7 +490,8 @@ namespace phoenix::character
                 MonsterCatalogEntry entry{};
                 entry.catalogIndex = catalog_.size();
                 entry.monsterId = parse_u32(row[0]);
-                entry.name = row[1];
+                const auto canonical = canonicalNames.find(entry.monsterId);
+                entry.name = canonical != canonicalNames.end() ? canonical->second : row[1];
                 entry.modelIndex = parse_u32(row[2]);
                 entry.size = parse_u32(row[3]);
                 entry.label = entry.name + "  [id " + std::to_string(entry.monsterId)
