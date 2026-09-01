@@ -22,6 +22,26 @@ float ditherNoise(vec2 fragCoord)
     return fract(52.9829189 * fract(dot(fragCoord, vec2(0.06711056, 0.00583715))));
 }
 
+// Characters need to remain readable as they turn without becoming detached
+// from the active sky preset. Keep the same environment lighting and shadows,
+// but constrain only its luminance extremes. Scaling the complete lighting
+// vector preserves its chromatic tint while lifting the unlit side and keeping
+// the key-facing side from washing out.
+vec3 stableCharacterLighting(vec3 normal, vec3 worldPosition)
+{
+    vec3 lighting = environmentMaterialLighting(normal, worldPosition);
+    const vec3 luminanceWeights = vec3(0.2126, 0.7152, 0.0722);
+    float luminance = dot(lighting, luminanceWeights);
+    float ambientLuminance = dot(
+        camera.ambientColorEnergy.rgb * camera.ambientColorEnergy.w,
+        luminanceWeights);
+    float minimumLuminance = clamp(ambientLuminance + 0.22, 0.40, 0.62);
+    float maximumLuminance = minimumLuminance + 0.55;
+
+    float stableLuminance = clamp(luminance, minimumLuminance, maximumLuminance);
+    return lighting * (stableLuminance / max(luminance, 0.0001));
+}
+
 vec3 applyUnderwaterView(vec3 color, vec3 worldPos)
 {
     if (camera.positionYaw.y >= 0.0)
@@ -72,11 +92,11 @@ void main()
             color = textureColor.rgb * lm;
         }
         else
-            color = textureColor.rgb * environmentMaterialLighting(vNormal, vWorldPos);
+            color = textureColor.rgb * stableCharacterLighting(vNormal, vWorldPos);
     }
     else
     {
-        color = vColor * environmentMaterialLighting(vNormal, vWorldPos);
+        color = vColor * stableCharacterLighting(vNormal, vWorldPos);
     }
 
     color = applyUnderwaterView(color, vWorldPos);
