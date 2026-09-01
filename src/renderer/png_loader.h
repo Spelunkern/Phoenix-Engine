@@ -7,7 +7,7 @@
 namespace phoenix::renderer
 {
     // Decoded PNG image, always normalised to 8-bit RGBA (matches the layout
-    // VulkanRenderer::upload_imgui_icon_rgba expects for UI icons/interface art).
+    // GPU upload paths expect for UI icons/interface art).
     struct PngImage
     {
         std::uint32_t width{};

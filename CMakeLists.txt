@@ -54,12 +54,6 @@ set(ENGINE_SOURCES
     src/world/svmap_loader.cpp
     src/world/vani_loader.cpp
     src/world/wld_loader.cpp
-    external/imgui/imgui.cpp
-    external/imgui/imgui_draw.cpp
-    external/imgui/imgui_tables.cpp
-    external/imgui/imgui_widgets.cpp
-    external/imgui/backends/imgui_impl_sdl2.cpp
-    external/imgui/backends/imgui_impl_opengl3.cpp
 )
 
 if(WIN32)
@@ -71,8 +65,6 @@ add_executable(PhoenixEngine ${ENGINE_SOURCES})
 target_include_directories(PhoenixEngine PRIVATE
     src
     external
-    external/imgui
-    external/imgui/backends
 )
 
 # --- Platform-specific configuration ---

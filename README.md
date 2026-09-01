@@ -58,7 +58,7 @@ Phoenix Engine does not assume deep technical knowledge from final users. Everyo
 - Water surface rendering (natural, static), underwater tinting, swimming, floating, and camera-driven movement.
 - Emote animations (one-shot, 10 slots) and occasional idle gestures between breathing cycles.
 - Double-tap dodges with full world collision, jump, sit, and swim states.
-- ImGui runtime controls for map selection, fog, render distance, actor distance, overlays, character/loadout selection, mount seat bone, and sky/weather styles, plus a CPU/RAM/VRAM performance HUD.
+- Native Phoenix UI controls for map selection, fog, render distance, actor distance, overlays, character/loadout selection, mount seat bone, and sky/weather styles, plus a CPU/RAM/VRAM performance HUD.
 - Procedural sky styles: default, storm, snowstorm, sunset, and night with stars/moon/meteors.
 - Instant window close at any moment, including mid-load (the whole loading pipeline stays responsive).
 
@@ -73,10 +73,10 @@ src/
   runtime/   Engine runtime state, map loading, terrain/object scene building.
   platform/  SDL2 window/input wrapper.
   renderer/  OpenGL 4.5 renderer (split by subsystem), texture loading, GPU resources.
-  ui/        ImGui editor panel, performance HUD, loading screen.
+  ui/        Lightweight native editor panel, performance HUD, loading screen.
   world/     File format loaders.
 shaders/gl/  GLSL source shaders loaded as text by the runtime at startup.
-res/         Windows icon/resource files, loose UI icon PNGs (res/icons/).
+res/         Windows icon and resource files.
 external/    Vendored third-party dependencies.
 scripts/     Helper scripts for building.
 docs/        Public documentation and release notes.
@@ -149,7 +149,7 @@ cmake --build build/linux-release -j$(nproc)
 
 Output: `build/linux-release/PhoenixEngine`
 
-The repository vendors Dear ImGui and SDL2. No graphics SDK install is required beyond CMake and an OpenGL-capable driver.
+The repository vendors SDL2 and stb_truetype. No graphics SDK install is required beyond CMake and an OpenGL-capable driver.
 
 ## Shaders
 
@@ -206,7 +206,7 @@ See [docs/ASSETS.md](docs/ASSETS.md) for more details.
 - Mouse wheel: zoom in playable mode or move camera in viewer mode.
 - `Shift`: faster movement.
 - `P`: toggle playable mode.
-- ImGui panel: map loading, fog, distances, overlays, audio toggles, character/loadout selection, mount, and weather/sky style.
+- Phoenix UI panel: map loading, fog, distances, overlays, audio toggles, character/loadout selection, mount, and weather/sky style.
 
 ## Data Formats
 

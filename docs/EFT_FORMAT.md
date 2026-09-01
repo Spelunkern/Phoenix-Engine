@@ -265,7 +265,7 @@ LOD/mip selection before suspecting the parsed data.
 
 ### 6.1 In-engine: the Effects debug panel
 
-ImGui → Effects tab. Browses the **entire** `data/effects` catalog (hundreds
+Phoenix UI → Effects tab. Browses the **entire** `data/effects` catalog (hundreds
 of files), loading each library on demand only when selected
 (`PhoenixRuntime::effect_library_files()` / `load_effect_library_file()`) —
 nothing is preloaded, since effects will eventually be reused for character

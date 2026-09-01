@@ -1625,7 +1625,7 @@ namespace phoenix::character
                 const std::string& objects = row[7];
 
                 // Bone: seat bone the rider attaches to, defined per mount in
-                // the CSV (the ImGui "Seat bone" input stays as a live tool).
+                // the CSV (the debug-panel "Seat bone" input stays live).
                 if (row.size() > 8)
                 {
                     try
@@ -2185,7 +2185,7 @@ namespace phoenix::character
             // (No cancel-on-movement; movement input is simply ignored.)
         }
 
-        // ---- Emote (one-shot from ImGui, 1–10) ----
+        // ---- Emote (one-shot from the debug panel, 1-10) ----
         if (input.debugAnimation > 0
             && input.debugAnimation < data_.animations.size()
             && data_.animations[input.debugAnimation].animation.parsed)

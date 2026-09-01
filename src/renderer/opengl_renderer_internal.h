@@ -316,13 +316,6 @@ namespace phoenix::renderer
         std::uint64_t fragmentInvocations{};
         std::uint64_t vertexInvocations{};
 
-        // --- ImGui ---
-        struct ImguiIconTexture
-        {
-            GLuint texture{};
-        };
-        std::vector<ImguiIconTexture> imguiIconTextures;
-
         float cameraConstants[12]{
             // [0-2] position, [3] yaw, [4] pitch, [5] aspect, [6] tanHalfFov, [7] farPlane
             0.0f, 360.0f, -950.0f, 0.0f,

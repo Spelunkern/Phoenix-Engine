@@ -86,13 +86,13 @@ namespace phoenix::ui
         WeatherMode weatherMode);
 
     // Graphics options persisted via app_settings.h (a custom section inside
-    // the shared imgui.ini).
+    // phoenix.ini).
     struct GraphicsSettings
     {
         bool worldShadows{ true };
     };
 
-    // The main ImGui control panel (world map, weather, character).
+    // The native control panel (world map, weather, character).
     UnifiedPanelResult draw_editor_panel(
         const phoenix::runtime::PhoenixRuntime& runtime,
         phoenix::renderer::OpenGLRenderer& renderer,

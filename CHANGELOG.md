@@ -5,13 +5,11 @@ All notable changes to Phoenix Engine are documented here. Dates are ISO-8601.
 ## [Unreleased]
 
 ### Changed
-- **Perf HUD icons moved from hardcoded arrays to PNG files.** The Windows/
-  Linux/Nvidia/AMD/Intel icons in `src/ui/perf_hud_icons.h` (raw RGBA byte
-  arrays baked into the source) are now loose `res/icons/*.png` files loaded
-  through the new `png_loader`, resolved with the same repo-root/build-dir
-  candidate search already used for shaders. Verified byte-for-byte identical
-  to the original embedded pixel data before switching over;
-  `perf_hud_icons.h` is deleted.
+- **Dear ImGui replaced by Phoenix UI.** The debug panel, performance HUD and
+  weather overlays now share the engine's existing screen-space font atlas and
+  a tiny immediate command list. The SDL/OpenGL backends, dependency sources,
+  icon textures and legacy `imgui.ini` integration have been removed. Graphics
+  values and panel position persist in the compact `phoenix.ini` file.
 
 ### Added
 - **PNG loading via stb_image.** Vendored `external/stb_image.h` (same
@@ -20,8 +18,7 @@ All notable changes to Phoenix Engine are documented here. Dates are ISO-8601.
   `read_file_binary`/case-insensitive path resolution instead of stb's own
   `fopen` path, for consistency with every other asset loader. New
   `src/renderer/png_loader.{h,cpp}` (`PngImage load_png(path)`) decodes to
-  8-bit RGBA, ready to feed into `upload_imgui_icon_rgba` — this is the
-  intended path for future UI/interface icon art.
+  8-bit RGBA for regular texture uploads.
 
 ### Performance
 - **CPU skinning: skin matrices hoisted out of the per-vertex loop.**

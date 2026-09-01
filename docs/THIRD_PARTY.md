@@ -8,11 +8,11 @@ This repository vendors a small set of third-party dependencies used by the engi
 - License: zlib
 - License file: `external/SDL2/LICENSE.txt`
 
-## Dear ImGui
+## stb_truetype
 
-- Path: `external/imgui/`
-- License: MIT
-- License file: `external/imgui/LICENSE.txt`
+- Path: `external/stb_truetype.h`
+- License: Public domain / MIT
+- Source: https://github.com/nothings/stb
 
 ## miniaudio
 

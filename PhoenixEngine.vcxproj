@@ -45,7 +45,7 @@
       <SDLCheck>true</SDLCheck>
       <PreprocessorDefinitions>WIN32_LEAN_AND_MEAN;NOMINMAX;_DEBUG;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <LanguageStandard>stdcpplatest</LanguageStandard>
-      <AdditionalIncludeDirectories>$(ProjectDir)src;$(ProjectDir)external;$(ProjectDir)external\imgui;$(ProjectDir)external\imgui\backends;$(ProjectDir)external\SDL2\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>$(ProjectDir)src;$(ProjectDir)external;$(ProjectDir)external\SDL2\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
     </ClCompile>
     <Link>
       <SubSystem>Windows</SubSystem>
@@ -62,7 +62,7 @@
       <IntrinsicFunctions>true</IntrinsicFunctions>
       <PreprocessorDefinitions>WIN32_LEAN_AND_MEAN;NOMINMAX;NDEBUG;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <LanguageStandard>stdcpplatest</LanguageStandard>
-      <AdditionalIncludeDirectories>$(ProjectDir)src;$(ProjectDir)external;$(ProjectDir)external\imgui;$(ProjectDir)external\imgui\backends;$(ProjectDir)external\SDL2\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>$(ProjectDir)src;$(ProjectDir)external;$(ProjectDir)external\SDL2\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
     </ClCompile>
     <Link>
       <SubSystem>Windows</SubSystem>
@@ -118,14 +118,9 @@
     <ClCompile Include="src\ui\loading_screen.cpp" />
     <ClCompile Include="src\ui\cpu_profiler.cpp" />
     <ClCompile Include="src\ui\perf_hud.cpp" />
+    <ClCompile Include="src\ui\phoenix_ui.cpp" />
     <ClCompile Include="src\ui\weather_overlay.cpp" />
     <ClCompile Include="src\renderer\gl\gl_loader.cpp" />
-    <ClCompile Include="external\imgui\imgui.cpp" />
-    <ClCompile Include="external\imgui\imgui_draw.cpp" />
-    <ClCompile Include="external\imgui\imgui_tables.cpp" />
-    <ClCompile Include="external\imgui\imgui_widgets.cpp" />
-    <ClCompile Include="external\imgui\backends\imgui_impl_sdl2.cpp" />
-    <ClCompile Include="external\imgui\backends\imgui_impl_opengl3.cpp" />
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="src\assets\data_index.h" />
@@ -169,17 +164,15 @@
     <ClInclude Include="src\ui\loading_screen.h" />
     <ClInclude Include="src\ui\cpu_profiler.h" />
     <ClInclude Include="src\ui\perf_hud.h" />
+    <ClInclude Include="src\ui\phoenix_ui.h" />
     <ClInclude Include="src\ui\weather_overlay.h" />
     <ClInclude Include="src\character\character_system.h" />
     <ClInclude Include="src\character\weapon_bone_map.h" />
     <ClInclude Include="src\renderer\gl\gl_loader.h" />
-    <ClInclude Include="external\imgui\imgui.h" />
-    <ClInclude Include="external\imgui\backends\imgui_impl_sdl2.h" />
-    <ClInclude Include="external\imgui\backends\imgui_impl_opengl3.h" />
+    <ClInclude Include="external\stb_truetype.h" />
   </ItemGroup>
   <ItemGroup>
     <ResourceCompile Include="res\phoenix.rc" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
 </Project>
-

@@ -145,8 +145,8 @@ namespace phoenix::character
         float mouseDy{};
         float mouseWheel{};
         bool sit{};             // C key (toggle)
-        int emote{};            // 0=none, 1-10=emote number (one-shot from ImGui)
-        std::size_t debugAnimation{}; // 0=none, otherwise direct animation index (one-shot from ImGui)
+        int emote{};            // 0=none, 1-10=emote number (debug-panel one-shot)
+        std::size_t debugAnimation{}; // 0=none, otherwise direct animation index
     };
 
     // Holds all data for a loaded character (mesh, bones, animations).
@@ -459,14 +459,14 @@ namespace phoenix::character
         float render_ground_y() const;
         void set_world_position(float x, float y, float z, float yaw = 0.0f);
 
-        // Water tuning — adjustable at runtime via ImGui (absolute world Y; the
+        // Water tuning - adjustable at runtime via the debug panel (absolute world Y; the
         // water surface is Y=0). swimStartY: the character begins swimming once it
         // sinks to/below this height. floatLevelY: the height it bobs up to and
         // floats at while swimming. Kept separate so each can be matched to native.
         float swimStartY{ -1.35f };
         float floatLevelY{ -1.25f };
 
-        // Bone attachment indices — adjustable at runtime via ImGui.
+        // Bone attachment indices - adjustable at runtime via the debug panel.
         int weaponBoneIndex{ 11 };   // default: right wrist
         int shieldBoneIndex{ 21 };   // default: left wrist
         int cloakBodyBoneIndex{ 4 };    // default: upper spine/chest
@@ -474,7 +474,7 @@ namespace phoenix::character
         int mountBoneIndex{ 25 };       // mount bone the rider is seated on
         int dualWeaponBoneIndex{ 21 };  // off-hand dual weapon: default left wrist
 
-        // Dual-wield off-hand fine adjustment — adjustable at runtime via ImGui.
+        // Dual-wield off-hand fine adjustment - adjustable in the debug panel.
         // Applied in the off-hand bone's local space before the bone transform:
         // rotate (Euler XYZ, degrees) then translate. Persisted across reloads
         // (not reset by load()) so values can be tuned live against retail.

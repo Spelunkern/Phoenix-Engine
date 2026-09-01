@@ -273,14 +273,10 @@ namespace phoenix::ui::px
 
     void set_window_position(float x, float y)
     {
-        if (context.windows.empty())
-            context.windows[hash_id("Phoenix Engine")].x = x,
-            context.windows[hash_id("Phoenix Engine")].y = y;
-        else
-        {
-            auto& state = context.windows[hash_id("Phoenix Engine")];
-            state.x = x; state.y = y; state.positioned = true;
-        }
+        auto& state = context.windows[hash_id("Phoenix Engine")];
+        state.x = x;
+        state.y = y;
+        state.positioned = true;
     }
 
     Vec2 window_position()
@@ -402,6 +398,8 @@ namespace phoenix::ui::px
         const auto visible = visible_label(label);
         const float width = requested.x > 0.0f ? requested.x
             : item_width(std::max(54.0f, static_cast<float>(visible.size()) * 7.2f + 16.0f));
+        if (requested.x > 0.0f)
+            context.nextItemWidth = 0.0f;
         const float height = requested.y > 0.0f ? requested.y : kItemHeight;
         const auto item = place_item(width, height);
         const auto id = item_id(label);

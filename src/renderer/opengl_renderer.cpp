@@ -4,13 +4,9 @@
 #include "platform/sdl_window.h"
 #include "ui/cpu_profiler.h"
 
-#include "imgui.h"
-#include "imgui_impl_opengl3.h"
-#include "imgui_impl_sdl2.h"
-
 #define STBTT_STATIC
 #define STB_TRUETYPE_IMPLEMENTATION
-#include "imstb_truetype.h"
+#include "stb_truetype.h"
 
 #include <algorithm>
 #include <array>
@@ -531,47 +527,6 @@ namespace phoenix::renderer
         return true;
     }
 
-    bool OpenGLRenderer::initialize_imgui(SDL_Window* window)
-    {
-        if (!ready_ || imguiReady_)
-            return ready_;
-
-        IMGUI_CHECKVERSION();
-        ImGui::CreateContext();
-        auto& io = ImGui::GetIO();
-        io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
-        static std::string imguiIniPath = (executable_dir() / "imgui.ini").string();
-        io.IniFilename = imguiIniPath.c_str();
-        ImGui::StyleColorsDark();
-
-        io.Fonts->AddFontDefault();
-
-        if (!ImGui_ImplSDL2_InitForOpenGL(window, impl_->glContext))
-            return false;
-
-        if (!ImGui_ImplOpenGL3_Init("#version 450 core"))
-        {
-            ImGui_ImplSDL2_Shutdown();
-            ImGui::DestroyContext();
-            return false;
-        }
-
-        imguiReady_ = true;
-        log_line("ImGui: initialized");
-        return true;
-    }
-
-    void OpenGLRenderer::begin_imgui_frame()
-    {
-        if (!imguiReady_)
-            return;
-
-        ImGui_ImplOpenGL3_NewFrame();
-        ImGui_ImplSDL2_NewFrame();
-        ImGui::NewFrame();
-        imguiFrameStarted_ = true;
-    }
-
     void OpenGLRenderer::set_world_labels(std::vector<ScreenLabel> labels)
     {
         if (!impl_)
@@ -589,31 +544,6 @@ namespace phoenix::renderer
     bool OpenGLRenderer::native_ui_available() const
     {
         return impl_ && impl_->worldLabelsReady && impl_->worldLabelProgram;
-    }
-
-    std::uint64_t OpenGLRenderer::upload_imgui_icon_rgba(
-        const std::uint8_t* rgba,
-        std::uint32_t width,
-        std::uint32_t height)
-    {
-        if (!ready_ || !imguiReady_ || !rgba || width == 0 || height == 0)
-            return 0;
-
-        GLuint tex{};
-        glCreateTextures_(GL_TEXTURE_2D, 1, &tex);
-        glTextureParameteri_(tex, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-        glTextureParameteri_(tex, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-        glTextureParameteri_(tex, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-        glTextureParameteri_(tex, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-        glBindTexture_(GL_TEXTURE_2D, tex);
-        glTexImage2D_(GL_TEXTURE_2D, 0, GL_RGBA8, static_cast<GLsizei>(width), static_cast<GLsizei>(height),
-            0, GL_RGBA, GL_UNSIGNED_BYTE, rgba);
-        glBindTexture_(GL_TEXTURE_2D, 0);
-
-        Impl::ImguiIconTexture icon{};
-        icon.texture = tex;
-        impl_->imguiIconTextures.push_back(icon);
-        return static_cast<std::uint64_t>(tex);
     }
 
     std::uint32_t OpenGLRenderer::surface_width() const
@@ -2127,29 +2057,10 @@ namespace phoenix::renderer
         if (impl_->surfaceWidth == 0 || impl_->surfaceHeight == 0) return;
 
         const bool hasScene = impl_->terrainReady || impl_->objectsReady;
-        const bool uiOnlyFrame = imguiReady_ && imguiFrameStarted_ && !hasScene;
+        const bool uiOnlyFrame = !impl_->screenUi.empty() && !hasScene;
 
         glBindFramebuffer_(GL_FRAMEBUFFER, 0);
         glViewport_(0, 0, static_cast<GLsizei>(impl_->surfaceWidth), static_cast<GLsizei>(impl_->surfaceHeight));
-
-        // ImGui is pixel-authored UI and must stay outside the world's MSAA /
-        // alpha-to-coverage policy. In particular, alpha-to-coverage makes text
-        // and thin widget borders look dithered. Restore the requested world
-        // state immediately afterwards for the next frame.
-        const auto renderImguiWithoutAntialiasing = [&]() {
-            if (!imguiReady_ || !imguiFrameStarted_)
-                return;
-            glDisable_(GL_MULTISAMPLE);
-            glDisable_(GL_SAMPLE_ALPHA_TO_COVERAGE);
-            ImGui::Render();
-            ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
-            if (impl_->antialiasingEnabled)
-            {
-                glEnable_(GL_MULTISAMPLE);
-                glEnable_(GL_SAMPLE_ALPHA_TO_COVERAGE);
-            }
-            imguiFrameStarted_ = false;
-        };
 
         if (hasScene || uiOnlyFrame)
         {
@@ -2667,7 +2578,6 @@ namespace phoenix::renderer
                     }
                 }
             }
-            renderImguiWithoutAntialiasing();
         }
         else
         {
@@ -2695,7 +2605,6 @@ namespace phoenix::renderer
                 glClearColor_(0.09f, 0.11f, 0.13f, 1.0f);
                 glClear_(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
             }
-            renderImguiWithoutAntialiasing();
         }
 
         SDL_GL_SwapWindow(impl_->window);
@@ -2706,14 +2615,6 @@ namespace phoenix::renderer
     {
         if (!impl_) return;
         ready_ = false;
-
-        if (imguiReady_)
-        {
-            ImGui_ImplOpenGL3_Shutdown();
-            ImGui_ImplSDL2_Shutdown();
-            ImGui::DestroyContext();
-            imguiReady_ = false;
-        }
 
         auto destroyBuf = [](GlBuffer& b) { if (b.id) glDeleteBuffers_(1, &b.id); b = {}; };
         destroyBuf(impl_->terrainVertexBuffer);
@@ -2768,9 +2669,6 @@ namespace phoenix::renderer
         if (impl_->environmentNoiseTexture) glDeleteTextures_(1, &impl_->environmentNoiseTexture);
         if (impl_->shadowDepthTexture) glDeleteTextures_(1, &impl_->shadowDepthTexture);
         if (impl_->worldLabelTexture) glDeleteTextures_(1, &impl_->worldLabelTexture);
-        for (auto& icon : impl_->imguiIconTextures)
-            if (icon.texture) glDeleteTextures_(1, &icon.texture);
-
         if (impl_->terrainSampler) glDeleteSamplers_(1, &impl_->terrainSampler);
         if (impl_->debugEffectSampler) glDeleteSamplers_(1, &impl_->debugEffectSampler);
         if (impl_->lightmapSampler) glDeleteSamplers_(1, &impl_->lightmapSampler);

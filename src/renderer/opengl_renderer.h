@@ -156,17 +156,10 @@ namespace phoenix::renderer
         ~OpenGLRenderer();
 
         bool initialize(SDL_Window* window, std::uint32_t width, std::uint32_t height);
-        bool initialize_imgui(SDL_Window* window);
-        void begin_imgui_frame();
-        // Native screen-space text, drawn by the engine after the 3D scene and
-        // before the debug ImGui pass.
+        // Native screen-space text and UI, drawn after the 3D scene.
         void set_world_labels(std::vector<ScreenLabel> labels);
         void set_screen_ui(std::vector<ScreenUiCommand> commands);
         bool native_ui_available() const;
-        std::uint64_t upload_imgui_icon_rgba(
-            const std::uint8_t* rgba,
-            std::uint32_t width,
-            std::uint32_t height);
         bool set_preview_image(std::uint32_t width, std::uint32_t height, const std::vector<std::uint8_t>& bgraPixels);
         void enter_loading_mode();
         bool set_terrain_mesh(const std::vector<TerrainVertex>& vertices, const std::vector<std::uint32_t>& indices);
@@ -321,8 +314,6 @@ namespace phoenix::renderer
         void destroy_swapchain();
 
         bool ready_{};
-        bool imguiReady_{};
-        bool imguiFrameStarted_{};
         std::string adapterName_;
         std::uint32_t graphicsQueueFamily_{ UINT32_MAX };
         std::uint32_t frameIndex_{};
