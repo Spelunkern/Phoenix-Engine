@@ -59,6 +59,18 @@ namespace phoenix::character
         constexpr float kJumpHoldFrameFraction = 0.80f;
         constexpr float kTerrainFollowResponse = 10.0f;
         constexpr float kPi = 3.1415926535f;
+        constexpr float kBackwardSpeedScale = 0.70f;
+        constexpr float kStrafeSpeedScale = 0.85f;
+        constexpr float kTurnRate = 12.0f;
+        constexpr float kLookTurnRate = 18.0f;
+        constexpr float kZoomResponse = 12.0f;
+
+        float turn_toward(float current, float desired, float rate, float delta)
+        {
+            float difference = std::remainder(desired - current, 2.0f * kPi);
+            current += difference * std::min(1.0f, rate * delta);
+            return std::remainder(current, 2.0f * kPi);
+        }
 
         // CSV token cleanup (strips trailing '\r' from CRLF files) and Linux-safe
         // case-insensitive path resolution, both delegating to the shared assets
@@ -1768,7 +1780,7 @@ namespace phoenix::character
         const float clampedDelta = std::clamp(deltaSeconds, 0.0f, 0.05f);
 
         // ---- Camera orbit ----
-        if (input.cameraDrag)
+        if (input.cameraOrbit)
         {
             cameraYaw_ += input.mouseDx * 0.0065f;
             cameraPitch_ += input.mouseDy * 0.0045f;
@@ -1776,7 +1788,8 @@ namespace phoenix::character
         if (input.mouseWheel != 0.0f)
         {
             const float wheelSteps = input.mouseWheel / 120.0f;
-            cameraDistance_ = std::clamp(cameraDistance_ - wheelSteps * 1.15f, 2.6f, 18.0f);
+            targetCameraDistance_ = std::clamp(
+                targetCameraDistance_ - wheelSteps * 1.15f, 1.5f, 18.0f);
         }
         if (input.yawLeft)
             cameraYaw_ -= 1.8f * clampedDelta;
@@ -1787,13 +1800,17 @@ namespace phoenix::character
         if (input.pitchDown)
             cameraPitch_ -= 1.4f * clampedDelta;
         cameraPitch_ = std::clamp(cameraPitch_, -0.54f, 0.08f);
+        cameraDistance_ += (targetCameraDistance_ - cameraDistance_)
+            * (1.0f - std::exp(-kZoomResponse * clampedDelta));
 
         // ---- Movement ----
         const float forwardX = std::sin(cameraYaw_);
         const float forwardZ = std::cos(cameraYaw_);
         const float swimForwardY = std::sin(cameraPitch_);
-        const float rightX = std::cos(cameraYaw_);
-        const float rightZ = -std::sin(cameraYaw_);
+        // Godot's reflected world uses this lateral basis. Keeping the old
+        // source-space sign made D travel screen-left after the map mirror.
+        const float rightX = -std::cos(cameraYaw_);
+        const float rightZ = std::sin(cameraYaw_);
         float moveX = 0.0f;
         float moveY = 0.0f;
         float moveZ = 0.0f;
@@ -1896,19 +1913,30 @@ namespace phoenix::character
             moveX /= moveLength;
             moveY = inWater_ ? moveY / moveLength : 0.0f;
             moveZ /= moveLength;
-            const float speed = data_.hasMount
+            const bool backwardsOrSideways = !forwardPressed
+                && (backwardPressed || (leftPressed != rightPressed));
+            float speed = data_.hasMount
                 ? (input.fast ? kMountFastSpeed : kMountSpeed)
                 : (inWater_ ? kSwimSpeed : (input.fast ? kFastRunSpeed : kRunSpeed));
+            if (!data_.hasMount && !inWater_ && backwardsOrSideways)
+                speed = kRunSpeed * (backwardPressed ? kBackwardSpeedScale : kStrafeSpeedScale);
             characterX_ += moveX * speed * clampedDelta;
             if (inWater_)
                 characterY_ += moveY * speed * clampedDelta;
             characterZ_ += moveZ * speed * clampedDelta;
-            const bool strafingOrBacking = backwardPressed || ((leftPressed || rightPressed) && !forwardPressed);
-            // A mount cannot strafe sideways — it always turns to face the
-            // direction of travel. On foot, strafing/backing keeps facing forward.
-            characterYaw_ = (data_.hasMount || !strafingOrBacking)
-                ? std::atan2(moveX, moveZ)
-                : cameraYaw_;
+            const bool strafingOrBacking = backwardsOrSideways;
+            // Match the Godot controller: forward/diagonal locomotion faces its
+            // real travel direction, while pure back/side steps face the camera.
+            const float desiredYaw = (!data_.hasMount && strafingOrBacking)
+                ? cameraYaw_ : std::atan2(moveX, moveZ);
+            characterYaw_ = turn_toward(characterYaw_, desiredYaw,
+                input.cameraTurn ? kLookTurnRate : kTurnRate, clampedDelta);
+        }
+        else if (!climbing_ && input.cameraTurn)
+        {
+            // RMB-look turns an idle character; LMB-look intentionally does not.
+            characterYaw_ = turn_toward(characterYaw_, cameraYaw_,
+                kLookTurnRate, clampedDelta);
         }
 
         // ---- Collision with world objects ----
@@ -1916,9 +1944,13 @@ namespace phoenix::character
         {
             float adjustedX = characterX_;
             float adjustedZ = characterZ_;
-            const float speed = data_.hasMount
+            const bool backwardsOrSideways = !forwardPressed
+                && (backwardPressed || (leftPressed != rightPressed));
+            float speed = data_.hasMount
                 ? (input.fast ? kMountFastSpeed : kMountSpeed)
                 : (inWater_ ? kSwimSpeed : (input.fast ? kFastRunSpeed : kRunSpeed));
+            if (!data_.hasMount && !inWater_ && backwardsOrSideways)
+                speed = kRunSpeed * (backwardPressed ? kBackwardSpeedScale : kStrafeSpeedScale);
             if (collisionFn_(characterX_, characterZ_,
                 characterX_ - moveX * speed * clampedDelta,
                 characterZ_ - moveZ * speed * clampedDelta,
@@ -2863,18 +2895,17 @@ namespace phoenix::character
         worldVertices_.resize(localAnimated.size());
         for (std::size_t i = 0; i < localAnimated.size(); ++i)
         {
-            // Character files are authored in the same left-handed space as
-            // the world.  Mirror at the final rig root (matching Godot's
-            // scale(-1, 1, 1)) so bones, animation and attachments stay in one
-            // coherent source space and the weapon remains in the correct hand.
-            const float lx = -localAnimated[i].position[0];
+            // The CPU character pipeline already resolves its source-space
+            // handedness while building/skinning the rig. A second root mirror
+            // here reverses the playable character (and its weapon hand).
+            const float lx = localAnimated[i].position[0];
             const float ly = localAnimated[i].position[1];
             const float lz = localAnimated[i].position[2];
             worldVertices_[i].position[0] = lx * cosYaw + lz * sinYaw + smoothX_;
             worldVertices_[i].position[1] = ly - localGroundY + smoothY_ + kGroundClearance;
             worldVertices_[i].position[2] = -lx * sinYaw + lz * cosYaw + smoothZ_;
 
-            const float nx = -localAnimated[i].normal[0];
+            const float nx = localAnimated[i].normal[0];
             const float nz = localAnimated[i].normal[2];
             worldVertices_[i].normal[0] = nx * cosYaw + nz * sinYaw;
             worldVertices_[i].normal[1] = localAnimated[i].normal[1];
@@ -2919,7 +2950,7 @@ namespace phoenix::character
         {
             const auto& boneMatrix = clientFinals[static_cast<std::size_t>(weaponBoneIndex)];
             const Vec3 boneT = mat4_get_translation(boneMatrix);
-            const float lx = -(boneT.x * kCharacterScale + riderSaddleOffset.x);
+            const float lx = boneT.x * kCharacterScale + riderSaddleOffset.x;
             const float ly = boneT.y * kCharacterScale + riderSaddleOffset.y;
             const float lz = boneT.z * kCharacterScale + riderSaddleOffset.z;
 
@@ -2932,7 +2963,6 @@ namespace phoenix::character
             {
                 Vec3 v = transform_normal(boneMatrix, axes[a]);
                 v.x *= kCharacterScale; v.y *= kCharacterScale; v.z *= kCharacterScale;
-                v.x = -v.x;
                 weaponAttachment_.basis[a * 3 + 0] = v.x * cosYaw + v.z * sinYaw;
                 weaponAttachment_.basis[a * 3 + 1] = v.y;
                 weaponAttachment_.basis[a * 3 + 2] = -v.x * sinYaw + v.z * cosYaw;
@@ -2962,7 +2992,7 @@ namespace phoenix::character
 
             const Vec3 originLocal{ dualOffsetPos[0], dualOffsetPos[1], dualOffsetPos[2] };
             const Vec3 boneT = transform_point(boneMatrix, originLocal);
-            const float lx = -(boneT.x * kCharacterScale + riderSaddleOffset.x);
+            const float lx = boneT.x * kCharacterScale + riderSaddleOffset.x;
             const float ly = boneT.y * kCharacterScale + riderSaddleOffset.y;
             const float lz = boneT.z * kCharacterScale + riderSaddleOffset.z;
 
@@ -2976,7 +3006,6 @@ namespace phoenix::character
                 const Vec3 localAxis{ rot[a], rot[3 + a], rot[6 + a] };
                 Vec3 v = transform_normal(boneMatrix, localAxis);
                 v.x *= kCharacterScale; v.y *= kCharacterScale; v.z *= kCharacterScale;
-                v.x = -v.x;
                 dualWeaponAttachment_.basis[a * 3 + 0] = v.x * cosYaw + v.z * sinYaw;
                 dualWeaponAttachment_.basis[a * 3 + 1] = v.y;
                 dualWeaponAttachment_.basis[a * 3 + 2] = -v.x * sinYaw + v.z * cosYaw;

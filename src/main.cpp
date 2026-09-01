@@ -1282,7 +1282,9 @@ int main(int, char**)
                 pInput.pitchDown = window.is_key_down(SDLK_DOWN);
                 pInput.sit = window.is_key_down(SDLK_c);
             }
-            pInput.cameraDrag = !imguiWantsMouse && window.is_mouse_button_down(1);
+            pInput.cameraOrbit = !imguiWantsMouse
+                && (window.is_mouse_button_down(0) || window.is_mouse_button_down(1));
+            pInput.cameraTurn = !imguiWantsMouse && window.is_mouse_button_down(1);
             pInput.mouseDx = !imguiWantsMouse ? static_cast<float>(mouseDx) : 0.0f;
             pInput.mouseDy = !imguiWantsMouse ? static_cast<float>(mouseDy) : 0.0f;
             pInput.mouseWheel = !imguiWantsMouse ? static_cast<float>(mouseWheel) : 0.0f;

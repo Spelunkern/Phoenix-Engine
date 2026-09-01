@@ -138,7 +138,8 @@ namespace phoenix::character
         bool yawRight{};
         bool pitchUp{};
         bool pitchDown{};
-        bool cameraDrag{};
+        bool cameraOrbit{};       // either mouse button: orbit camera
+        bool cameraTurn{};        // right mouse button: also turn character
         float mouseDx{};
         float mouseDy{};
         float mouseWheel{};
@@ -534,6 +535,7 @@ namespace phoenix::character
         float cameraYaw_{};
         float cameraPitch_{ -0.16f };
         float cameraDistance_{ 6.2f };
+        float targetCameraDistance_{ 6.2f };
         float smoothCameraY_{};   // EMA-smoothed camera target Y (eliminates terrain jitter)
         float smoothX_{};         // EMA-smoothed render position
         float smoothY_{};
