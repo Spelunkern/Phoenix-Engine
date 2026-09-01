@@ -259,6 +259,7 @@ namespace phoenix::renderer
         void set_sky_texture_layers(std::uint32_t skyLayer, std::uint32_t primaryCloudLayer, std::uint32_t secondaryCloudLayer);
         void set_environment_style(const EnvironmentStyle& style);
         void set_shadows_enabled(bool enabled);
+        bool set_vsync_enabled(bool enabled);
         // Live toggle for MSAA + alpha-to-coverage — safe to call every
         // frame regardless of whether the context actually has multisample
         // buffers (glEnable/glDisable(GL_MULTISAMPLE) is a no-op without

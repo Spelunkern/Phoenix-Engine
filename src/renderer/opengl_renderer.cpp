@@ -2015,6 +2015,13 @@ namespace phoenix::renderer
         impl_->shadowsEnabled = enabled;
     }
 
+    bool OpenGLRenderer::set_vsync_enabled(bool enabled)
+    {
+        if (!impl_ || !ready_)
+            return false;
+        return SDL_GL_SetSwapInterval(enabled ? 1 : 0) == 0;
+    }
+
     void OpenGLRenderer::set_antialiasing_enabled(bool enabled)
     {
         if (!impl_ || !ready_) return;

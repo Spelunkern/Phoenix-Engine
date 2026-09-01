@@ -376,6 +376,7 @@ namespace phoenix::ui
         phoenix::renderer::OpenGLRenderer& renderer,
         bool& fogEnabled,
         bool& worldShadows,
+        bool& vsyncEnabled,
         int& fpsCapIndex,
         bool& antialiasingEnabled,
         bool antialiasingAvailable,
@@ -535,6 +536,13 @@ namespace phoenix::ui
             else
             {
                 px::TextDisabled("Anti-aliasing unavailable");
+            }
+
+            if (px::Checkbox("VSync", &vsyncEnabled))
+            {
+                if (!renderer.set_vsync_enabled(vsyncEnabled))
+                    vsyncEnabled = !vsyncEnabled;
+                flush_app_settings();
             }
 
             const char* caps[] = { "Off", "30", "60", "75", "90", "120", "144", "165", "240", "360" };

@@ -87,6 +87,7 @@ namespace phoenix::ui
     struct GraphicsSettings
     {
         bool worldShadows{ true };
+        bool vsyncEnabled{ true };
     };
 
     // The native control panel (world map, weather, character).
@@ -95,6 +96,7 @@ namespace phoenix::ui
         phoenix::renderer::OpenGLRenderer& renderer,
         bool& fogEnabled,
         bool& worldShadows,
+        bool& vsyncEnabled,
         int& fpsCapIndex,
         bool& antialiasingEnabled,
         bool antialiasingAvailable,

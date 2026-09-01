@@ -141,7 +141,13 @@ int main(int, char**)
     perfHud.renderer = &renderer;
     perfHud.antialiasingAvailable = window.has_multisample_context();
     phoenix::ui::GraphicsSettings graphicsSettings{};
-    phoenix::ui::register_app_settings(graphicsSettings.worldShadows, perfHud.fpsCapIndex, perfHud.antialiasingEnabled);
+    phoenix::ui::register_app_settings(
+        graphicsSettings.worldShadows,
+        graphicsSettings.vsyncEnabled,
+        perfHud.fpsCapIndex,
+        perfHud.antialiasingEnabled);
+    if (!renderer.set_vsync_enabled(graphicsSettings.vsyncEnabled))
+        graphicsSettings.vsyncEnabled = false;
     renderer.set_antialiasing_enabled(perfHud.antialiasingAvailable && perfHud.antialiasingEnabled);
     renderer.set_shadows_enabled(graphicsSettings.worldShadows);
 
@@ -1710,6 +1716,7 @@ int main(int, char**)
                 renderer,
                 fogEnabled,
                 graphicsSettings.worldShadows,
+                graphicsSettings.vsyncEnabled,
                 perfHud.fpsCapIndex,
                 perfHud.antialiasingEnabled,
                 perfHud.antialiasingAvailable,

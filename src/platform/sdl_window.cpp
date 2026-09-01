@@ -71,14 +71,9 @@ namespace phoenix::platform
         // 4.3 (still covers compute shaders) before giving up entirely.
         SDL_GL_MakeCurrent(window_, glContext_);
 
-        // The Vulkan renderer preferred VK_PRESENT_MODE_MAILBOX_KHR (present
-        // without blocking the loop on the display's refresh) and only fell
-        // back to FIFO (vsync-blocking) when mailbox wasn't available. Mirror
-        // that by leaving swap interval off here too: the render loop's own
-        // FPS Cap combo (perf_hud.cpp, up to 360) already paces frames via a
-        // sleep after render_frame(), same as the original design. Forcing
-        // SwapInterval(1) would block every SwapWindow() on vsync and cap
-        // everything at the monitor's refresh rate regardless of that combo.
+        // Start unsynchronised only until phoenix.ini is loaded. The persisted
+        // Graphics/VSync setting is applied by main immediately after renderer
+        // initialisation, and is enabled by default.
         SDL_GL_SetSwapInterval(0);
         return true;
     }
