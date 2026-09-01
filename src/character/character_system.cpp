@@ -2974,24 +2974,6 @@ namespace phoenix::character
             worldVertices_[i].textureLayer = (baseLayer + textureLayerBase_) + (isCutout ? 2048u : 0u);
         }
 
-        // Cloak pieces get flat lighting in the shader (color.b sentinel): the
-        // simulated cloth re-derives its normals from the sim geometry every
-        // frame, so normal-based lighting makes it shimmer as it sways/turns.
-        // The shoulder is marked too so the whole garment shades as one.
-        if (data_.hasCloak)
-        {
-            auto markFlatLit = [&](const CharacterData::WeaponPart& part) {
-                for (std::uint32_t i = 0; i < part.vertexCount; ++i)
-                {
-                    const auto vi = static_cast<std::size_t>(part.vertexOffset) + i;
-                    if (vi < worldVertices_.size())
-                        worldVertices_[vi].color[2] = 0.02f;
-                }
-            };
-            markFlatLit(data_.cloakBody);
-            markFlatLit(data_.cloakShoulder);
-        }
-
         // ---- Weapon attach-bone world transform (for weapon aura effects) ----
         // Mirrors the item-vertex path: bone matrix -> *kCharacterScale -> (+saddle
         // if mounted) -> yaw rotate + ground offset + world translate. Computed from
