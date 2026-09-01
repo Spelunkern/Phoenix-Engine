@@ -11,6 +11,10 @@ namespace phoenix::renderer
     namespace
     {
         constexpr float kTanHalfFov = 0.7002f;
+        // Keep object batches resident slightly outside the camera frustum.
+        // This mirrors the conservative bounds used by Godot and prevents
+        // visibility churn from showing at the edge of the screen.
+        constexpr float kObjectCullMargin = 16.0f;
     }
 
     bool sphere_visible(
@@ -209,7 +213,7 @@ namespace phoenix::renderer
         for (std::size_t i = 0; i < scene.batches.size(); ++i)
         {
             const auto& bounds = scene.batchBounds[i];
-            if (!sphere_visible(view, bounds.x, bounds.y, bounds.z, bounds.radius))
+            if (!sphere_visible(view, bounds.x, bounds.y, bounds.z, bounds.radius + kObjectCullMargin))
                 continue;
 
             const float dx = bounds.x - view.x;
@@ -242,7 +246,7 @@ namespace phoenix::renderer
         for (std::size_t i = 0; i < scene.batches.size(); ++i)
         {
             const auto& bounds = scene.batchBounds[i];
-            if (!sphere_visible(view, bounds.x, bounds.y, bounds.z, bounds.radius))
+            if (!sphere_visible(view, bounds.x, bounds.y, bounds.z, bounds.radius + kObjectCullMargin))
                 continue;
 
             const float dx = bounds.x - view.x;

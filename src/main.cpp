@@ -1529,10 +1529,15 @@ int main(int, char**)
         const auto cullMoveDy = currentView.y - lastCullView.y;
         const auto cullMoveDz = currentView.z - lastCullView.z;
         const auto cullMoveSq = cullMoveDx * cullMoveDx + cullMoveDy * cullMoveDy + cullMoveDz * cullMoveDz;
+        // Keep CPU-authored visibility close to the camera.  Large refresh
+        // intervals leave an old frustum active while moving or turning and
+        // make world batches appear to blink at the edge of the view.
+        constexpr float kVisibilityMoveRefresh = 8.0f;
+        constexpr float kVisibilityAngleRefresh = 0.02f;
         const bool visibilityNeedsUpdate = forceVisibilityUpdate
-            || cullMoveSq > 96.0f * 96.0f
-            || std::abs(currentView.yaw - lastCullView.yaw) > 0.08f
-            || std::abs(currentView.pitch - lastCullView.pitch) > 0.06f
+            || cullMoveSq > kVisibilityMoveRefresh * kVisibilityMoveRefresh
+            || std::abs(currentView.yaw - lastCullView.yaw) > kVisibilityAngleRefresh
+            || std::abs(currentView.pitch - lastCullView.pitch) > kVisibilityAngleRefresh
             || std::abs(currentView.distance - lastCullView.distance) > 32.0f
             || std::abs(currentView.aspect - lastCullView.aspect) > 0.01f;
         if (visibilityNeedsUpdate)
