@@ -22,9 +22,6 @@ namespace phoenix::ui
         Night,
         Overcast,
         Snowstorm,
-        MistyMorning,
-        BlueHour,
-        Aurora,
         Storm,
     };
 

@@ -92,46 +92,6 @@ namespace phoenix::ui
             set4(environment.waterDeepAlpha, 0.02f, 0.14f, 0.29f, 0.94f);
             set4(environment.waterSurface, 0.05f, 0.030f, 0.60f, 4.0f);
         }
-        else if (weatherMode == WeatherMode::MistyMorning)
-        {
-            weatherFog = { 0.76f, 0.76f, 0.72f };
-            set4(environment.horizonCurve, 0.90f, 0.86f, 0.78f, 0.50f);
-            set4(environment.zenithMidWeight, 0.56f, 0.64f, 0.70f, 0.0f);
-            set4(environment.midHeight, 0.0f, 0.0f, 0.0f, 0.35f);
-            set4(environment.groundCloudCover, 0.34f, 0.33f, 0.30f, 0.55f);
-            set4(environment.cloudColorOpacity, 0.94f, 0.93f, 0.90f, 0.90f);
-            set4(environment.cloudShadeSpeed, 0.70f, 0.70f, 0.72f, 0.60f);
-            set4(environment.cloudShape, 0.29f, 0.52f, 0.25f, 40.0f);
-            set4(environment.waterShallowAlpha, 0.30f, 0.38f, 0.40f, 0.18f);
-            set4(environment.waterDeepAlpha, 0.09f, 0.15f, 0.20f, 0.94f);
-            set4(environment.waterSurface, 0.05f, 0.018f, 0.35f, 4.0f);
-        }
-        else if (weatherMode == WeatherMode::BlueHour)
-        {
-            weatherFog = { 0.10f, 0.13f, 0.18f };
-            set4(environment.horizonCurve, 0.32f, 0.48f, 0.70f, 0.30f);
-            set4(environment.zenithMidWeight, 0.06f, 0.12f, 0.34f, 0.40f);
-            set4(environment.midHeight, 0.20f, 0.34f, 0.60f, 0.30f);
-            set4(environment.groundCloudCover, 0.10f, 0.13f, 0.18f, 0.32f);
-            set4(environment.cloudColorOpacity, 0.62f, 0.68f, 0.84f, 1.0f);
-            set4(environment.cloudShadeSpeed, 0.28f, 0.32f, 0.46f, 0.60f);
-            set4(environment.cloudShape, 0.33f, 0.42f, 0.25f, 40.0f);
-            set4(environment.waterShallowAlpha, 0.10f, 0.20f, 0.36f, 0.18f);
-            set4(environment.waterDeepAlpha, 0.01f, 0.04f, 0.13f, 0.94f);
-            set4(environment.waterSurface, 0.05f, 0.022f, 0.45f, 4.0f);
-        }
-        else if (weatherMode == WeatherMode::Aurora)
-        {
-            weatherFog = { 0.080f, 0.105f, 0.160f };
-            set4(environment.horizonCurve, 0.075f, 0.100f, 0.180f, 0.28f);
-            set4(environment.zenithMidWeight, 0.018f, 0.035f, 0.085f, 0.0f);
-            set4(environment.midHeight, 0.0f, 0.0f, 0.0f, 0.35f);
-            set4(environment.groundCloudCover, 0.045f, 0.050f, 0.070f, 0.0f);
-            set4(environment.cloudColorOpacity, 0.0f, 0.0f, 0.0f, 0.0f);
-            set4(environment.waterShallowAlpha, 0.24f, 0.44f, 0.52f, 0.18f);
-            set4(environment.waterDeepAlpha, 0.10f, 0.22f, 0.32f, 0.94f);
-            set4(environment.waterSurface, 0.05f, 0.020f, 0.40f, 4.0f);
-        }
         else if (weatherMode == WeatherMode::Storm)
         {
             weatherFog = { 0.20f, 0.22f, 0.25f };
@@ -324,33 +284,6 @@ namespace phoenix::ui
                 set4(environment.lightColorShadow, 0.90f, 0.94f, 1.00f, 0.42f);
                 set4(environment.ambientColorEnergy, 0.72f, 0.78f, 0.86f, 0.72f);
                 set4(environment.diskColorSize, 1.0f, 1.0f, 1.0f, 0.0f);
-                break;
-            case WeatherMode::MistyMorning:
-                set_direction(environment.lightDirectionEnergy, 14.0f, 80.0f, 0.55f);
-                set_direction(environment.astroDirectionGlow, 10.0f, 80.0f, 0.40f);
-                set4(environment.lightColorShadow, 1.00f, 0.95f, 0.86f, 0.40f);
-                set4(environment.ambientColorEnergy, 0.76f, 0.76f, 0.72f, 0.78f);
-                set4(environment.glowColorFocus, 1.00f, 0.94f, 0.80f, 5.0f);
-                set4(environment.diskColorSize, 1.0f, 1.0f, 1.0f, 0.0f);
-                break;
-            case WeatherMode::BlueHour:
-                set_direction(environment.lightDirectionEnergy, -4.0f, -130.0f, 0.42f);
-                set_direction(environment.astroDirectionGlow, -4.0f, -130.0f, 0.35f);
-                set4(environment.lightColorShadow, 0.62f, 0.72f, 0.94f, 0.60f);
-                set4(environment.ambientColorEnergy, 0.34f, 0.42f, 0.58f, 0.50f);
-                set4(environment.glowColorFocus, 0.70f, 0.60f, 0.62f, 14.0f);
-                set4(environment.diskColorSize, 1.0f, 1.0f, 1.0f, 0.0f);
-                break;
-            case WeatherMode::Aurora:
-                set_direction(environment.lightDirectionEnergy, 55.0f, 165.0f, 0.46f);
-                set_direction(environment.astroDirectionGlow, 20.0f, 165.0f, 0.25f);
-                set4(environment.lightColorShadow, 0.62f, 0.72f, 0.94f, 0.62f);
-                set4(environment.ambientColorEnergy, 0.25f, 0.30f, 0.44f, 0.52f);
-                set4(environment.glowColorFocus, 0.55f, 0.62f, 0.80f, 28.0f);
-                set4(environment.diskColorSize, 0.93f, 0.95f, 1.00f, 1.50f);
-                set4(environment.skyOptics, 1.05f, 1.0f, 0.045f, 1.0f);
-                set4(environment.auroraLowSpread, 0.10f, 0.85f, 0.45f, 0.30f);
-                set4(environment.auroraHighSpeed, 0.35f, 0.25f, 0.85f, 0.06f);
                 break;
             case WeatherMode::Default:
             default:
@@ -560,12 +493,12 @@ namespace phoenix::ui
 
             const WeatherMode previousWeatherMode = weatherMode;
             const char* weatherItems[] = { "Default", "Clear day", "Dawn", "Afternoon",
-                "Sunset", "Dusk", "Night", "Overcast", "Snow", "Misty morning",
-                "Blue hour", "Aurora", "Storm" };
+                "Sunset", "Dusk", "Night", "Overcast", "Snow", "Storm" };
             int weatherIndex = static_cast<int>(weatherMode);
             px::SetNextItemWidth(180.0f);
             if (px::Combo("Sky", &weatherIndex, weatherItems, static_cast<int>(std::size(weatherItems))))
-                weatherMode = static_cast<WeatherMode>(std::clamp(weatherIndex, 0, 12));
+                weatherMode = static_cast<WeatherMode>(std::clamp(
+                    weatherIndex, 0, static_cast<int>(std::size(weatherItems)) - 1));
             result.weatherChanged = weatherMode != previousWeatherMode;
         }
         else if (activeSection == Section::Controls)
