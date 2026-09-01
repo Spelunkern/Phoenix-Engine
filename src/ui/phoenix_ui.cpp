@@ -247,15 +247,25 @@ namespace phoenix::ui::px
         context.hasNextWindowPos = false;
         context.hasNextWindowSize = false;
         context.nextWindowAlpha = 0.90f;
+        if (!context.mouseDown)
+        {
+            context.activeId = 0;
+            context.draggingWindow = 0;
+        }
+        bool pointerOverUi = context.openCombo != 0
+            && contains(context.comboClip, context.mouseX, context.mouseY);
         for (const auto& [id, state] : context.windows)
         {
             (void)id;
             if (contains({ state.x, state.y, state.width, state.height }, context.mouseX, context.mouseY))
             {
                 context.captureMouse = true;
+                pointerOverUi = true;
                 break;
             }
         }
+        if (context.mousePressed && !pointerOverUi)
+            context.openCombo = 0;
     }
 
     std::vector<phoenix::renderer::ScreenUiCommand> end_frame()
