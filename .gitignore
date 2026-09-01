@@ -22,6 +22,7 @@
 *.log
 imgui.ini
 perf_hud.ini
+phoenix.ini
 /diagnostics/
 *.user
 *.suo

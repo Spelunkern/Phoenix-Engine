@@ -39,4 +39,4 @@ try {
 }
 
 Write-Host ''
-Write-Host "==> Build complete: bin\x64\Release\PhoenixEngine.exe" -ForegroundColor Cyan
+Write-Host "==> Build complete: bin\x64\Release\PhoenixClient.exe" -ForegroundColor Cyan

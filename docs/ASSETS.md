@@ -1,10 +1,10 @@
 # Runtime Data and Assets
 
-Phoenix Engine does not include commercial game data or extracted client/server assets.
+Phoenix Client does not include commercial game data or extracted client/server assets.
 
-Phoenix Engine resolves runtime data from the first valid location in this order:
+Phoenix Client resolves runtime data from the first valid location in this order:
 
-1. `PHOENIX_ENGINE_DATA` environment variable.
+1. `PHOENIX_CLIENT_DATA` environment variable.
 2. `data/` next to the executable.
 3. `data/` in the current working directory.
 4. `data/` in parent directories above the executable.
@@ -13,8 +13,8 @@ Platform-specific fallback locations:
 
 | Platform | Paths |
 |----------|-------|
-| Windows | `%LOCALAPPDATA%/Phoenix Engine/data`, `%PROGRAMDATA%/Phoenix Engine/data` |
-| Linux | `~/.local/share/Phoenix Engine/data` |
+| Windows | `%LOCALAPPDATA%/Phoenix Client/data`, `%PROGRAMDATA%/Phoenix Client/data` |
+| Linux | `~/.local/share/Phoenix Client/data` |
 
 For local development, place your own data directory at the project root:
 
@@ -56,7 +56,7 @@ data/
 - Animation: `.ani`
 - Textures: `.dds` (see canonical format below), `.bmp`, `.tga`
 
-**CSV tables** (trimmed to the columns the engine consumes):
+**CSV tables** (trimmed to the columns the client consumes):
 
 - `weapons/<type>.csv` — `RecordIndex,MeshName,TextureName,AlphaBlendingMode`,
   deduplicated by mesh+texture pair.
@@ -94,10 +94,14 @@ via `AlphaBlendingMode`.
 
 **Audio:**
 
-- `.ogg` (Vorbis) — WLD files reference `.wav` names but the engine resolves them to `.ogg` on disk
+- `.ogg` (Vorbis) — WLD files reference `.wav` names but the client resolves them to `.ogg` on disk
 
-The `.gitignore` intentionally excludes `data/` at every repository depth. Keep this rule unless the project later gains a fully original asset pack that is safe to redistribute.
+The `.gitignore` intentionally excludes `data/` at every repository depth.
+Only data that is owned by the distributor or explicitly licensed for
+redistribution should ever be packaged with a derived client.
 
 ## Legal Boundary
 
-Phoenix Engine is code-first. Contributors should not upload, mirror, or commit assets unless they own the rights or the asset is explicitly licensed for redistribution.
+Phoenix Client is code-only. Users must not upload, mirror, commit, or
+redistribute assets unless they own the rights or the assets are explicitly
+licensed for redistribution.

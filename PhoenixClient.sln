@@ -2,7 +2,7 @@
 # Visual Studio Version 17
 VisualStudioVersion = 17.0.31903.59
 MinimumVisualStudioVersion = 10.0.40219.1
-Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "PhoenixEngine", "PhoenixEngine.vcxproj", "{A74F9B8B-1A7A-4F59-8F60-CA8D4F97C36C}"
+Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "PhoenixClient", "PhoenixClient.vcxproj", "{A74F9B8B-1A7A-4F59-8F60-CA8D4F97C36C}"
 EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
@@ -19,4 +19,3 @@ Global
 		HideSolutionNode = FALSE
 	EndGlobalSection
 EndGlobal
-

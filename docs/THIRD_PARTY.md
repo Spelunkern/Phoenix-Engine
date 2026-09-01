@@ -1,6 +1,6 @@
 # Third-Party Dependencies
 
-This repository vendors a small set of third-party dependencies used by the engine.
+This repository vendors a small set of third-party dependencies used by the client.
 
 ## SDL2
 

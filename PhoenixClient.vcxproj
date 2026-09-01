@@ -14,7 +14,7 @@
     <VCProjectVersion>17.0</VCProjectVersion>
     <Keyword>Win32Proj</Keyword>
     <ProjectGuid>{A74F9B8B-1A7A-4F59-8F60-CA8D4F97C36C}</ProjectGuid>
-    <RootNamespace>PhoenixEngine</RootNamespace>
+    <RootNamespace>PhoenixClient</RootNamespace>
     <WindowsTargetPlatformVersion>10.0</WindowsTargetPlatformVersion>
   </PropertyGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.Default.props" />
@@ -35,7 +35,7 @@
   <PropertyGroup>
     <OutDir>$(SolutionDir)bin\$(Platform)\$(Configuration)\</OutDir>
     <IntDir>$(SolutionDir)obj\$(Platform)\$(Configuration)\$(ProjectName)\</IntDir>
-    <TargetName>PhoenixEngine</TargetName>
+    <TargetName>PhoenixClient</TargetName>
     <ApplicationIcon>res\phoenix.ico</ApplicationIcon>
   </PropertyGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">

@@ -284,7 +284,7 @@ namespace phoenix::ui::px
 
     void set_window_position(float x, float y)
     {
-        auto& state = context.windows[hash_id("Phoenix Engine")];
+        auto& state = context.windows[hash_id("Phoenix Client")];
         state.x = x;
         state.y = y;
         state.positioned = true;
@@ -292,7 +292,7 @@ namespace phoenix::ui::px
 
     Vec2 window_position()
     {
-        const auto found = context.windows.find(hash_id("Phoenix Engine"));
+        const auto found = context.windows.find(hash_id("Phoenix Client"));
         return found == context.windows.end() ? Vec2{ 8.0f, 8.0f } : Vec2{ found->second.x, found->second.y };
     }
 

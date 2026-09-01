@@ -1,12 +1,16 @@
 # Changelog
 
-All notable changes to Phoenix Engine are documented here. Dates are ISO-8601.
+All notable changes to Phoenix Client are documented here. Dates are ISO-8601.
 
-## [Unreleased]
+## [v1.0.0] - 2026-09-01
+
+Phoenix Client v1.0 is the stable and final release. It completes the project's
+defined role as a reusable MMO client foundation and gameplay-preview runtime;
+no further feature updates are planned.
 
 ### Added
 - **Native Phoenix UI.** The debug panel, performance HUD, controls reference,
-  and graphics controls now render through the engine's own lightweight
+  and graphics controls now render through the client's own lightweight
   screen-space UI. Graphics settings include persistent VSync, anti-aliasing,
   FPS cap, world shadows, and render/fog distances through `phoenix.ini`.
 - **Native world labels and canonical entity names.** NPC and monster names no
@@ -48,6 +52,12 @@ All notable changes to Phoenix Engine are documented here. Dates are ISO-8601.
 - Obsolete sky presets and the unused aurora shader path.
 - Unreachable legacy terrain/object rendering code and the permanently
   disabled compute-culling scaffolding.
+
+### Documentation
+- Renamed the project from Phoenix Engine to Phoenix Client and updated the
+  application, build targets, scripts, paths, technical guides, and license.
+- Defined the project's final scope explicitly: it is a client foundation, not
+  a complete game, server, or turnkey MMO product.
 
 ## [v0.10] - 2026-07-19
 

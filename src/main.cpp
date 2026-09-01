@@ -93,7 +93,7 @@ namespace
     using phoenix::character::scan_bot_equipment_pools;
     using phoenix::character::scan_character_options;
 
-    constexpr const char* kAppTitle = "Phoenix Engine";
+    constexpr const char* kAppTitle = "Phoenix Client";
     constexpr std::size_t kSkyTextureLayer = 63;
     constexpr std::size_t kPrimaryCloudTextureLayer = 64;
     constexpr std::size_t kSecondaryCloudTextureLayer = 65;
@@ -115,7 +115,7 @@ int main(int, char**)
     phoenix::platform::SdlWindow window;
     if (!window.create(kWidth, kHeight, kAppTitle))
     {
-        std::fprintf(stderr, "Could not create Phoenix Engine window.\n");
+        std::fprintf(stderr, "Could not create Phoenix Client window.\n");
         return 1;
     }
 

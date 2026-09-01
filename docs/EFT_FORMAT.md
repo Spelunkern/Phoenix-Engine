@@ -3,14 +3,15 @@
 Shaiya's particle-effect files: emitters (fire, smoke, glows, area-of-effect
 decals, skill casts, etc.) plus their supporting `.3DE` meshes and `.dds`
 textures. This document covers the binary layout, every field's meaning, how
-Phoenix Engine renders them, and how to inspect/edit/convert files in
+Phoenix Client renders them, and how to inspect/edit/convert files in
 practice.
 
 Sources of truth used while porting this: [cupsocino/effect-renderer](https://github.com/cupsocino/effect-renderer)
 (a Three.js renderer, visually validated against the retail client — referred
 to below as "the reference") and [matigramirez/Parsec](https://github.com/matigramirez/Parsec)
 (a C# reader that agrees on the binary layout but leaves several fields
-unnamed).
+unnamed). These references document the implementation provenance; Phoenix
+Client does not redistribute their data or source.
 
 Engine source: [src/world/eft_loader.h](../src/world/eft_loader.h),
 [eft_loader.cpp](../src/world/eft_loader.cpp),
@@ -32,7 +33,7 @@ Engine source: [src/world/eft_loader.h](../src/world/eft_loader.h),
   (`WldAnalysis::effectInstances`), each with a world position/orientation and
   an `effectId` that — despite the name — indexes into **`EftLibrary::sequences`**,
   not `EftLibrary::effects` directly (see §3).
-- The whole `data/effects` tree must be **lowercase**; the engine's asset
+- The whole `data/effects` tree must be **lowercase**; the client's asset
   resolution is case-sensitive-safe elsewhere but this directory is walked
   directly by filename.
 
@@ -60,7 +61,7 @@ Sequence[] sequences       (sequenceCount entries — see below)
 
 `EF2` and `EF3` are the same layout as `EFT` except each `Effect` record gets
 two extra `int32`s right after `rotationAxis` (see below) — `EF3` additionally
-uses the second one as `distanceScaleMode`; `EF2` parses both but the engine
+uses the second one as `distanceScaleMode`; `EF2` parses both but the client
 doesn't use them.
 
 ### Effect record
@@ -97,7 +98,7 @@ One particle-emitter component. Field order (all sequential, no padding):
 | `angularVelocity` | float | Radians/sec |
 | `rotationAxis` | int32 | 0 = none, 1/2/3 = the basis's right/up/forward axis (see §4.1) |
 | *(EF3 only)* `unused` | int32 | Parsed and discarded |
-| *(EF3 only)* `distanceScaleMode` | int32 | Parsed, **not implemented** in the renderer yet |
+| *(EF3 only)* `distanceScaleMode` | int32 | Parsed, but not implemented by the v1 renderer |
 | `colorFrames` | `count32` + array | RGBA-over-lifetime keyframes: `{r, g, b, a, time}` each |
 | `velocityScaleFrames` | `count32` + array | Velocity-multiplier-over-lifetime keyframes: `{value, time}` |
 | `scaleFrames` | `count32` + array | Size-over-lifetime keyframes: `{min, max, time}` — min/max are re-rolled randomly per particle at each segment, not just once |
@@ -211,12 +212,12 @@ then `textureLoop ? frame % count : min(frame, count-1)`. This swaps the
 
 `sourceBlend`/`destinationBlend` are D3D blend-factor enum values (see
 `d3d_blend_to_gl` in `opengl_renderer.cpp` for the mapping table) and the
-engine does apply them per-batch (`glBlendFunc`). **However**, cross-checking
+client does apply them per-batch (`glBlendFunc`). **However**, cross-checking
 against the reference renderer while investigating the bug in §5 turned up
 that it does *not* use these fields at all — every component renders with a
 flat `THREE.AdditiveBlending`, regardless of what's stored in the file. This
 divergence hasn't caused a visible problem in testing so far (most components
-use blend combos that look additive-ish anyway), but if a future effect looks
+use blend combos that look additive-ish anyway), but if an effect looks
 wrong in a way that tracks its specific blend values, this is the first place
 to look — the per-effect blend factors may simply not be meaningful data the
 real client uses for these components.
@@ -257,19 +258,18 @@ large/distant billboards (small ones stay in magnification, LOD < 0, never
 triggering it). Fix: a dedicated `debugEffectSampler` (`GL_LINEAR` min/mag,
 no mipmap dependency) bound to unit 3 instead of reusing `terrainSampler`.
 
-The takeaway for future format/render bugs: if something only breaks at a
+The takeaway when diagnosing format/render bugs: if something only breaks at a
 specific *scale* or *distance* (not a specific effect's parameters), suspect
 LOD/mip selection before suspecting the parsed data.
 
 ## 6. Tooling
 
-### 6.1 In-engine: the Effects debug panel
+### 6.1 In-client: the Effects debug panel
 
 Phoenix UI → Effects tab. Browses the **entire** `data/effects` catalog (hundreds
 of files), loading each library on demand only when selected
 (`PhoenixRuntime::effect_library_files()` / `load_effect_library_file()`) —
-nothing is preloaded, since effects will eventually be reused for character
-skills, not just maps. Features:
+nothing is preloaded; libraries are opened on demand. Features:
 
 - Spawn any sequence at the character's position (with a Y-offset control)
   in normal or one-shot mode.
@@ -283,7 +283,7 @@ map loads) — see `upload_debug_effect_textures`. This is why debug and map
 rendering share almost all simulation code but have separate texture-array
 plumbing and, as of §5, separate samplers.
 
-### 6.2 Inspecting a file outside the engine
+### 6.2 Inspecting a file outside the client
 
 There's no committed CLI dumper (it's cheap enough to write one ad hoc when
 needed): a ~100-line `.cpp` that calls `phoenix::world::load_eft(path)` and
@@ -315,7 +315,7 @@ There is no in-house `.EFT` editor. Options in practice:
   order rather than reverse-engineering from scratch.
 - **Visual validation**: cupsocino/effect-renderer (the Three.js reference)
   is the fastest way to check whether an edited file still parses and looks
-  right, independent of this engine — it accepts a raw data-folder drop and
+  right, independent of this client — it accepts a raw data-folder drop and
   renders any file/sequence/component in-browser.
 - New textures/meshes referenced by an edited file must go in
   `data/effects/dds/` / `data/effects/3de/` respectively, lowercase, matching

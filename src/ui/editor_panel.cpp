@@ -433,7 +433,7 @@ namespace phoenix::ui
 
         px::SetNextWindowPos(px::Vec2(8.0f, 8.0f), px::FirstUseEver);
         px::SetNextWindowSize(px::Vec2(388.0f, 0.0f), px::FirstUseEver);
-        if (!px::Begin("Phoenix Engine", nullptr, px::AlwaysAutoResize))
+        if (!px::Begin("Phoenix Client", nullptr, px::AlwaysAutoResize))
         {
             px::End();
             return result;

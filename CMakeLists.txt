@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.20)
-project(PhoenixEngine LANGUAGES C CXX)
+project(PhoenixClient VERSION 1.0.0 LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -8,7 +8,7 @@ set(CMAKE_C_STANDARD 11)
 
 option(PHOENIX_COPY_RUNTIME_DLLS "Copy runtime DLLs next to the executable on Windows" ON)
 
-set(ENGINE_SOURCES
+set(CLIENT_SOURCES
     src/main.cpp
     src/app/bootstrap.cpp
     src/app/loading_scheduler.cpp
@@ -57,12 +57,12 @@ set(ENGINE_SOURCES
 )
 
 if(WIN32)
-    list(APPEND ENGINE_SOURCES res/phoenix.rc)
+    list(APPEND CLIENT_SOURCES res/phoenix.rc)
 endif()
 
-add_executable(PhoenixEngine ${ENGINE_SOURCES})
+add_executable(PhoenixClient ${CLIENT_SOURCES})
 
-target_include_directories(PhoenixEngine PRIVATE
+target_include_directories(PhoenixClient PRIVATE
     src
     external
 )
@@ -74,13 +74,13 @@ if(WIN32)
     set(SDL2_DIR "${CMAKE_SOURCE_DIR}/external/SDL2/cmake")
     find_package(SDL2 REQUIRED CONFIG)
 
-    target_include_directories(PhoenixEngine PRIVATE
+    target_include_directories(PhoenixClient PRIVATE
         "${CMAKE_SOURCE_DIR}/external/SDL2/include"
     )
-    target_link_directories(PhoenixEngine PRIVATE
+    target_link_directories(PhoenixClient PRIVATE
         "${CMAKE_SOURCE_DIR}/external/SDL2/lib/x64"
     )
-    target_link_libraries(PhoenixEngine PRIVATE
+    target_link_libraries(PhoenixClient PRIVATE
         SDL2::SDL2
         SDL2::SDL2main
         opengl32
@@ -90,14 +90,14 @@ if(WIN32)
         ws2_32
     )
 
-    target_compile_definitions(PhoenixEngine PRIVATE
+    target_compile_definitions(PhoenixClient PRIVATE
         WIN32_LEAN_AND_MEAN
         NOMINMAX
     )
 
     # Match the vcxproj warning level and suppression.
     if(MSVC)
-        target_compile_options(PhoenixEngine PRIVATE /W4 /wd4505)
+        target_compile_options(PhoenixClient PRIVATE /W4 /wd4505)
         set_source_files_properties(src/audio/vendor_audio_codecs.cpp PROPERTIES
             COMPILE_OPTIONS /W0
         )
@@ -105,22 +105,22 @@ if(WIN32)
 
     # Subsystem: Windows (no console window).
     if(MSVC)
-        set_target_properties(PhoenixEngine PROPERTIES
+        set_target_properties(PhoenixClient PROPERTIES
             WIN32_EXECUTABLE TRUE
         )
     endif()
 
     # Output layout matching the vcxproj: bin/<Platform>/<Configuration>/
-    set_target_properties(PhoenixEngine PROPERTIES
+    set_target_properties(PhoenixClient PROPERTIES
         RUNTIME_OUTPUT_DIRECTORY "${CMAKE_SOURCE_DIR}/bin/x64/$<CONFIG>"
     )
 
     # Copy SDL2.dll next to the executable.
     if(PHOENIX_COPY_RUNTIME_DLLS)
-        add_custom_command(TARGET PhoenixEngine POST_BUILD
+        add_custom_command(TARGET PhoenixClient POST_BUILD
             COMMAND ${CMAKE_COMMAND} -E copy_if_different
                 "${CMAKE_SOURCE_DIR}/external/SDL2/lib/x64/SDL2.dll"
-                "$<TARGET_FILE_DIR:PhoenixEngine>/SDL2.dll"
+                "$<TARGET_FILE_DIR:PhoenixClient>/SDL2.dll"
         )
     endif()
 
@@ -130,13 +130,13 @@ else()
     find_package(Threads REQUIRED)
     pkg_check_modules(SDL2 REQUIRED IMPORTED_TARGET sdl2)
 
-    target_link_libraries(PhoenixEngine PRIVATE
+    target_link_libraries(PhoenixClient PRIVATE
         PkgConfig::SDL2
         Threads::Threads
         ${CMAKE_DL_LIBS}
     )
 
-    target_compile_options(PhoenixEngine PRIVATE -Wno-missing-field-initializers)
+    target_compile_options(PhoenixClient PRIVATE -Wno-missing-field-initializers)
 
     # Use the platform allocator. A statically linked mimalloc override can
     # intercept libc's free() without having allocated the corresponding

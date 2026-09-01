@@ -1,45 +1,50 @@
 <p align="center">
-  <img src="res/PhoenixMain.png" alt="Phoenix Engine" width="480">
+  <img src="res/PhoenixMain.png" alt="Phoenix Client" width="480">
 </p>
 
 <p align="center"><em>But one day, tiny flames will dance across the darkness</em></p>
 
-# Phoenix Engine
+# Phoenix Client
 
-Phoenix Engine is an open source MMO engine focused on high performance, modular features, and ease of use. It uses OpenGL 4.5 core as its graphics API and runs on Windows and Linux.
+Phoenix Client is an open-source C++ foundation for MMO game clients. It
+provides a complete rendering and gameplay-preview runtime for supported data,
+using OpenGL 4.5 on Windows and Linux.
 
-The project is still in its infancy. Today it provides a gameplay/preview mode, not a full client and not a server component yet. The repository contains engine/source code only; game data and commercial assets are not included.
+**Version 1.0 is the stable, final release.** The project is complete within its
+defined scope and is not planned to receive further feature updates.
 
-## Project Goals
+## Scope
 
-Phoenix Engine has two long-term goals:
+Phoenix Client is designed to be a technical base from which a team can study,
+prototype, or build an MMO client. It includes the difficult low-level pieces:
+legacy data loading, rendering, animation, world presentation, input, audio,
+streaming, debugging tools, and a playable preview mode.
 
-- A modern, highly optimized, and visually appealing MMO client.
-- A portable and flexible codebase that can be used to create MMO games.
+It is deliberately **not**:
 
-The immediate goal is to render classic client content correctly, matching the native game where it matters and improving it where modern rendering can do better. That includes maps, characters, mantles, weapons, shields, monsters, NPCs, vehicles, and related world content.
+- A finished game.
+- A game server, networking stack, account service, database, launcher, patcher,
+  or content distribution system.
+- A turnkey MMO product that can become a production game overnight.
+- A redistribution of commercial game data or assets.
 
-Phoenix Engine also aims to modernize older visual and technical systems over time. Sky and water rendering are already custom systems instead of direct native-format reproductions. The project should remain modular, understandable, and practical to develop across a long timeline. Eventually, legacy data formats should be converted into modern formats without losing their original properties.
+Turning this foundation into a real MMO still requires original content,
+server-authoritative gameplay, networking, persistence, authentication,
+security, production UI, tools, testing, deployment infrastructure, and the
+work needed to integrate all of those systems.
 
-The current runtime is designed to be easy to test through a playable character mode and a free-view camera mode.
+The repository contains source code only. Runtime data and commercial assets
+are intentionally excluded. The included playable and free-camera modes exist
+to exercise and validate client systems, not to represent a complete game.
 
-## Roadmap
+## Project Status
 
-Phase one is focused on engine foundations:
+Phoenix Client v1.0 is stable and feature-frozen. The source remains available
+under the BSD 3-Clause License for study, modification, and use as a base for
+independent work, but this repository should be treated as a finished reference
+implementation rather than an actively maintained roadmap.
 
-- Render supported client content accurately and efficiently.
-- Improve outdated visuals with modern systems where appropriate.
-- Keep the architecture modular and friendly to contributors.
-- Build a path for converting legacy formats into modern equivalents.
-
-Phase two begins once the initial rendering and gameplay-preview goals are covered:
-
-- Transform the gameplay module into a proper client ready for server logic and server-side parameters.
-- Recreate a defined suite of content up to a fixed episode, creating a stable base for future work.
-
-Phoenix Engine does not assume deep technical knowledge from final users. Everyone is welcome to test, report issues, document behavior, and contribute where they can. This is intentionally a long-term project.
-
-## Current Features
+## Included Features
 
 - OpenGL 4.5 renderer with terrain, objects, water, fog, and procedural sky.
 - Runtime animation with cached CPU skinning for the playable character and
@@ -47,7 +52,7 @@ Phoenix Engine does not assume deep technical knowledge from final users. Everyo
 - WLD/DG map loading with free-camera viewer mode and playable character mode.
 - Field lightmaps with baked shadows and colour tones, alpha-mask terrain splatting ("tonality" maps), and full dungeon lightmap support (per-vertex page sampling).
 - VANI vertex-animated decor (distance-based animation LOD) and MANI GPU-driven rotating objects.
-- World NPCs and monsters placed from each map's `.svmap`: NPCs stand at their authored spots (multi-point groups patrol between waypoints), and monster spawn areas populate with mobs that wander their area and follow the terrain. Entities stream in only within camera range, with off-thread visual loading, distance-based despawn, LRU texture-slot eviction, parallel/LOD pose skinning, and native hover labels. Placement and movement are client-side for now, structured to later be driven by server state.
+- World NPCs and monsters placed from each map's `.svmap`: NPCs stand at their authored spots (multi-point groups patrol between waypoints), and monster spawn areas populate with mobs that wander their area and follow the terrain. Entities stream in only within camera range, with off-thread visual loading, distance-based despawn, LRU texture-slot eviction, parallel/LOD pose skinning, and native hover labels. Placement and movement are local preview behavior; server authority is outside this project's scope.
 - Character appearance loading with race, armor, face, hair, weapon, shield, and mantle selection.
 - Per-race/class weapon and shield attach-bone mapping, with a default starting loadout (one-hand sword + light shield + mantle).
 - Mounts/vehicles: ride seated on a data-driven seat bone, mount animations, and faster-than-foot movement.
@@ -76,7 +81,7 @@ src/
   assets/    Data indexing and path resolution.
   audio/     Audio playback via miniaudio (OGG Vorbis).
   character/ Playable character controller, bots, NPC and monster managers, and character mesh assembly.
-  runtime/   Engine runtime state, map loading, terrain/object scene building.
+  runtime/   Client runtime state, map loading, terrain/object scene building.
   platform/  SDL2 window/input wrapper.
   renderer/  OpenGL 4.5 renderer (split by subsystem), texture loading, GPU resources.
   ui/        Lightweight native editor panel, performance HUD, loading screen.
@@ -87,6 +92,18 @@ external/    Vendored third-party dependencies.
 scripts/     Helper scripts for building.
 docs/        Public documentation and release notes.
 ```
+
+## Documentation
+
+- [Architecture](docs/ARCHITECTURE.md)
+- [Windows build guide](BUILD_WINDOWS.md)
+- [Linux build guide](BUILD_LINUX.md)
+- [Runtime data and assets](docs/ASSETS.md)
+- [System requirements](docs/system-requirements.md)
+- [EFT/EF2/EF3 technical format reference](docs/EFT_FORMAT.md)
+- [Third-party dependencies](docs/THIRD_PARTY.md)
+- [v1.0 release checklist](docs/RELEASE_CHECKLIST.md)
+- [Changelog](CHANGELOG.md)
 
 ## Supported Platforms
 
@@ -144,7 +161,7 @@ cmake -S . -B build/windows-vs2022-x64 -G "Visual Studio 17 2022" -A x64
 cmake --build build/windows-vs2022-x64 --config Release
 ```
 
-Output: `bin\x64\Release\PhoenixEngine.exe`
+Output: `bin\x64\Release\PhoenixClient.exe`
 
 ### Linux
 
@@ -153,19 +170,23 @@ cmake -S . -B build/linux-release -DCMAKE_BUILD_TYPE=Release
 cmake --build build/linux-release -j$(nproc)
 ```
 
-Output: `build/linux-release/PhoenixEngine`
+Output: `build/linux-release/PhoenixClient`
 
-The repository vendors SDL2 and stb_truetype. No graphics SDK install is required beyond CMake and an OpenGL-capable driver.
+The repository vendors SDL2 for Windows and the stb headers it uses. Linux
+links against the system SDL2 package. No graphics SDK is required beyond an
+OpenGL-capable driver.
 
 ## Shaders
 
-Shaders live as plain GLSL source under `shaders/gl/*.vert` and `*.frag`, compiled at runtime by the renderer — there is no offline compilation step; edit a shader and rebuild the engine to see the change.
+Shaders live as plain GLSL source under `shaders/gl/*.vert` and `*.frag` and
+are compiled by the renderer at startup. There is no offline shader compilation
+step; edit a shader and restart the client to see the change.
 
 ## Runtime Data
 
-Phoenix Engine resolves runtime data from the first valid location in this order:
+Phoenix Client resolves runtime data from the first valid location in this order:
 
-1. `PHOENIX_ENGINE_DATA` environment variable.
+1. `PHOENIX_CLIENT_DATA` environment variable.
 2. `data/` next to the executable.
 3. `data/` in the current working directory.
 4. `data/` in parent directories above the executable, useful for source-tree development.
@@ -174,8 +195,8 @@ Platform-specific fallback locations:
 
 | Platform | Paths |
 |----------|-------|
-| Windows | `%LOCALAPPDATA%/Phoenix Engine/data`, `%PROGRAMDATA%/Phoenix Engine/data` |
-| Linux | `~/.local/share/Phoenix Engine/data` |
+| Windows | `%LOCALAPPDATA%/Phoenix Client/data`, `%PROGRAMDATA%/Phoenix Client/data` |
+| Linux | `~/.local/share/Phoenix Client/data` |
 
 The data tree is all-lowercase (legacy capitalised layouts still resolve). Expected layout:
 
@@ -200,8 +221,8 @@ See [docs/ASSETS.md](docs/ASSETS.md) for more details.
 
 ## Usage
 
-1. Keep the `Data/` folder in one of the supported runtime data locations.
-2. Launch Phoenix Engine.
+1. Keep the `data/` folder in one of the supported runtime data locations.
+2. Launch Phoenix Client.
 3. Use playable mode or free-view mode to explore and test maps.
 
 ## Controls
@@ -220,7 +241,7 @@ See [docs/ASSETS.md](docs/ASSETS.md) for more details.
 Maps load directly from the native WLD/DG binary formats, with per-map actor
 placement (NPC positions and monster spawn areas) read from `.svmap`. Item,
 mount, NPC, and monster catalogs use trimmed CSV tables that contain only the
-columns the engine consumes:
+columns the client consumes:
 
 | Table | Format |
 |-------|--------|
@@ -251,7 +272,7 @@ disk. Texture references (`.tga`, `.bmp`) are resolved to `.dds` when available.
 
 BSD 3-Clause License
 
-Copyright (c) 2025-2026, Phoenix Engine contributors. All rights reserved.
+Copyright (c) 2025-2026, Phoenix Client contributors. All rights reserved.
 
 Redistribution and use in source and binary forms, with or without modification, are permitted provided that the following conditions are met:
 

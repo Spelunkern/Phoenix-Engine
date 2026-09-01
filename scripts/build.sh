@@ -1,16 +1,15 @@
 #!/usr/bin/env bash
-# Phoenix Engine - one-command Linux build.
+# Phoenix Client - one-command Linux build.
 #
 # Checks prerequisites, prints copy-paste install hints for your distro when
-# something is missing, then configures and builds in Release. Shaders ship
-# precompiled in shaders/compiled/, so no shader toolchain is needed on Linux.
+# something is missing, then configures and builds in Release. GLSL shaders
+# compile at client startup, so no offline shader toolchain is needed.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 BUILD_DIR="$ROOT/build/linux-release"
 
 say()  { printf '\033[1;36m==>\033[0m %s\n' "$*"; }
-warn() { printf '\033[1;33m[!]\033[0m %s\n' "$*"; }
 die()  { printf '\033[1;31m[x]\033[0m %s\n' "$*" >&2; exit 1; }
 
 # Print the right install command for the detected package manager.
@@ -39,12 +38,6 @@ command -v pkg-config >/dev/null 2>&1 \
 pkg-config --exists sdl2 \
     || die "SDL2 dev files missing: $(install_hint libsdl2-dev SDL2-devel sdl2 libSDL2-devel media-libs/libsdl2 SDL2)"
 
-# ---- Vulkan loader (needed at run time) ----
-if ! { ldconfig -p 2>/dev/null | grep -q 'libvulkan\.so'; }; then
-    warn "Vulkan loader (libvulkan.so) not found. Install before running:"
-    warn "    $(install_hint libvulkan1 vulkan-loader vulkan-icd-loader vulkan-loader media-libs/vulkan-loader vulkan-loader)"
-fi
-
 CMAKE_BIN="$(command -v cmake || true)"
 [ -n "$CMAKE_BIN" ] || die "CMake missing: $(install_hint cmake cmake cmake cmake dev-build/cmake cmake)"
 say "CMake: $CMAKE_BIN"
@@ -57,5 +50,5 @@ say "Building with $(nproc) jobs..."
 (cd "$ROOT" && "$CMAKE_BIN" --build --preset linux-release -j"$(nproc)")
 
 echo ""
-say "Build complete: $BUILD_DIR/PhoenixEngine"
+say "Build complete: $BUILD_DIR/PhoenixClient"
 say "Run it with:    ./scripts/run.sh"

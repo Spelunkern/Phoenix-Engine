@@ -1,10 +1,10 @@
-# Building Phoenix Engine on Linux
+# Building Phoenix Client on Linux
 
 ## Prerequisites
 
 | Need | Why | Debian/Ubuntu | Fedora | Arch |
 |------|-----|---------------|--------|------|
-| C++23 compiler | Build the engine | `build-essential` | `gcc-c++` | `base-devel` |
+| C++23 compiler | Build the client | `build-essential` | `gcc-c++` | `base-devel` |
 | CMake >= 3.20 | Build system | `cmake` | `cmake` | `cmake` |
 | pkg-config | Locate SDL2 | `pkg-config` | `pkgconf` | `pkgconf` |
 | SDL2 dev files | Window/input | `libsdl2-dev` | `SDL2-devel` | `sdl2` |
@@ -54,23 +54,23 @@ cmake --build build/audit -j"$(nproc)"
 
 ## Run
 
-Place `Data/` next to the executable or in the repository root, then:
+Place `data/` next to the executable or in the repository root, then:
 
 ```bash
-./build/linux-release/PhoenixEngine
+./build/linux-release/PhoenixClient
 ```
 
 Or point to data explicitly:
 
 ```bash
-PHOENIX_ENGINE_DATA=/path/to/Data ./build/linux-release/PhoenixEngine
+PHOENIX_CLIENT_DATA=/path/to/data ./build/linux-release/PhoenixClient
 ```
 
 ## Troubleshooting
 
 - `Could not create OpenGL context`: install/update the OpenGL driver for your
   GPU (mesa or vendor) and confirm 4.5 core support with `glxinfo | grep "OpenGL version"`.
-- Wrong or missing models on Linux: keep the `Data/` tree intact. The engine has
+- Wrong or missing models on Linux: keep the `data/` tree intact. The client has
   case-insensitive path resolution, but it cannot recover from missing files.
 - Missing shaders after launching the executable directly: keep `shaders/gl/`
   beside the packaged executable. The runtime also searches from its executable

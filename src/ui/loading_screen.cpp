@@ -109,8 +109,8 @@ namespace phoenix::ui
             pixels[i + 3] = 255;
         }
 
-        // "Loading the engine" centered.
-        constexpr std::string_view label = "Loading the engine";
+        // Minimal centered loading label.
+        constexpr std::string_view label = "Loading";
         const auto textScale = std::clamp(height / 360u, 2u, 4u);
         const auto textWidth = text_pixel_width(label, textScale);
         const auto textHeight = 7u * textScale;

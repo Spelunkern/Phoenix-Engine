@@ -333,7 +333,7 @@ namespace phoenix::runtime
         };
 
         std::vector<std::filesystem::path> candidates;
-        if (const char* envValue = std::getenv("PHOENIX_ENGINE_DATA"); envValue && envValue[0])
+        if (const char* envValue = std::getenv("PHOENIX_CLIENT_DATA"); envValue && envValue[0])
             candidates.emplace_back(envValue);
 
         const std::filesystem::path parentDirs[] = {
@@ -351,12 +351,12 @@ namespace phoenix::runtime
 
 #ifdef _WIN32
         if (const char* localAppData = std::getenv("LOCALAPPDATA"); localAppData && localAppData[0])
-            candidates.emplace_back(std::filesystem::path(localAppData) / "Phoenix Engine" / "data");
+            candidates.emplace_back(std::filesystem::path(localAppData) / "Phoenix Client" / "data");
         if (const char* programData = std::getenv("PROGRAMDATA"); programData && programData[0])
-            candidates.emplace_back(std::filesystem::path(programData) / "Phoenix Engine" / "data");
+            candidates.emplace_back(std::filesystem::path(programData) / "Phoenix Client" / "data");
 #else
         if (const char* home = std::getenv("HOME"); home && home[0])
-            candidates.emplace_back(std::filesystem::path(home) / ".local" / "share" / "Phoenix Engine" / "data");
+            candidates.emplace_back(std::filesystem::path(home) / ".local" / "share" / "Phoenix Client" / "data");
 #endif
 
         for (const auto& candidate : candidates)
@@ -2396,7 +2396,7 @@ namespace phoenix::runtime
 
     std::string PhoenixRuntime::window_title(const std::string& /*rendererName*/, float /*fps*/, bool /*fogEnabled*/) const
     {
-        return "Phoenix Engine";
+        return "Phoenix Client";
     }
 
     // ---- World collision mesh ----

@@ -1,6 +1,8 @@
 # System Requirements
 
-Phoenix Engine targets modern mid-range PCs. These requirements describe hardware for a comfortable gameplay experience, not the absolute lowest hardware that might launch the executable.
+Phoenix Client targets modern mid-range PCs. These requirements describe
+hardware for a comfortable preview experience, not the absolute lowest
+hardware that might launch the executable.
 
 Very old PCs, legacy integrated GPUs, unsupported/outdated GPU drivers, and outdated office/laptop hardware are not supported.
 
@@ -64,4 +66,4 @@ Example GPU class: GeForce GTX 1660, GeForce RTX 2060/3050, Radeon RX 580, Radeo
 - 32-bit operating systems.
 - Systems with outdated or vendor-abandoned graphics drivers.
 
-Phoenix Engine may run on some hardware below these recommendations, but those configurations are outside the supported target.
+Phoenix Client may run on some hardware below these recommendations, but those configurations are outside the supported target.
