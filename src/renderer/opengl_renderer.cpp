@@ -71,13 +71,24 @@ namespace phoenix::renderer
         {
             const auto cwd = std::filesystem::current_path();
             const auto exeDir = executable_dir();
-            const std::filesystem::path candidates[] = {
-                cwd / relativePath,
-                cwd.parent_path() / relativePath,
-                cwd.parent_path().parent_path().parent_path() / relativePath,
-                exeDir / relativePath,
-                exeDir.parent_path() / relativePath,
+            std::vector<std::filesystem::path> candidates;
+            candidates.reserve(12);
+            const auto append_ancestors = [&](std::filesystem::path directory) {
+                for (int depth = 0; depth < 6 && !directory.empty(); ++depth)
+                {
+                    candidates.push_back(directory / relativePath);
+                    const auto parent = directory.parent_path();
+                    if (parent == directory)
+                        break;
+                    directory = parent;
+                }
             };
+            // File-manager launches inherit an arbitrary working directory.
+            // Search both it and the executable's ancestry: development
+            // binaries live under source/build/<configuration>, while a
+            // distributed binary has shaders/ directly beside it.
+            append_ancestors(exeDir);
+            append_ancestors(cwd);
             for (const auto& candidate : candidates)
             {
                 std::ifstream input(candidate, std::ios::binary | std::ios::ate);
