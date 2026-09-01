@@ -22,6 +22,20 @@ float ditherNoise(vec2 fragCoord)
     return fract(52.9829189 * fract(dot(fragCoord, vec2(0.06711056, 0.00583715))));
 }
 
+// Godot imports world albedo/lightmap textures as sRGB, performs lighting in
+// linear space, then converts the result back for the display. The raw OpenGL
+// DDS array is UNORM, so reproduce that material path explicitly here without
+// changing terrain, sky or water colour handling.
+vec3 assetSrgbToLinear(vec3 color)
+{
+    return pow(max(color, vec3(0.0)), vec3(2.2));
+}
+
+vec3 assetLinearToSrgb(vec3 color)
+{
+    return pow(clamp(color, vec3(0.0), vec3(1.0)), vec3(1.0 / 2.2));
+}
+
 vec3 applyUnderwaterView(vec3 color, vec3 worldPos)
 {
     if (camera.positionYaw.y >= 0.0)
@@ -58,7 +72,7 @@ void main()
         vec4 textureColor = texture(terrainTexture, vec3(vUv, float(sampleLayer)));
 
         bool isCharacter = (vColor.r < 0.01 && vColor.g < 0.01 && vColor.b < 0.01);
-        float cutoutThreshold = isCharacter ? 0.08 : 0.30;
+        float cutoutThreshold = isCharacter ? 0.08 : 0.50;
         if (alphaCutout && textureColor.a < cutoutThreshold)
             discard;
         if (!alphaCutout && !isCharacter && textureColor.a < 0.01)
@@ -69,10 +83,12 @@ void main()
             vec2 lmUV = vColor.rg;
             float lmLayer = vColor.b - 2.0;
             vec3 lm = texture(lightmapTexture, vec3(lmUV, lmLayer)).rgb;
-            color = textureColor.rgb * lm;
+            color = assetLinearToSrgb(assetSrgbToLinear(textureColor.rgb)
+                * assetSrgbToLinear(lm));
         }
         else
-            color = textureColor.rgb * environmentMaterialLighting(vNormal, vWorldPos);
+            color = assetLinearToSrgb(assetSrgbToLinear(textureColor.rgb)
+                * environmentMaterialLighting(vNormal, vWorldPos));
     }
     else
     {
