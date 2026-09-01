@@ -80,14 +80,6 @@ files upload directly. The runtime also dispatches PNG, BMP, and TGA files and
 can normalise BC1/BC2 or uncompressed inputs during loading, so a missing
 converted DDS does not silently discard an otherwise supported source texture.
 
-For production data, run new or imported DDS textures through the standalone
-`dds_normalize` tool once (idempotent). It is not part of this repository:
-
-```text
-dds_normalize <directory> 256 256   # resize + convert
-dds_normalize <directory> 0 0       # convert only, keep dimensions
-```
-
 Transparency is decided by each texture's actual alpha content (cutout
 auto-detection); character/weapon tables additionally declare their alpha mode
 via `AlphaBlendingMode`.

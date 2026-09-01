@@ -7,6 +7,19 @@ using OpenGL 4.5 on Windows and Linux.
 **Version 1.0 is the stable, final release.** The project is complete within its
 defined scope and is not planned to receive further feature updates.
 
+## Canonical Runtime Data
+
+The canonical runtime data set intentionally prepared and recommended for use
+with Phoenix Client is available as an external download:
+
+- [Download the Phoenix Client canonical data set](https://drive.google.com/file/d/1EH4SxGLyBoGTmdiXIbpz9jfYmRiF8oWR/view?usp=sharing)
+
+This package is hosted and distributed separately for convenience. It is not
+part of this repository, an embedded dependency, a submodule, or a release
+artifact, and it has no formal relationship with the source code. Phoenix
+Client remains independent from that download and can use any user-supplied
+data set that follows the documented directory layout and supported formats.
+
 ## Scope
 
 Phoenix Client is designed to be a technical base from which a team can study,
@@ -178,19 +191,6 @@ step; edit a shader and restart the client to see the change.
 
 ## Runtime Data
 
-### Recommended Canonical Data Set
-
-The canonical runtime data set intentionally prepared and recommended for use
-with Phoenix Client is available as an external download:
-
-- [Download the Phoenix Client canonical data set](https://drive.google.com/file/d/1EH4SxGLyBoGTmdiXIbpz9jfYmRiF8oWR/view?usp=sharing)
-
-This package is hosted and distributed separately for convenience. It is not
-part of this repository, an embedded dependency, a submodule, or a release
-artifact, and it has no formal relationship with the source code. Phoenix
-Client remains independent from that download and can use any user-supplied
-data set that follows the documented directory layout and supported formats.
-
 Phoenix Client resolves runtime data from the first valid location in this order:
 
 1. `PHOENIX_CLIENT_DATA` environment variable.
@@ -264,13 +264,6 @@ For fastest startup, textures should use the canonical format: **BC3 (DXT5)
 with a full mip chain** (256x256 for content textures, native dimensions for
 lightmaps). The runtime also accepts PNG, BMP, TGA, BC1/BC2, and uncompressed
 DDS inputs and converts them to the upload format when needed.
-`dds_normalize` converts a DDS tree to the canonical format in one idempotent
-pass; it is a standalone data tool (not part of this repository):
-
-```powershell
-dds_normalize.exe data\entity 256 256   # resize + convert
-dds_normalize.exe data\world 0 0        # convert only, keep dimensions
-```
 
 Audio references (originally `.wav`) are resolved to `.ogg` (Vorbis) files on
 disk. Texture references (`.tga`, `.bmp`) are resolved to `.dds` when available.

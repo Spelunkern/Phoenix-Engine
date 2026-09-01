@@ -386,7 +386,7 @@ int main(int, char**)
         float progressStart = 0.0f,
         float progressEnd = 0.0f,
         // Caps the generated mip chain. Regular game assets always ship
-        // pre-baked mips through the canonical dds_normalize pipeline, so
+        // with pre-baked mips through the production data pipeline, so
         // this only matters for content normalised on the fly here (the
         // debug "Effects" panel's textures): mip generation box-filters 2x2
         // neighborhoods repeatedly, which is fine for a normal single-image
@@ -426,9 +426,9 @@ int main(int, char**)
             static_cast<std::uint32_t>(std::max(1.0, std::log2(static_cast<double>(maxDim)) - 1.0)),
             std::max(1u, maxMipLevels) });
 
-        // The data tree is pre-normalised to canonical BC3 + full mip chain
-        // (via the standalone dds_normalize tool), so conversion is the
-        // exception: collect only the non-canonical entries (foreign data,
+        // The data tree uses canonical BC3 textures with full mip chains, so
+        // conversion is the exception. Collect only non-canonical entries
+        // (foreign data,
         // broken files, empty reserved slots that need a fallback fill) and
         // convert just those.
         std::vector<std::size_t> pending;

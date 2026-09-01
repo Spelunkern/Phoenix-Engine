@@ -197,15 +197,6 @@ no further feature updates are planned.
   now skips any `.smod`/`.dg` sub-mesh with an empty texture name entirely,
   matching how the original client treats them.
 
-### Removed
-- **`dds_normalize` moved out of this repo.** It's a one-shot data-prep tool,
-  not engine code, so mixing it into the engine's source tree/build didn't
-  make sense. Moved to its own standalone project (`tools/dds_normalize.cpp`,
-  `src/renderer/dds_loader.*`, `src/assets/data_index.*` copies + its own
-  `CMakeLists.txt`) outside this repo; removed the `dds_normalize` CMake
-  target and the `tools/` directory from here entirely. Usage docs in
-  README.md/`docs/ASSETS.md` now just reference the standalone tool by name.
-
 ### Changed
 - **Settings consolidated into imgui.ini.** `display.ini` (character shadow
   toggle) and `perf_hud.ini` (FPS cap) are gone; both are now a custom
@@ -322,10 +313,9 @@ no further feature updates are planned.
 - Universal content-based transparency: cutout is decided by each texture's
   actual alpha channel (BC3 block inspection); filename heuristics removed.
   Mounts and cloaks now classify their transparency correctly.
-- Canonical DDS pipeline: every texture pre-normalised to BC3 + full mip chain
-  by the new `dds_normalize` tool (`tools/`), activating the renderer's
-  GPU-native upload path — the load-time conversion stage dropped from ~1.1s
-  to ~8ms.
+- Canonical DDS pipeline: production textures were standardised as BC3 with a
+  full mip chain, activating the renderer's GPU-native upload path — the
+  load-time conversion stage dropped from ~1.1s to ~8ms.
 - Per-mount data-driven seat bone (`Bone` column), secondary-rider placeholder
   (`Bone2`), and alternate ride animation flag (`AlternateAnimation`) in the
   vehicle CSVs.
