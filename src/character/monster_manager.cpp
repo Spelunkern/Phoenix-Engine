@@ -1,4 +1,5 @@
 #include "character/monster_manager.h"
+#include "world/coordinate_conversion.h"
 
 #include "app/loading_scheduler.h"
 #include "assets/data_index.h"
@@ -1018,10 +1019,11 @@ namespace phoenix::character
         {
             // Raw map-space box -> engine/world space (matches WLD instances). The
             // box floor (min Y) is the spawn height; mobs keep it as they wander.
-            const float minX = std::min(area.minX, area.maxX) - halfMap;
-            const float maxX = std::max(area.minX, area.maxX) - halfMap;
-            const float minZ = std::min(area.minZ, area.maxZ) - halfMap;
-            const float maxZ = std::max(area.minZ, area.maxZ) - halfMap;
+            float minX = area.minX;
+            float maxX = area.maxX;
+            phoenix::world::mirror_source_box_x(minX, maxX, halfMap);
+            const float minZ = phoenix::world::source_to_world_z(std::min(area.minZ, area.maxZ), halfMap);
+            const float maxZ = phoenix::world::source_to_world_z(std::max(area.minZ, area.maxZ), halfMap);
             const float groundY = std::min(area.minY, area.maxY);
             for (const auto& mob : area.mobs)
             {

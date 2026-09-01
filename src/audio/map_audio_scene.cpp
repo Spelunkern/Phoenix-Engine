@@ -1,4 +1,5 @@
 #include "audio/map_audio_scene.h"
+#include "world/coordinate_conversion.h"
 
 #include <algorithm>
 #include <cmath>
@@ -40,8 +41,8 @@ namespace phoenix::audio
 
         const auto mapSize = static_cast<float>(std::max(1u, world.mapSize));
         const auto halfMap = world.isDungeon ? 0.0f : mapSize * 0.5f;
-        const auto worldX = [&](float rawX) { return rawX - halfMap; };
-        const auto worldZ = [&](float rawZ) { return rawZ - halfMap; };
+        const auto worldX = [&](float rawX) { return phoenix::world::source_to_world_x(rawX, halfMap); };
+        const auto worldZ = [&](float rawZ) { return phoenix::world::source_to_world_z(rawZ, halfMap); };
 
         scene.musicZones.reserve(world.musicZones.size());
         for (const auto& zone : world.musicZones)
@@ -56,8 +57,7 @@ namespace phoenix::audio
             MapAudioScene::MusicZone mapped{};
             mapped.path = std::move(path);
             mapped.box = zone.box;
-            mapped.box.min[0] = worldX(mapped.box.min[0]);
-            mapped.box.max[0] = worldX(mapped.box.max[0]);
+            phoenix::world::mirror_source_box_x(mapped.box.min[0], mapped.box.max[0], halfMap);
             mapped.box.min[2] = worldZ(mapped.box.min[2]);
             mapped.box.max[2] = worldZ(mapped.box.max[2]);
             mapped.fadeDistance = std::max(48.0f, zone.radius);

@@ -85,6 +85,12 @@ void main()
         localNrm = inNormal;
     }
 
+    // NPC and monster rigs arrive in Shaiya's left-handed local space.  Keep
+    // their complete skeleton in source space and apply the same root-X
+    // reflection used by the playable/bot CharacterSystem after skinning.
+    localPos.x = -localPos.x;
+    localNrm.x = -localNrm.x;
+
     vec3 right = inInstanceRight.xyz;
     vec3 up = inInstanceUp.xyz;
     vec3 forward = inInstanceForward.xyz;

@@ -34,9 +34,19 @@ uint terrainMapLoad(uint cx, uint cz, uint mapSide)
     return (word >> ((index & 3u) * 8u)) & 0xFFu;
 }
 
+// World X is the reflected Shaiya source axis.  Control maps, splat masks and
+// dungeon lightmaps remain stored in source order, so convert back only for
+// those lookups (detail-texture UVs intentionally remain in world space).
+vec2 sourceMapUv(vec3 worldPos, float mapSize)
+{
+    float halfMap = mapSize * 0.5;
+    return vec2((halfMap - worldPos.x) / mapSize,
+        (worldPos.z + halfMap) / mapSize);
+}
+
 uint terrainMapLookup(vec3 worldPos, float mapSize, uint mapSide)
 {
-    vec2 uv = (worldPos.xz + mapSize * 0.5) / mapSize;
+    vec2 uv = sourceMapUv(worldPos, mapSize);
     uint cx = clamp(uint(uv.x * float(mapSide - 1u)), 0u, mapSide - 2u);
     uint cz = clamp(uint(uv.y * float(mapSide - 1u)), 0u, mapSide - 2u);
     return terrainMapLoad(cx, cz, mapSide);
@@ -60,7 +70,7 @@ vec3 sampleTerrainLayerGrad(uint layer, vec3 worldPos, vec2 ddxWp, vec2 ddyWp, f
 
 vec3 blendedTerrainColor(vec3 worldPos, float mapSize, uint mapSide)
 {
-    vec2 uv = (worldPos.xz + mapSize * 0.5) / mapSize;
+    vec2 uv = sourceMapUv(worldPos, mapSize);
     vec2 cellF = uv * float(mapSide - 1u) - 0.5;
     ivec2 cell0 = ivec2(floor(cellF));
     vec2 fracC = cellF - vec2(cell0);
@@ -133,9 +143,8 @@ void main()
         {
             vec2 ddxWp = dFdx(vWorldPos.xz);
             vec2 ddyWp = dFdy(vWorldPos.xz);
-            float halfMap = mapSize * 0.5;
             uint sections = uint(camera.fogDistances.z);
-            vec2 worldUv = vec2((vWorldPos.x + halfMap) / mapSize, (vWorldPos.z + halfMap) / mapSize);
+            vec2 worldUv = sourceMapUv(vWorldPos, mapSize);
             uint secX = clamp(uint(worldUv.x * float(sections)), 0u, sections - 1u);
             uint secZ = clamp(uint(worldUv.y * float(sections)), 0u, sections - 1u);
             uint maskBase = sections * sections + (secZ * sections + secX) * 2u;
@@ -265,9 +274,8 @@ void main()
 
     if (applyLightmap && camera.fogDistances.w > 0.5)
     {
-        float halfMap = mapSize * 0.5;
         uint sections = uint(camera.fogDistances.z);
-        vec2 worldUv = vec2((vWorldPos.x + halfMap) / mapSize, (vWorldPos.z + halfMap) / mapSize);
+        vec2 worldUv = sourceMapUv(vWorldPos, mapSize);
         uint secX = clamp(uint(worldUv.x * float(sections)), 0u, sections - 1u);
         uint secZ = clamp(uint(worldUv.y * float(sections)), 0u, sections - 1u);
         uint layer = secZ * sections + secX;

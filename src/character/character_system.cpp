@@ -2863,14 +2863,18 @@ namespace phoenix::character
         worldVertices_.resize(localAnimated.size());
         for (std::size_t i = 0; i < localAnimated.size(); ++i)
         {
-            const float lx = localAnimated[i].position[0];
+            // Character files are authored in the same left-handed space as
+            // the world.  Mirror at the final rig root (matching Godot's
+            // scale(-1, 1, 1)) so bones, animation and attachments stay in one
+            // coherent source space and the weapon remains in the correct hand.
+            const float lx = -localAnimated[i].position[0];
             const float ly = localAnimated[i].position[1];
             const float lz = localAnimated[i].position[2];
             worldVertices_[i].position[0] = lx * cosYaw + lz * sinYaw + smoothX_;
             worldVertices_[i].position[1] = ly - localGroundY + smoothY_ + kGroundClearance;
             worldVertices_[i].position[2] = -lx * sinYaw + lz * cosYaw + smoothZ_;
 
-            const float nx = localAnimated[i].normal[0];
+            const float nx = -localAnimated[i].normal[0];
             const float nz = localAnimated[i].normal[2];
             worldVertices_[i].normal[0] = nx * cosYaw + nz * sinYaw;
             worldVertices_[i].normal[1] = localAnimated[i].normal[1];
@@ -2915,7 +2919,7 @@ namespace phoenix::character
         {
             const auto& boneMatrix = clientFinals[static_cast<std::size_t>(weaponBoneIndex)];
             const Vec3 boneT = mat4_get_translation(boneMatrix);
-            const float lx = boneT.x * kCharacterScale + riderSaddleOffset.x;
+            const float lx = -(boneT.x * kCharacterScale + riderSaddleOffset.x);
             const float ly = boneT.y * kCharacterScale + riderSaddleOffset.y;
             const float lz = boneT.z * kCharacterScale + riderSaddleOffset.z;
 
@@ -2928,6 +2932,7 @@ namespace phoenix::character
             {
                 Vec3 v = transform_normal(boneMatrix, axes[a]);
                 v.x *= kCharacterScale; v.y *= kCharacterScale; v.z *= kCharacterScale;
+                v.x = -v.x;
                 weaponAttachment_.basis[a * 3 + 0] = v.x * cosYaw + v.z * sinYaw;
                 weaponAttachment_.basis[a * 3 + 1] = v.y;
                 weaponAttachment_.basis[a * 3 + 2] = -v.x * sinYaw + v.z * cosYaw;
@@ -2957,7 +2962,7 @@ namespace phoenix::character
 
             const Vec3 originLocal{ dualOffsetPos[0], dualOffsetPos[1], dualOffsetPos[2] };
             const Vec3 boneT = transform_point(boneMatrix, originLocal);
-            const float lx = boneT.x * kCharacterScale + riderSaddleOffset.x;
+            const float lx = -(boneT.x * kCharacterScale + riderSaddleOffset.x);
             const float ly = boneT.y * kCharacterScale + riderSaddleOffset.y;
             const float lz = boneT.z * kCharacterScale + riderSaddleOffset.z;
 
@@ -2971,6 +2976,7 @@ namespace phoenix::character
                 const Vec3 localAxis{ rot[a], rot[3 + a], rot[6 + a] };
                 Vec3 v = transform_normal(boneMatrix, localAxis);
                 v.x *= kCharacterScale; v.y *= kCharacterScale; v.z *= kCharacterScale;
+                v.x = -v.x;
                 dualWeaponAttachment_.basis[a * 3 + 0] = v.x * cosYaw + v.z * sinYaw;
                 dualWeaponAttachment_.basis[a * 3 + 1] = v.y;
                 dualWeaponAttachment_.basis[a * 3 + 2] = -v.x * sinYaw + v.z * cosYaw;

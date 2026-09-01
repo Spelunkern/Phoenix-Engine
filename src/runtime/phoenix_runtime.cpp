@@ -9,6 +9,7 @@
 #include "world/mani_loader.h"
 #include "world/wld_loader.h"
 #include "world/water_constants.h"
+#include "world/coordinate_conversion.h"
 
 #include <algorithm>
 #include <array>
@@ -1070,6 +1071,38 @@ namespace phoenix::runtime
                         }
                     }
                 }
+
+                // The decoded SMOD/VANI/DG vertices are still in Shaiya's
+                // left-handed local space.  Reflect local X as well as the
+                // instance origin/basis: this is the same two-boundary
+                // conversion used by the Godot client and keeps every asset
+                // on its authored side of its pivot.  Reflection changes the
+                // triangle determinant, so preserve front-face winding.
+                for (auto& vertex : asset.previewVertices)
+                {
+                    vertex.position[0] = -vertex.position[0];
+                    vertex.normal[0] = -vertex.normal[0];
+                }
+                for (std::size_t i = 0; i + 2 < asset.previewIndices.size(); i += 3)
+                    std::swap(asset.previewIndices[i + 1], asset.previewIndices[i + 2]);
+
+                if (asset.animationFrames)
+                {
+                    for (auto& frame : *asset.animationFrames)
+                    {
+                        for (auto& vertex : frame)
+                        {
+                            vertex.position[0] = -vertex.position[0];
+                            vertex.normal[0] = -vertex.normal[0];
+                        }
+                    }
+                }
+
+                for (std::size_t i = 0; i + 2 < asset.collisionVertices.size(); i += 3)
+                    asset.collisionVertices[i] = -asset.collisionVertices[i];
+                for (std::size_t i = 0; i + 2 < asset.collisionIndices.size(); i += 3)
+                    std::swap(asset.collisionIndices[i + 1], asset.collisionIndices[i + 2]);
+
                 // Fallback: generate collision from visual mesh for assets without
                 // explicit collision data. Uses the preview mesh positions directly.
                 // Skip Grass section - these should never block movement.
@@ -1145,11 +1178,13 @@ namespace phoenix::runtime
             {
                 const auto& instance = section.instances[instIdx];
                 SceneObject object{};
-                object.x = instance.position[0] - halfMap;
+                object.x = phoenix::world::source_to_world_x(instance.position[0], halfMap);
                 object.y = instance.position[1];
-                object.z = instance.position[2] - halfMap;
+                object.z = phoenix::world::source_to_world_z(instance.position[2], halfMap);
                 std::copy(std::begin(instance.rotationForward), std::end(instance.rotationForward), std::begin(object.forward));
                 std::copy(std::begin(instance.rotationUp), std::end(instance.rotationUp), std::begin(object.up));
+                phoenix::world::mirror_source_direction_x(object.forward);
+                phoenix::world::mirror_source_direction_x(object.up);
                 object.sectionIndex = static_cast<std::int32_t>(sectionIdx);
                 object.instanceIndex = static_cast<std::int32_t>(instIdx);
 
@@ -1200,11 +1235,13 @@ namespace phoenix::runtime
                     const auto key = phoenix::assets::lower_ascii(buildingSection.assets[static_cast<std::size_t>(bId)]);
 
                     SceneObject object{};
-                    object.x = maniInst.position[0] - halfMap;
+                    object.x = phoenix::world::source_to_world_x(maniInst.position[0], halfMap);
                     object.y = maniInst.position[1];
-                    object.z = maniInst.position[2] - halfMap;
+                    object.z = phoenix::world::source_to_world_z(maniInst.position[2], halfMap);
                     std::copy(std::begin(maniInst.rotationForward), std::end(maniInst.rotationForward), std::begin(object.forward));
                     std::copy(std::begin(maniInst.rotationUp), std::end(maniInst.rotationUp), std::begin(object.up));
+                    phoenix::world::mirror_source_direction_x(object.forward);
+                    phoenix::world::mirror_source_direction_x(object.up);
                     object.sectionIndex = buildingSectionIdx;
                     object.instanceIndex = -1; // not a regular section instance
 
@@ -1220,6 +1257,7 @@ namespace phoenix::runtime
                     if (mani.parsed && mani.enableRotation && std::abs(mani.animationSpeed) >= 0.0001f)
                     {
                         std::copy(std::begin(mani.rotationAxis), std::end(mani.rotationAxis), std::begin(object.maniRotationAxis));
+                        phoenix::world::mirror_source_direction_x(object.maniRotationAxis);
                         object.maniRotationSpeed = mani.animationSpeed * kManiTicksPerSecond;
                     }
 
@@ -1336,9 +1374,9 @@ namespace phoenix::runtime
                 continue;
 
             EffectPlacement placement{};
-            placement.position[0] = inst.position[0] - halfMap;
+            placement.position[0] = phoenix::world::source_to_world_x(inst.position[0], halfMap);
             placement.position[1] = inst.position[1];
-            placement.position[2] = inst.position[2] - halfMap;
+            placement.position[2] = phoenix::world::source_to_world_z(inst.position[2], halfMap);
 
             float forward[3]{ inst.rotationForward[0], inst.rotationForward[1], inst.rotationForward[2] };
             float up[3]{ inst.rotationUp[0], inst.rotationUp[1], inst.rotationUp[2] };
@@ -1346,11 +1384,18 @@ namespace phoenix::runtime
             const float fallbackUp[3]{ 0.0f, 1.0f, 0.0f };
             normalize(forward, fallbackForward);
             normalize(up, fallbackUp);
-            const float right[3]{
+            float right[3]{
                 up[1] * forward[2] - up[2] * forward[1],
                 up[2] * forward[0] - up[0] * forward[2],
                 up[0] * forward[1] - up[1] * forward[0],
             };
+            // Effect geometry remains in its authored local space, unlike
+            // SMOD/DG geometry.  Reflect every source basis column directly;
+            // recomputing right after reflection would introduce the extra
+            // determinant sign of a cross product and flip the effect again.
+            phoenix::world::mirror_source_direction_x(forward);
+            phoenix::world::mirror_source_direction_x(up);
+            phoenix::world::mirror_source_direction_x(right);
             std::copy(std::begin(forward), std::end(forward), std::begin(placement.forward));
             std::copy(std::begin(up), std::end(up), std::begin(placement.up));
             std::copy(std::begin(right), std::end(right), std::begin(placement.right));
@@ -1366,9 +1411,8 @@ namespace phoenix::runtime
             return 0.0f;
 
         const auto mapSize = static_cast<float>(std::max(1u, state_.world.mapSize));
-        const auto halfMap = mapSize * 0.5f;
-        const auto u = std::clamp((worldX + halfMap) / mapSize, 0.0f, 1.0f);
-        const auto v = std::clamp((worldZ + halfMap) / mapSize, 0.0f, 1.0f);
+        const auto u = phoenix::world::world_to_source_u(worldX, mapSize);
+        const auto v = phoenix::world::world_to_source_v(worldZ, mapSize);
         const auto side = state_.world.heightMapSide;
         const auto fx = u * static_cast<float>(side - 1);
         const auto fz = v * static_cast<float>(side - 1);
@@ -1393,9 +1437,8 @@ namespace phoenix::runtime
             return {};
 
         const auto mapSize = static_cast<float>(std::max(1u, w.mapSize));
-        const auto halfMap = mapSize * 0.5f;
-        const auto u = std::clamp((worldX + halfMap) / mapSize, 0.0f, 1.0f);
-        const auto v = std::clamp((worldZ + halfMap) / mapSize, 0.0f, 1.0f);
+        const auto u = phoenix::world::world_to_source_u(worldX, mapSize);
+        const auto v = phoenix::world::world_to_source_v(worldZ, mapSize);
         const auto side = w.heightMapSide;
         const auto ix = std::min(static_cast<std::uint32_t>(u * static_cast<float>(side - 1)), side - 1);
         const auto iz = std::min(static_cast<std::uint32_t>(v * static_cast<float>(side - 1)), side - 1);

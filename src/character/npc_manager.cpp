@@ -1,4 +1,5 @@
 #include "character/npc_manager.h"
+#include "world/coordinate_conversion.h"
 
 #include "app/loading_scheduler.h"
 #include "assets/data_index.h"
@@ -603,13 +604,13 @@ namespace phoenix::character
                 Waypoint out{};
                 // Raw map-space X/Z -> engine/world space (matches WLD instances).
                 // Y is kept exactly as authored: svmap NPCs are never terrain-clamped.
-                out.x = wp.x - halfMap;
+                out.x = phoenix::world::source_to_world_x(wp.x, halfMap);
                 out.y = wp.y;
-                out.z = wp.z - halfMap;
+                out.z = phoenix::world::source_to_world_z(wp.z, halfMap);
                 // svmap yaw points 180° opposite to the engine's NPC facing (the
                 // instance basis uses the reverse forward convention), so NPCs
                 // faced away from their authored direction — flip by pi.
-                out.yaw = wp.yaw + 3.14159265358979323846f;
+                out.yaw = -wp.yaw + 3.14159265358979323846f;
                 mp.waypoints.push_back(out);
             }
             placements_.push_back(std::move(mp));
