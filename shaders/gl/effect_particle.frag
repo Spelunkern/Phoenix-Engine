@@ -3,7 +3,6 @@
 in vec2 vUv;
 flat in uint vTextureLayer;
 in vec4 vColor;
-in float vFogFactor;
 
 out vec4 outColor;
 
@@ -147,9 +146,9 @@ void main()
     }
 
     vec3 rgb = texRgb * vColor.rgb;
-    // Fade into fog instead of blending toward the sky color: additive-style
-    // particles have no sensible "mix with sky" behavior once blended.
-    float alpha = texAlpha * vColor.a * (1.0 - vFogFactor);
+    // Godot's effect materials explicitly use fog_disabled. World effects
+    // therefore retain their authored color/alpha at every visible distance.
+    float alpha = texAlpha * vColor.a;
     if (alpha <= 0.003)
         discard;
     outColor = vec4(rgb, alpha);

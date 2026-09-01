@@ -969,31 +969,72 @@ namespace phoenix::runtime
             }
             else
             {
-                const float corners[4][2]{ { -0.5f, -0.5f }, { 0.5f, -0.5f }, { -0.5f, 0.5f }, { 0.5f, 0.5f } };
-                // mirrorTexture components are authored expecting a mirrored,
-                // 3x-tiled sample (UV outside [0,1], relying on
-                // GL_MIRRORED_REPEAT) instead of one stretched copy of the
-                // texture — matches the reference renderer's
-                // createBillboardGeometry(mirrorTexture) UV range.
-                const float mirrorUvs[4][2]{ { -1.0f, 2.0f }, { 1.0f, 2.0f }, { -1.0f, 0.0f }, { 1.0f, 0.0f } };
-                const float plainUvs[4][2]{ { 0.0f, 1.0f }, { 1.0f, 1.0f }, { 0.0f, 0.0f }, { 1.0f, 0.0f } };
-                const auto& uvs = bucket.mirrorTexture ? mirrorUvs : plainUvs;
-                for (int i = 0; i < 4; ++i)
+                if (!bucket.mirrorTexture)
                 {
-                    TerrainVertex vertex{};
-                    vertex.position[0] = corners[i][0];
-                    vertex.position[1] = corners[i][1];
-                    vertex.position[2] = 0.0f;
-                    vertex.color[0] = 1.0f; vertex.color[1] = 1.0f; vertex.color[2] = 1.0f;
-                    vertex.normal[0] = 0.0f; vertex.normal[1] = 0.0f; vertex.normal[2] = 1.0f;
-                    vertex.uv[0] = uvs[i][0]; vertex.uv[1] = uvs[i][1];
-                    vertex.textureLayer = bucket.layer;
-                    vertices_.push_back(vertex);
+                    const float corners[4][2]{
+                        { -0.5f, -0.5f }, { 0.5f, -0.5f }, { -0.5f, 0.5f }, { 0.5f, 0.5f }
+                    };
+                    const float uvs[4][2]{
+                        { 0.0f, 1.0f }, { 1.0f, 1.0f }, { 0.0f, 0.0f }, { 1.0f, 0.0f }
+                    };
+                    for (int i = 0; i < 4; ++i)
+                    {
+                        TerrainVertex vertex{};
+                        vertex.position[0] = corners[i][0];
+                        vertex.position[1] = corners[i][1];
+                        vertex.color[0] = 1.0f; vertex.color[1] = 1.0f; vertex.color[2] = 1.0f;
+                        vertex.normal[2] = 1.0f;
+                        vertex.uv[0] = uvs[i][0]; vertex.uv[1] = uvs[i][1];
+                        vertex.textureLayer = bucket.layer;
+                        vertices_.push_back(vertex);
+                    }
+                    const std::uint32_t quadIndices[6]{ 0, 1, 2, 2, 1, 3 };
+                    for (const auto quadIndex : quadIndices)
+                        indices_.push_back(baseVertex + quadIndex);
+                    geometryIndexCount = 6;
                 }
-                const std::uint32_t quadIndices[6]{ 0, 1, 2, 2, 1, 3 };
-                for (const auto quadIndex : quadIndices)
-                    indices_.push_back(baseVertex + quadIndex);
-                geometryIndexCount = 6;
+                else
+                {
+                    // Godot reproduces GL_MIRRORED_REPEAT geometrically because
+                    // its material cannot expose that sampler state. Use the
+                    // same four half-quads here so map and Godot renderers agree
+                    // even though the shared world texture sampler is GL_REPEAT.
+                    for (int tileY = 0; tileY < 2; ++tileY)
+                    {
+                        for (int tileX = 0; tileX < 2; ++tileX)
+                        {
+                            const float x0 = -0.5f + static_cast<float>(tileX) * 0.5f;
+                            const float y0 = -0.5f + static_cast<float>(tileY) * 0.5f;
+                            const float u0 = tileX == 0 ? 1.0f : 0.0f;
+                            const float u1 = tileX == 0 ? 0.0f : 1.0f;
+                            const float v0 = tileY == 0 ? 0.0f : 1.0f;
+                            const float v1 = tileY == 0 ? 1.0f : 0.0f;
+                            const float corners[4][2]{
+                                { x0, y0 }, { x0 + 0.5f, y0 },
+                                { x0, y0 + 0.5f }, { x0 + 0.5f, y0 + 0.5f }
+                            };
+                            const float uvs[4][2]{
+                                { u0, v0 }, { u1, v0 }, { u0, v1 }, { u1, v1 }
+                            };
+                            const auto tileBase = static_cast<std::uint32_t>(vertices_.size());
+                            for (int i = 0; i < 4; ++i)
+                            {
+                                TerrainVertex vertex{};
+                                vertex.position[0] = corners[i][0];
+                                vertex.position[1] = corners[i][1];
+                                vertex.color[0] = 1.0f; vertex.color[1] = 1.0f; vertex.color[2] = 1.0f;
+                                vertex.normal[2] = 1.0f;
+                                vertex.uv[0] = uvs[i][0]; vertex.uv[1] = uvs[i][1];
+                                vertex.textureLayer = bucket.layer;
+                                vertices_.push_back(vertex);
+                            }
+                            const std::uint32_t quadIndices[6]{ 0, 1, 2, 2, 1, 3 };
+                            for (const auto quadIndex : quadIndices)
+                                indices_.push_back(tileBase + quadIndex);
+                        }
+                    }
+                    geometryIndexCount = 24;
+                }
             }
 
             if (geometryIndexCount == 0) continue;
