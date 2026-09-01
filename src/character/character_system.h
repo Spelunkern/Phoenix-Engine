@@ -76,21 +76,20 @@ namespace phoenix::character
     {
         std::string raceFolder{ "Human" };
         std::string prefix{ "humf" };
-        int upperIndex{ 19 };
-        int lowerIndex{ 19 };
-        int handIndex{ 19 };
-        int footIndex{ 19 };
-        int helmetIndex{ 9 };
-        int faceIndex{ 1 };
-        int hairIndex{ 1 };
-        bool helmetVisible{ true };
-        // Weapon / shield. Default loadout: one-hand sword + light shield.
-        WeaponType weaponType{ WeaponType::Sword1H };
-        int weaponIndex{ 1 };    // RecordIndex in the weapon type CSV (-1 = none)
-        WeaponType shieldType{ WeaponType::ShieldLight };
-        int shieldIndex{ 1 };    // RecordIndex in the shield type CSV (-1 = none)
-        // Cloak. Default to cloak design 1.
-        int cloakIndex{ 1 };     // Index into CTL texture list (-1 = none)
+        // Canonical Godot starting appearance (CharacterRig.DEFAULT_LOADOUT).
+        int upperIndex{ 18 };
+        int lowerIndex{ 18 };
+        int handIndex{ 18 };
+        int footIndex{ 18 };
+        int helmetIndex{ 10 };
+        int faceIndex{ 0 };
+        int hairIndex{ 0 };
+        bool helmetVisible{ false };
+        WeaponType weaponType{ WeaponType::None };
+        int weaponIndex{ -1 };   // RecordIndex in the weapon type CSV (-1 = none)
+        WeaponType shieldType{ WeaponType::None };
+        int shieldIndex{ -1 };   // RecordIndex in the shield type CSV (-1 = none)
+        int cloakIndex{ 22 };    // Index into CTL texture list (-1 = none)
         // Mount (vehicle). Vehicles are monsters game-mechanically; the rider
         // plays its mounted animations seated on a bone of the mount.
         bool mounted{ false };
