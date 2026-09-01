@@ -14,6 +14,7 @@ layout(location = 9) in vec4 inInstanceColor;
 out vec2 vUv;
 flat out uint vTextureLayer;
 out vec4 vColor;
+out float vFogFactor;
 
 CAMERA_BLOCK
 
@@ -44,6 +45,11 @@ void main()
     float cameraZ = sp * delta.y + cp * yawZ;
     float nearPlane = 0.05;
 
+    float fogStart = camera.fogDistances.x;
+    float fogEnd = max(fogStart + 1.0, camera.fogDistances.y);
+    float fogLinear = clamp((cameraZ - fogStart) / (fogEnd - fogStart), 0.0, 1.0);
+    float fogFactor = 1.0 - exp(-fogLinear * fogLinear * 5.0);
+
     float ndcZ = cameraZ * farPlane / (farPlane - nearPlane) - nearPlane * farPlane / (farPlane - nearPlane);
     float glZ = 2.0 * ndcZ - cameraZ;
 
@@ -56,4 +62,5 @@ void main()
     vUv = inUv;
     vTextureLayer = inTextureLayer;
     vColor = inInstanceColor;
+    vFogFactor = fogFactor;
 }

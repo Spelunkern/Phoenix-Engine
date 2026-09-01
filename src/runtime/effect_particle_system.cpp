@@ -212,14 +212,17 @@ namespace phoenix::runtime
         // (unanimated) vertices" — either no frames, or a single static frame.
         struct MeshSample { std::size_t current{}; std::size_t next{}; float amount{}; bool valid{}; };
 
-        MeshSample sample_mesh_frame_index(const EftMesh& mesh, float tick)
+        MeshSample sample_mesh_frame_index(const EftMesh& mesh, float tick, bool ambientMap = false)
         {
             if (mesh.frames.empty())
                 return { 0, 0, 0.0f, false };
             if (mesh.frames.size() == 1 || mesh.maxKeyframe == 0)
                 return { 0, 0, 0.0f, true };
 
-            const float period = static_cast<float>(mesh.maxKeyframe + 1);
+            // Godot deliberately keeps the older map presampling convention
+            // (maxKeyframe samples), while gameplay uses the native inclusive
+            // convention (maxKeyframe + 1). Keep both paths explicit.
+            const float period = static_cast<float>(mesh.maxKeyframe + (ambientMap ? 0 : 1));
             const float localTick = positive_mod(std::max(0.0f, tick), period);
             const float firstKey = static_cast<float>(mesh.frames.front().key);
             if (localTick < firstKey)
@@ -412,6 +415,7 @@ namespace phoenix::runtime
                 std::copy(std::begin(placement.up), std::end(placement.up), std::begin(emitter.up));
                 std::copy(std::begin(placement.forward), std::end(placement.forward), std::begin(emitter.forward));
                 emitter.seed = static_cast<float>(i) * 977.0f + static_cast<float>(r) * 131.0f + 1.0f;
+                emitter.ambientMap = true;
                 // Negative until the record's start delay has elapsed (see step_emitter).
                 emitter.elapsed = -std::max(0.0f, record.time);
                 emitter.remainingDuration = effect.emitterDuration;
@@ -591,7 +595,10 @@ namespace phoenix::runtime
             const auto& pathMesh = (*meshes_)[static_cast<std::size_t>(effect.meshIndex)];
             if (pathMesh.parsed && !pathMesh.vertices.empty())
             {
-                const auto sample = sample_mesh_frame_index(pathMesh, spawnSeconds * 30.0f);
+                const float pathTick = emitter.ambientMap
+                    ? std::floor(std::max(0.0f, spawnSeconds) * 30.0f)
+                    : spawnSeconds * 30.0f;
+                const auto sample = sample_mesh_frame_index(pathMesh, pathTick, emitter.ambientMap);
                 float pathPos[3], pathUv[2];
                 sample_mesh_vertex(pathMesh, sample, pathMesh.vertices.size() - 1, pathPos, pathUv);
                 for (int i = 0; i < 3; ++i) p.position[i] += pathPos[i];
@@ -742,14 +749,18 @@ namespace phoenix::runtime
             std::int32_t sourceBlend{};
             std::int32_t destinationBlend{};
             bool mirrorTexture{};
+            std::uint64_t emitterOrdinal{};
+            float sortDepth{};
             std::vector<EffectParticleInstance> items;
             bool prebaked{};
             std::vector<TerrainVertex> bakedVertices;
             std::vector<std::uint32_t> bakedIndices;
         };
         std::vector<Bucket> buckets;
+        std::uint64_t emitterOrdinal = 0;
 
         const auto process_emitter = [&](Emitter& emitter) {
+            const auto currentEmitterOrdinal = emitterOrdinal++;
             if (emitter.effectIndex < 0
                 || static_cast<std::size_t>(emitter.effectIndex) >= library_->effects.size())
                 return;
@@ -809,10 +820,12 @@ namespace phoenix::runtime
             {
                 if (!particle.active) continue;
 
-                // Animated textures are particle-local in Godot: every birth
-                // starts at frame zero instead of inheriting the emitter's
-                // global phase.
-                const auto textureLayer = select_texture_layer_for(effect, particle.age);
+                // Map effects in Godot swap the material texture once per
+                // emitter, so every live particle shares the same frame. The
+                // debug/gameplay path intentionally remains particle-local.
+                const float textureSeconds = emitter.ambientMap
+                    ? std::max(0.0f, emitter.elapsed) : particle.age;
+                const auto textureLayer = select_texture_layer_for(effect, textureSeconds);
                 if (textureLayer == 0xFFFFFFFFu)
                     continue;
 
@@ -843,6 +856,35 @@ namespace phoenix::runtime
                 else
                     for (int i = 0; i < 3; ++i) renderPos[i] = emitter.origin[i] + particle.position[i] + particle.velocity[i];
 
+                const float particleSortDepth =
+                    (renderPos[0] - cameraPosition[0]) * cameraForward[0]
+                    + (renderPos[1] - cameraPosition[1]) * cameraForward[1]
+                    + (renderPos[2] - cameraPosition[2]) * cameraForward[2];
+
+                std::int32_t sourceBlend = effect.sourceBlend;
+                std::int32_t destinationBlend = effect.destinationBlend;
+                if (emitter.ambientMap)
+                {
+                    // StandardMaterial3D exposes blend modes rather than raw
+                    // D3D factors. These are the equivalent GL pairs used by
+                    // Godot's map-effect material selection.
+                    if (effect.destinationBlend == 1)
+                    {
+                        sourceBlend = 4;       // SRC_ALPHA
+                        destinationBlend = 1;  // ONE
+                    }
+                    else if (effect.sourceBlend == 8 || effect.destinationBlend == 2)
+                    {
+                        sourceBlend = 8;       // DST_COLOR
+                        destinationBlend = 0;  // ZERO
+                    }
+                    else
+                    {
+                        sourceBlend = 4;       // SRC_ALPHA
+                        destinationBlend = 5;  // INV_SRC_ALPHA
+                    }
+                }
+
                 EffectParticleInstance instance{};
                 instance.color[0] = clampf(color.r, 0.0f, 4.0f);
                 instance.color[1] = clampf(color.g, 0.0f, 4.0f);
@@ -851,11 +893,15 @@ namespace phoenix::runtime
 
                 if (animated)
                 {
-                    // Sample this particle's own animation tick (matching the
-                    // reference's textureSeconds*30 mesh-tick convention) and
-                    // bake the transformed geometry straight to world space.
-                    const auto sample = sample_mesh_frame_index(*mesh, particle.age * 30.0f);
-                    Bucket baked{ nullptr, textureLayer, effect.sourceBlend, effect.destinationBlend, effect.mirrorTexture, {}, true, {}, {} };
+                    // Ambient animated meshes share the emitter clock and use
+                    // the integer presampled tick used by Godot. Gameplay/debug
+                    // effects keep smooth particle-local native sampling.
+                    const float meshTick = emitter.ambientMap
+                        ? std::floor(std::max(0.0f, emitter.elapsed) * 30.0f)
+                        : particle.age * 30.0f;
+                    const auto sample = sample_mesh_frame_index(*mesh, meshTick, emitter.ambientMap);
+                    Bucket baked{ nullptr, textureLayer, sourceBlend, destinationBlend,
+                        effect.mirrorTexture, currentEmitterOrdinal, particleSortDepth, {}, true, {}, {} };
                     baked.bakedVertices.reserve(mesh->vertices.size());
                     for (std::size_t v = 0; v < mesh->vertices.size(); ++v)
                     {
@@ -886,13 +932,18 @@ namespace phoenix::runtime
 
                 auto found = std::find_if(buckets.begin(), buckets.end(), [&](const Bucket& b) {
                     return !b.prebaked && b.mesh == mesh && b.layer == textureLayer
-                        && b.sourceBlend == effect.sourceBlend && b.destinationBlend == effect.destinationBlend
-                        && b.mirrorTexture == effect.mirrorTexture;
+                        && b.sourceBlend == sourceBlend && b.destinationBlend == destinationBlend
+                        && b.mirrorTexture == effect.mirrorTexture
+                        && b.emitterOrdinal == currentEmitterOrdinal;
                 });
                 if (found == buckets.end())
                 {
-                    buckets.push_back(Bucket{ mesh, textureLayer, effect.sourceBlend, effect.destinationBlend,
-                        effect.mirrorTexture, {}, false, {}, {} });
+                    const float emitterSortDepth =
+                        (emitter.origin[0] - cameraPosition[0]) * cameraForward[0]
+                        + (emitter.origin[1] - cameraPosition[1]) * cameraForward[1]
+                        + (emitter.origin[2] - cameraPosition[2]) * cameraForward[2];
+                    buckets.push_back(Bucket{ mesh, textureLayer, sourceBlend, destinationBlend,
+                        effect.mirrorTexture, currentEmitterOrdinal, emitterSortDepth, {}, false, {}, {} });
                     found = buckets.end() - 1;
                 }
 
@@ -927,6 +978,26 @@ namespace phoenix::runtime
         library_ = mapLibrary;
         textureLayers_ = mapTextureLayers;
         meshes_ = mapMeshes;
+
+        // Godot's DRAW_ORDER_VIEW_DEPTH sorts particles inside each emitter,
+        // and its transparent pass orders emitter draw items back-to-front.
+        // Keep emitter boundaries above, then reproduce both levels here.
+        for (auto& bucket : buckets)
+        {
+            if (bucket.prebaked)
+                continue;
+            std::stable_sort(bucket.items.begin(), bucket.items.end(), [&](const auto& left, const auto& right) {
+                const auto depth = [&](const EffectParticleInstance& item) {
+                    return (item.position[0] - cameraPosition[0]) * cameraForward[0]
+                        + (item.position[1] - cameraPosition[1]) * cameraForward[1]
+                        + (item.position[2] - cameraPosition[2]) * cameraForward[2];
+                };
+                return depth(left) > depth(right);
+            });
+        }
+        std::stable_sort(buckets.begin(), buckets.end(), [](const Bucket& left, const Bucket& right) {
+            return left.sortDepth > right.sortDepth;
+        });
 
         for (const auto& bucket : buckets)
         {

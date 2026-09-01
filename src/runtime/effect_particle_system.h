@@ -20,12 +20,10 @@ namespace phoenix::runtime
     //
     // Simulation semantics (velocity modes, gravity/attract, color/opacity/
     // scale keyframes, texture-frame animation, blend factors) follow the
-    // effect-renderer reference implementation (github.com/cupsocino/
-    // effect-renderer), which was validated visually against the retail
-    // client. Components with a valid, non-motion-path mesh (EftEffect::
-    // meshIndex) render their actual .3DE geometry (first animation frame
-    // only — vertex-animated meshes are not re-sampled per frame); everything
-    // else renders as a camera/placement-oriented billboard quad.
+    // Godot game's established map-effect path. Components with a valid,
+    // non-motion-path mesh (EftEffect::meshIndex) render and animate their
+    // actual .3DE geometry; everything else renders as a camera/placement-
+    // oriented billboard quad.
     class EffectParticleSystem
     {
     public:
@@ -127,6 +125,10 @@ namespace phoenix::runtime
             float emitAccumulator{};
             float seed{};
             bool oneShotEmitted{};
+            // World-map emitters use the same shared visual clock, mesh-frame
+            // convention and blend-mode approximation as Godot. Debug/gameplay
+            // spawns retain the native inclusive-frame and exact-blend path.
+            bool ambientMap{};
             // Debug-panel override: forces this emitter's effect to behave as
             // non-looping regardless of its authored `loop` flag.
             bool forceNoLoop{};

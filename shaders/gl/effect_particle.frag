@@ -3,6 +3,7 @@
 in vec2 vUv;
 flat in uint vTextureLayer;
 in vec4 vColor;
+in float vFogFactor;
 
 out vec4 outColor;
 
@@ -146,9 +147,10 @@ void main()
     }
 
     vec3 rgb = texRgb * vColor.rgb;
-    // Godot's effect materials explicitly use fog_disabled. World effects
-    // therefore retain their authored color/alpha at every visible distance.
-    float alpha = texAlpha * vColor.a;
+    // Ambient Godot materials participate in world fog. Fading transparent
+    // particles is the stable equivalent for additive and alpha blend modes;
+    // mixing fog RGB into an additive sprite would brighten the scene.
+    float alpha = texAlpha * vColor.a * (1.0 - vFogFactor);
     if (alpha <= 0.003)
         discard;
     outColor = vec4(rgb, alpha);
