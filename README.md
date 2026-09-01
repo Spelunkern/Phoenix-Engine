@@ -178,6 +178,19 @@ step; edit a shader and restart the client to see the change.
 
 ## Runtime Data
 
+### Recommended Canonical Data Set
+
+The canonical runtime data set intentionally prepared and recommended for use
+with Phoenix Client is available as an external download:
+
+- [Download the Phoenix Client canonical data set](https://drive.google.com/file/d/1EH4SxGLyBoGTmdiXIbpz9jfYmRiF8oWR/view?usp=sharing)
+
+This package is hosted and distributed separately for convenience. It is not
+part of this repository, an embedded dependency, a submodule, or a release
+artifact, and it has no formal relationship with the source code. Phoenix
+Client remains independent from that download and can use any user-supplied
+data set that follows the documented directory layout and supported formats.
+
 Phoenix Client resolves runtime data from the first valid location in this order:
 
 1. `PHOENIX_CLIENT_DATA` environment variable.
