@@ -81,10 +81,11 @@ if(WIN32)
         "${CMAKE_SOURCE_DIR}/external/SDL2/lib/x64"
     )
     target_link_libraries(PhoenixClient PRIVATE
-        SDL2::SDL2
         SDL2::SDL2main
+        SDL2::SDL2
         opengl32
         dbghelp
+        ntdll
         user32
         gdi32
         ws2_32
