@@ -635,9 +635,9 @@ namespace phoenix::character
         void spawn(int count, float centerX, float centerZ,
             phoenix::character::HeightSampleFn heightFn, void* heightUserData)
         {
-            if (!presetsBuilt || visualPresets.empty())
+            if (count <= 0 || !presetsBuilt || visualPresets.empty())
                 return;
-            bots.reserve(bots.size() + count);
+            bots.reserve(bots.size() + static_cast<std::size_t>(count));
             for (int i = 0; i < count; ++i)
             {
                 BotCharacter bot{};
