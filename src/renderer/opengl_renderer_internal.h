@@ -253,6 +253,7 @@ namespace phoenix::renderer
 
         // --- textures ---
         GLuint terrainSampler{};
+        GLuint assetSampler{};
         GLuint environmentNoiseTexture{};
         GlTexture terrainTextureArray;
         std::uint32_t terrainTextureLayerCount{};

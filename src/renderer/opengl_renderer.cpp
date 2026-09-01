@@ -627,6 +627,18 @@ namespace phoenix::renderer
         glGetFloatv_(GL_MAX_TEXTURE_MAX_ANISOTROPY, &maxAniso);
         glSamplerParameterf_(impl_->terrainSampler, GL_TEXTURE_MAX_ANISOTROPY, std::min(16.0f, maxAniso > 0.0f ? maxAniso : 1.0f));
 
+        // Godot's standard world-asset materials use ordinary trilinear
+        // mipmapping.  Keep terrain anisotropy independent: forcing its 16x
+        // sampler onto nearby props preserves excessive high-frequency detail
+        // at grazing angles and makes their textures shimmer while moving.
+        glCreateSamplers_(1, &impl_->assetSampler);
+        glSamplerParameteri_(impl_->assetSampler, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR);
+        glSamplerParameteri_(impl_->assetSampler, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+        glSamplerParameteri_(impl_->assetSampler, GL_TEXTURE_WRAP_S, GL_REPEAT);
+        glSamplerParameteri_(impl_->assetSampler, GL_TEXTURE_WRAP_T, GL_REPEAT);
+        glSamplerParameteri_(impl_->assetSampler, GL_TEXTURE_WRAP_R, GL_CLAMP_TO_EDGE);
+        glSamplerParameterf_(impl_->assetSampler, GL_TEXTURE_MAX_ANISOTROPY, 1.0f);
+
         // One tiny procedural texture supplies both the seamless cloud noise
         // (alpha) and the generated water normal map (rgb). It mirrors the
         // Godot implementation without adding an external runtime asset.
@@ -2286,11 +2298,15 @@ namespace phoenix::renderer
                 }
             };
 
+            // World props intentionally use their own Godot-equivalent
+            // trilinear sampler. Terrain keeps its sharper anisotropic sampler.
+            glBindSampler_(0, impl_->assetSampler);
             if (impl_->objectsReady && impl_->staticObjectProgram)
                 drawStaticBatches(impl_->objectVao, impl_->objectBatches, constants,
                     &impl_->objectIndirectBuffer, impl_->objectIndirectCount);
             if (impl_->animatedObjectsReady && impl_->staticObjectProgram)
                 drawStaticBatches(impl_->animatedObjectVao, impl_->animatedObjectBatches, constants);
+            glBindSampler_(0, impl_->terrainSampler);
 
             if (impl_->characterVisible && impl_->characterReady)
             {
@@ -2677,6 +2693,7 @@ namespace phoenix::renderer
         if (impl_->shadowDepthTexture) glDeleteTextures_(1, &impl_->shadowDepthTexture);
         if (impl_->worldLabelTexture) glDeleteTextures_(1, &impl_->worldLabelTexture);
         if (impl_->terrainSampler) glDeleteSamplers_(1, &impl_->terrainSampler);
+        if (impl_->assetSampler) glDeleteSamplers_(1, &impl_->assetSampler);
         if (impl_->debugEffectSampler) glDeleteSamplers_(1, &impl_->debugEffectSampler);
         if (impl_->lightmapSampler) glDeleteSamplers_(1, &impl_->lightmapSampler);
         if (impl_->shadowSampler) glDeleteSamplers_(1, &impl_->shadowSampler);
