@@ -2323,8 +2323,11 @@ namespace phoenix::character
                 dodgeAnimation_ = data_.dodgeLeftAnimation;
                 dodgePlayTimer_ = kDodgeDuration;
                 dodgeLeftTimer_ = 0.0f;
-                dodgeDirX_ = -std::cos(characterYaw_);
-                dodgeDirZ_ = std::sin(characterYaw_);
+                // Phoenix mirrors Shaiya's source X axis. Match the Godot
+                // controller's world-space dodge vector while keeping the
+                // authored left animation paired with the A key.
+                dodgeDirX_ = std::cos(characterYaw_);
+                dodgeDirZ_ = -std::sin(characterYaw_);
             }
             // Right
             if (!input.right && lastRight_)
@@ -2334,8 +2337,8 @@ namespace phoenix::character
                 dodgeAnimation_ = data_.dodgeRightAnimation;
                 dodgePlayTimer_ = kDodgeDuration;
                 dodgeRightTimer_ = 0.0f;
-                dodgeDirX_ = std::cos(characterYaw_);
-                dodgeDirZ_ = -std::sin(characterYaw_);
+                dodgeDirX_ = -std::cos(characterYaw_);
+                dodgeDirZ_ = std::sin(characterYaw_);
             }
             lastBackward_ = input.backward;
             lastLeft_ = input.left;
