@@ -46,7 +46,6 @@ void main()
     vec3 skyColor = clamp(camera.fogColorHasSky.rgb, 0.0, 1.0);
 
     vec3 color;
-    bool assetGrade = true;
     if (vTextureLayer != 0xFFFFFFFFu)
     {
         uint sampleLayer = vTextureLayer;
@@ -59,81 +58,29 @@ void main()
         vec4 textureColor = texture(terrainTexture, vec3(vUv, float(sampleLayer)));
 
         bool isCharacter = (vColor.r < 0.01 && vColor.g < 0.01 && vColor.b < 0.01);
-        if (isCharacter)
+        float cutoutThreshold = isCharacter ? 0.08 : 0.30;
+        if (alphaCutout && textureColor.a < cutoutThreshold)
+            discard;
+        if (!alphaCutout && !isCharacter && textureColor.a < 0.01)
+            discard;
+
+        if (!isCharacter && vColor.b >= 1.5 && camera.fogDistances.w > 0.5)
         {
-            // Same lighting model as terrain.frag's character branch /
-            // skinned_character.frag's isCharacter branch (player and
-            // monsters/NPCs respectively) — bots draw through this shader
-            // with assetConstants instead of constants, and that buffer's
-            // tuning0-3 are already claimed by the environment color-grade
-            // (see assetGrade below), so the values are inlined here rather
-            // than reusing camera.tuning* to avoid clashing with it.
-            assetGrade = false;
-            if (alphaCutout && textureColor.a - 0.08 < 0.0)
-                discard;
-            color = textureColor.rgb;
-
-            vec3 n = normalize(vNormal);
-            vec3 charLightDir = vec3(-0.33, 0.80, -0.26);
-            float nDotL = dot(n, charLightDir);
-            float diffuse = clamp(nDotL, 0.0, 1.0);
-            float wrap = clamp((nDotL + 0.4) / 1.4, 0.0, 1.0);
-            float shade = mix(diffuse, wrap, 0.35);
-
-            float hemi = n.y * 0.5 + 0.5;
-            vec3 ambient = mix(vec3(0.56), vec3(0.56), hemi); // ground==sky here, kept for formula parity
-
-            vec3 lit = color * (ambient + shade * 0.72);
-
-            vec3 viewDir = normalize(camera.positionYaw.xyz - vWorldPos);
-            vec3 halfVec = normalize(charLightDir + viewDir);
-            float spec = pow(clamp(dot(n, halfVec), 0.0, 1.0), 24.0) * 0.35 * (0.25 + 0.75 * diffuse);
-            float rim = pow(1.0 - clamp(dot(n, viewDir), 0.0, 1.0), 3.0) * 0.22 * (0.4 + 0.6 * hemi);
-            lit += spec + rim * (0.5 + 0.5 * skyColor);
-
-            if (!alphaCutout)
-                color = clamp(lit + color * textureColor.a * 0.30, 0.0, 1.0);
-            else
-                color = clamp(lit, 0.0, 1.0);
+            vec2 lmUV = vColor.rg;
+            float lmLayer = vColor.b - 2.0;
+            vec3 lm = texture(lightmapTexture, vec3(lmUV, lmLayer)).rgb;
+            color = textureColor.rgb * lm;
         }
         else
-        {
-            if (alphaCutout && textureColor.a - 0.3 < 0.0)
-                discard;
-            else if (!alphaCutout && textureColor.a - 0.01 < 0.0)
-                discard;
-            if (vColor.b >= 1.5 && camera.fogDistances.w > 0.5)
-            {
-                vec2 lmUV = vColor.rg;
-                float lmLayer = vColor.b - 2.0;
-                vec3 lm = texture(lightmapTexture, vec3(lmUV, lmLayer)).rgb;
-                color = textureColor.rgb * lm * camera.tuning1.z;
-            }
-            else
-                color = textureColor.rgb * vLighting;
-        }
+            color = textureColor.rgb * vLighting;
     }
     else
     {
         color = vColor * vLighting;
     }
 
-    if (assetGrade)
-    {
-        float luma = dot(color, vec3(0.299, 0.587, 0.114));
-        color = clamp(mix(vec3(luma), color, camera.tuning0.w), 0.0, 1.0);
-        color = clamp(color * camera.tuning0.rgb * (camera.tuning1.w + camera.tuning2.x * skyColor), 0.0, 1.0);
-    }
-
     color = applyUnderwaterView(color, vWorldPos);
     color = mix(color, skyColor, vFogFactor);
-
-    // Subtle screen-space vignette — a lens/framing effect, so unlike the
-    // grading above it applies to everything drawn by this shader
-    // (characters included), not just map assets.
-    vec2 screenUv = gl_FragCoord.xy * camera.screenInfo.zw;
-    float vignette = 1.0 - smoothstep(0.4, 1.0, length(screenUv - 0.5) * 1.35);
-    color *= mix(0.55, 1.0, vignette);
 
     color += (ditherNoise(gl_FragCoord.xy) - 0.5) / 255.0;
 

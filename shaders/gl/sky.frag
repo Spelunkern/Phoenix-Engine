@@ -5,16 +5,6 @@ out vec4 outColor;
 
 CAMERA_BLOCK
 
-// Same subtle screen-space vignette as terrain.frag/static_object.frag/
-// skinned_character.frag — kept as a shared shape so the sky's corners
-// darken consistently with whatever's drawn in front of it.
-vec3 applyVignette(vec3 color)
-{
-    vec2 screenUv = gl_FragCoord.xy * camera.screenInfo.zw;
-    float vignette = 1.0 - smoothstep(0.4, 1.0, length(screenUv - 0.5) * 1.35);
-    return color * mix(0.55, 1.0, vignette);
-}
-
 // Interleaved-gradient-noise dither (same as the other shaders) — the sky's
 // smooth gradient bands are exactly the kind of slow ramp that shows 8-bit
 // banding most, so this matters here more than anywhere else.
@@ -25,7 +15,6 @@ float ditherNoise(vec2 fragCoord)
 
 vec3 finalizeColor(vec3 color)
 {
-    color = applyVignette(color);
     color += (ditherNoise(gl_FragCoord.xy) - 0.5) / 255.0;
     return color;
 }

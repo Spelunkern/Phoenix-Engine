@@ -314,37 +314,6 @@ namespace phoenix::renderer
             0.82f, 1.10f, 0.22f, 0.06f,
         };
         float waterStyle[4]{ 0.10f, 0.18f, 0.22f, 0.62f }; // natural water tint
-        // tuning2.w (wrap-lighting blend) and tuning3.xy (specular/rim
-        // strength) were 0 — the terrain.frag character-lighting branch
-        // (used by the player, see the terrainProgram+constants character
-        // draw in render_frame) already computed a Blinn-Phong specular
-        // and a Fresnel rim term, but multiplied by zero, so neither ever
-        // actually showed. Turning these on is what makes armor/weapons
-        // pick up a highlight instead of flat diffuse.
-        float characterShading[16]{
-            1.0f, 1.0f, 1.0f, 1.0f,
-            0.56f, 0.56f, 0.56f, 0.72f,
-            0.56f, 0.56f, 0.56f, 0.35f,
-            0.35f, 0.22f, 1.0f, 0.0f,
-        };
-        // tuning0.rgb/.w feed static_object.frag's assetGrade pass (a pure
-        // look pass: saturation via mix(luma,color,w), then an rgb tint
-        // multiply) — was (1,1,1,1), a no-op, until this matched the same
-        // subtle warm/saturated grade added to terrain.frag's plain-terrain
-        // path, so terrain and map objects (trees, rocks, buildings) read
-        // as one consistent style.
-        float assetShading[16]{
-            1.03f, 1.00f, 0.97f, 1.12f,
-            0.50f, 0.50f, 1.7f, 1.0f,
-            0.0f, 0.0f, 0.0f, 0.0f,
-            0.0f, 0.0f, 0.0f, 0.0f,
-        };
-        // (screenWidth, screenHeight, 1/w, 1/h) — see common_camera.glsl's
-        // screenInfo. Refreshed every frame in render_frame() from
-        // surfaceWidth/surfaceHeight, so the stored default here never
-        // actually reaches the shader.
-        float screenInfo[4]{ 1920.0f, 1080.0f, 1.0f / 1920.0f, 1.0f / 1080.0f };
-
         std::string adapterName;
     };
 }

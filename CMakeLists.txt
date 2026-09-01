@@ -145,33 +145,10 @@ else()
 
     target_compile_options(PhoenixEngine PRIVATE -Wno-missing-field-initializers)
 
-    # mimalloc on Linux for aggressive memory return to the OS (glibc
-    # malloc_trim is ineffective with fragmented arenas) — see
-    # release_memory_to_os() in src/app/bootstrap.cpp.
-    #
-    # Vendored via FetchContent and statically linked, NOT a system package
-    # lookup: find_library(mimalloc) used to pick up whatever the *build*
-    # machine happened to have installed, silently baking a shared-library
-    # dependency into the binary. On a machine without libmimalloc installed
-    # the game failed to even start (missing shared object), even though
-    # mimalloc is only used for one optional trim call that already no-ops
-    # gracefully when unavailable. Static linking (MI_OVERRIDE default ON)
-    # bundles it into the executable instead, so no runtime install is ever
-    # required.
-    set(MI_BUILD_SHARED OFF CACHE BOOL "" FORCE)
-    set(MI_BUILD_STATIC ON CACHE BOOL "" FORCE)
-    set(MI_BUILD_OBJECT OFF CACHE BOOL "" FORCE)
-    set(MI_BUILD_TESTS OFF CACHE BOOL "" FORCE)
-
-    include(FetchContent)
-    FetchContent_Declare(
-        mimalloc
-        GIT_REPOSITORY https://github.com/microsoft/mimalloc.git
-        GIT_TAG v3.4.1
-        GIT_SHALLOW TRUE
-    )
-    FetchContent_MakeAvailable(mimalloc)
-
-    target_link_libraries(PhoenixEngine PRIVATE mimalloc-static)
-    target_compile_definitions(PhoenixEngine PRIVATE PHOENIX_USE_MIMALLOC)
+    # Use the platform allocator. A statically linked mimalloc override can
+    # intercept libc's free() without having allocated the corresponding
+    # pointer during process startup, which crashes before main() on current
+    # glibc toolchains. release_memory_to_os() already uses malloc_trim() when
+    # it is available, so memory cleanup remains functional without adding a
+    # runtime dependency or replacing libc allocation globally.
 endif()

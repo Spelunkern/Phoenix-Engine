@@ -122,9 +122,12 @@ namespace phoenix::renderer
             return program;
         }
 
-        void set_camera_ubo(GLuint ubo, const float* constants64)
+        constexpr std::size_t kCameraConstantFloatCount = 44;
+
+        void set_camera_ubo(GLuint ubo, const float* constants)
         {
-            glNamedBufferSubData_(ubo, 0, sizeof(float) * 64, constants64);
+            glNamedBufferSubData_(ubo, 0,
+                sizeof(float) * kCameraConstantFloatCount, constants);
         }
     }
 
@@ -161,7 +164,8 @@ namespace phoenix::renderer
         glViewport_(0, 0, static_cast<GLsizei>(width), static_cast<GLsizei>(height));
 
         glCreateBuffers_(1, &impl_->cameraUbo);
-        glNamedBufferData_(impl_->cameraUbo, sizeof(float) * 64, nullptr, GL_DYNAMIC_DRAW);
+        glNamedBufferData_(impl_->cameraUbo,
+            sizeof(float) * kCameraConstantFloatCount, nullptr, GL_DYNAMIC_DRAW);
         glBindBufferBase_(GL_UNIFORM_BUFFER, 0, impl_->cameraUbo);
 
         glCreateVertexArrays_(1, &impl_->emptyVao);
@@ -1718,30 +1722,17 @@ namespace phoenix::renderer
             glClear_(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
             glEnable_(GL_DEPTH_TEST);
 
-            impl_->screenInfo[0] = static_cast<float>(impl_->surfaceWidth);
-            impl_->screenInfo[1] = static_cast<float>(impl_->surfaceHeight);
-            impl_->screenInfo[2] = 1.0f / static_cast<float>(impl_->surfaceWidth);
-            impl_->screenInfo[3] = 1.0f / static_cast<float>(impl_->surfaceHeight);
-
-            float constants[64]{};
+            float constants[kCameraConstantFloatCount]{};
             std::memcpy(constants, impl_->cameraConstants, sizeof(impl_->cameraConstants));
             std::memcpy(constants + 12, impl_->skyConstants, sizeof(impl_->skyConstants));
             std::memcpy(constants + 28, impl_->skyTuning, sizeof(impl_->skyTuning));
             std::memcpy(constants + 40, impl_->waterStyle, sizeof(impl_->waterStyle));
-            std::memcpy(constants + 44, impl_->characterShading, sizeof(impl_->characterShading));
-            std::memcpy(constants + 60, impl_->screenInfo, sizeof(impl_->screenInfo));
-            float assetConstants[64]{};
-            std::memcpy(assetConstants, constants, sizeof(float) * 44);
-            std::memcpy(assetConstants + 44, impl_->assetShading, sizeof(impl_->assetShading));
-            std::memcpy(assetConstants + 60, impl_->screenInfo, sizeof(impl_->screenInfo));
 
             // Every draw call below re-specified its program and re-uploaded the
             // camera UBO even when back-to-back draws share both (e.g. monster then
             // NPC both use skinnedCharacterProgram + `constants`). Track the last
-            // bound program and the last-uploaded constants blob (compared by
-            // identity, since `constants`/`assetConstants` are the only two blobs
-            // used all frame) so repeats become no-ops instead of redundant
-            // glUseProgram/glNamedBufferSubData calls.
+            // bound program and camera upload so repeats become no-ops instead of
+            // redundant glUseProgram/glNamedBufferSubData calls.
             GLuint boundProgram = 0;
             const float* uploadedConstants = nullptr;
             const auto useProgram = [&](GLuint program) {
@@ -1823,9 +1814,9 @@ namespace phoenix::renderer
             };
 
             if (impl_->objectsReady && impl_->staticObjectProgram)
-                drawStaticBatches(impl_->objectVao, impl_->objectBatches, assetConstants);
+                drawStaticBatches(impl_->objectVao, impl_->objectBatches, constants);
             if (impl_->animatedObjectsReady && impl_->staticObjectProgram)
-                drawStaticBatches(impl_->animatedObjectVao, impl_->animatedObjectBatches, assetConstants);
+                drawStaticBatches(impl_->animatedObjectVao, impl_->animatedObjectBatches, constants);
 
             if (impl_->characterVisible && impl_->characterReady)
             {
@@ -1838,7 +1829,7 @@ namespace phoenix::renderer
                 && impl_->botCharacterInstanceBuffer.id && !impl_->botCharacterBatches.empty()
                 && impl_->staticObjectProgram)
             {
-                drawStaticBatches(impl_->botCharacterVao, impl_->botCharacterBatches, assetConstants);
+                drawStaticBatches(impl_->botCharacterVao, impl_->botCharacterBatches, constants);
             }
             const auto frame = frameIndex_ % kMaxFramesInFlight;
             if (impl_->monsterCharacterVisible && impl_->monsterCharacterReady

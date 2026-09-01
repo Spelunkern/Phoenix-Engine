@@ -34,10 +34,7 @@ void main()
     float cameraZ = sp * delta.y + cp * yawZ;
     float nearPlane = 2.0;
 
-    vec3 lightDir = vec3(-0.30, 0.68, -0.67);
-    vec3 n = normalize(inNormal);
-    float nDotL = clamp(dot(n, lightDir), 0.0, 1.0);
-    float lit = nDotL * 0.55 + 0.45;
+    float lit = neutralMaterialLighting(inNormal);
 
     float fogStart = camera.fogDistances.x;
     float fogEnd = max(fogStart + 1.0, camera.fogDistances.y);

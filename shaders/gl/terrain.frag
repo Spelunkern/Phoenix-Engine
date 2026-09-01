@@ -119,11 +119,6 @@ void main()
     vec3 color = vec3(0.0);
     float alpha = 1.0;
     bool applyLightmap = true;
-    // Purely a look pass (saturation + a mild warm tint), not lighting —
-    // same formula/values as static_object.frag's assetGrade, so terrain
-    // and map objects read as one consistent style. Skipped for characters
-    // rendered through this shader (isCharacter branch below).
-    bool applyGrade = true;
 
     if (vTextureLayer == 0xFFFFFFFDu && mapSide > 1u)
     {
@@ -223,51 +218,14 @@ void main()
             bool isCharacter = (vColor.r < 0.01 && vColor.g < 0.01 && vColor.b < 0.05);
             if (isCharacter)
             {
-                applyGrade = false;
                 bool flatLit = vColor.b > 0.01;
                 if (alphaCutout && textureColor.a - 0.08 < 0.0)
                     discard;
-                color = textureColor.rgb;
-                float luma = dot(color, vec3(0.299, 0.587, 0.114));
-                color = clamp(mix(vec3(luma), color, camera.tuning0.w), 0.0, 1.0);
-
-                vec3 charLightDir = vec3(-0.33, 0.80, -0.26);
-                vec3 keyColor = camera.tuning0.rgb;
-                vec3 ambientGround = camera.tuning1.rgb;
-                vec3 ambientSky = camera.tuning2.rgb;
-                vec3 weatherTint = vec3(camera.tuning3.z) + camera.tuning3.w * skyColor;
-                vec3 lit;
-                if (flatLit)
-                {
-                    vec3 ambient = mix(ambientGround, ambientSky, 0.65) * weatherTint;
-                    lit = color * (ambient + 0.68 * camera.tuning1.w * keyColor);
-                }
-                else
-                {
-                    vec3 n = normalize(vNormal);
-                    float nDotL = dot(n, charLightDir);
-                    float diffuse = clamp(nDotL, 0.0, 1.0);
-                    // Player character reverted to plain diffuse (no wrap,
-                    // no specular/rim) — the enhanced look read wrong on
-                    // the player specifically, even though the identical
-                    // formula was kept for monsters/NPCs (skinned_character.
-                    // frag) and reads fine there. Hardcoded here (rather
-                    // than reverting camera.tuning2.w/tuning3.xy) so this
-                    // stays decoupled from characterShading, which
-                    // skinned_character.frag's isCharacter branch still
-                    // relies on.
-                    float shade = diffuse;
-
-                    float hemi = n.y * 0.5 + 0.5;
-                    vec3 ambient = mix(ambientGround, ambientSky, hemi) * weatherTint;
-
-                    lit = color * (ambient + shade * camera.tuning1.w * keyColor);
-                }
-
-                if (!alphaCutout)
-                    color = clamp(lit + color * textureColor.a * 0.30, 0.0, 1.0);
-                else
-                    color = clamp(lit, 0.0, 1.0);
+                // Cloaks intentionally use a constant term because their
+                // simulation rebuilds normals every frame. All other player
+                // parts use the same neutral Lambert result as the world.
+                float lighting = flatLit ? 0.75 : vLighting;
+                color = textureColor.rgb * lighting;
                 applyLightmap = false;
             }
             else
@@ -296,20 +254,8 @@ void main()
         color *= lm;
     }
 
-    if (applyGrade)
-    {
-        float luma = dot(color, vec3(0.299, 0.587, 0.114));
-        color = clamp(mix(vec3(luma), color, 1.12) * vec3(1.03, 1.00, 0.97), 0.0, 1.0);
-    }
-
     color = applyUnderwaterView(color, vWorldPos);
     color = mix(color, skyColor, vFogFactor);
-
-    // Subtle screen-space vignette — pure framing/aesthetic, applied last so
-    // it darkens the final composited pixel (fog included) uniformly.
-    vec2 screenUv = gl_FragCoord.xy * camera.screenInfo.zw;
-    float vignette = 1.0 - smoothstep(0.4, 1.0, length(screenUv - 0.5) * 1.35);
-    color *= mix(0.55, 1.0, vignette);
 
     // Dither at the very end, after every other color operation, so it
     // breaks up banding in the final quantized-to-8-bit output.
