@@ -2475,9 +2475,9 @@ namespace phoenix::character
             if (specialStepActive_ == 1)
                 desiredAnimation = data_.backAnimation;
             else if (specialStepActive_ == 2)
-                desiredAnimation = data_.rightAnimation;
-            else if (specialStepActive_ == 3)
                 desiredAnimation = data_.leftAnimation;
+            else if (specialStepActive_ == 3)
+                desiredAnimation = data_.rightAnimation;
             else if (backwardsOrSideways)
                 desiredAnimation = data_.walkAnimation;
             else
