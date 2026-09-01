@@ -43,7 +43,7 @@ void main()
     float yawZ = sy * delta.x + cy * delta.z;
     float cameraY = cp * delta.y - sp * yawZ;
     float cameraZ = sp * delta.y + cp * yawZ;
-    float nearPlane = 2.0;
+    float nearPlane = 0.05;
 
     float fogStart = camera.fogDistances.x;
     float fogEnd = max(fogStart + 1.0, camera.fogDistances.y);

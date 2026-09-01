@@ -32,7 +32,10 @@ void main()
     float yawZ = sy * delta.x + cy * delta.z;
     float cameraY = cp * delta.y - sp * yawZ;
     float cameraZ = sp * delta.y + cp * yawZ;
-    float nearPlane = 2.0;
+    // Match Camera3D's default near plane.  The old 2 m plane clipped the
+    // terrain even after the orbit camera had correctly stopped above it,
+    // which looked exactly like the camera had entered the ground.
+    float nearPlane = 0.05;
 
     float lit = 1.0;
 

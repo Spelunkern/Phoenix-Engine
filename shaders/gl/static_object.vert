@@ -81,7 +81,7 @@ void main()
     float yawZ = sy * delta.x + cy * delta.z;
     float cameraY = cp * delta.y - sp * yawZ;
     float cameraZ = sp * delta.y + cp * yawZ;
-    float nearPlane = 2.0;
+    float nearPlane = 0.05;
 
     float lit = 1.0;
 
