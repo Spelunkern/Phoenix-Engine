@@ -72,13 +72,16 @@ data/
 - `monster/monsterdata.csv` — monster catalog (`monster_id,name,model_id,size`);
   the svmap `MobId` resolves to `monster_id`, and `size` is a percentage scale.
 
-**Canonical texture format:**
+**Texture formats:**
 
-Every `.dds` is expected as **BC3 (DXT5) with a full mip chain** — 256x256 for
-content textures, native dimensions under `world/`. The renderer then uploads
-GPU-native with no load-time conversion. New or imported textures should be run
-through the standalone `dds_normalize` tool once (idempotent) — it's not part
-of this repo; build it separately:
+The recommended canonical format is **BC3 (DXT5) with a full mip chain** —
+256x256 for content textures, native dimensions under `world/`. Canonical DDS
+files upload directly. The runtime also dispatches PNG, BMP, and TGA files and
+can normalise BC1/BC2 or uncompressed inputs during loading, so a missing
+converted DDS does not silently discard an otherwise supported source texture.
+
+For production data, run new or imported DDS textures through the standalone
+`dds_normalize` tool once (idempotent). It is not part of this repository:
 
 ```text
 dds_normalize <directory> 256 256   # resize + convert

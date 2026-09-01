@@ -42,23 +42,29 @@ Phoenix Engine does not assume deep technical knowledge from final users. Everyo
 ## Current Features
 
 - OpenGL 4.5 renderer with terrain, objects, water, fog, and procedural sky.
-- Runtime skinning for character animations with frame caching for high FPS (GPU compute path + CPU fallback).
+- Runtime animation with cached CPU skinning for the playable character and
+  GPU palette skinning/pose sharing for NPC and monster crowds.
 - WLD/DG map loading with free-camera viewer mode and playable character mode.
 - Field lightmaps with baked shadows and colour tones, alpha-mask terrain splatting ("tonality" maps), and full dungeon lightmap support (per-vertex page sampling).
 - VANI vertex-animated decor (distance-based animation LOD) and MANI GPU-driven rotating objects.
-- World NPCs and monsters placed from each map's `.svmap`: NPCs stand at their authored spots (multi-point groups patrol between waypoints), and monster spawn areas populate with mobs that wander their area and follow the terrain. Entities stream in only within camera range, with off-thread visual loading (no first-sighting hitch), distance-based despawn, LRU texture-slot eviction, parallel/LOD pose skinning, and floating name labels. Placement and movement are client-side for now, structured to later be driven by server state.
+- World NPCs and monsters placed from each map's `.svmap`: NPCs stand at their authored spots (multi-point groups patrol between waypoints), and monster spawn areas populate with mobs that wander their area and follow the terrain. Entities stream in only within camera range, with off-thread visual loading, distance-based despawn, LRU texture-slot eviction, parallel/LOD pose skinning, and native hover labels. Placement and movement are client-side for now, structured to later be driven by server state.
 - Character appearance loading with race, armor, face, hair, weapon, shield, and mantle selection.
 - Per-race/class weapon and shield attach-bone mapping, with a default starting loadout (one-hand sword + light shield + mantle).
 - Mounts/vehicles: ride seated on a data-driven seat bone, mount animations, and faster-than-foot movement.
 - Ladder climbing: "Object"-section assets (ladders/ivy) latch the character into the climb animation up to the top instead of colliding.
 - Universal content-based transparency: cutout is decided by each texture's actual alpha channel, never by filename heuristics.
-- Canonical texture pipeline: all DDS data is pre-normalised to BC3 with full mip chains (via the standalone `dds_normalize` tool, kept outside this repo), so the renderer uploads GPU-native with zero load-time conversion.
+- Canonical BC3 texture pipeline with full mip chains. Pre-normalised DDS data
+  uploads directly; PNG, BMP, TGA, BC1/BC2, and uncompressed fallback inputs
+  are decoded and normalised when loaded.
 - Bot stress-test system: GPU-instanced characters with randomized equipment and shared pose skinning.
 - Terrain-based footstep sounds (ground-only), map music/sound zones with distance fade, and full audio stop on map change (OGG Vorbis via miniaudio).
 - Water surface rendering (natural, static), underwater tinting, swimming, floating, and camera-driven movement.
 - Emote animations (one-shot, 10 slots) and occasional idle gestures between breathing cycles.
 - Double-tap dodges with full world collision, jump, sit, and swim states.
-- Native Phoenix UI controls for map selection, fog, render distance, actor distance, overlays, character/loadout selection, mount seat bone, and sky/weather styles, plus a CPU/RAM/VRAM performance HUD.
+- Native Phoenix UI controls for map selection, fog/render and actor distance,
+  character/loadout selection, mount seat bone, sky/weather, VSync,
+  anti-aliasing, FPS cap, and world shadows, plus a CPU/RAM/VRAM performance
+  HUD. Persistent graphics values and panel placement live in `phoenix.ini`.
 - Procedural sky styles: default, storm, snowstorm, sunset, and night with stars/moon/meteors.
 - Instant window close at any moment, including mid-load (the whole loading pipeline stays responsive).
 
@@ -200,11 +206,12 @@ See [docs/ASSETS.md](docs/ASSETS.md) for more details.
 
 ## Controls
 
-- `W/A/S/D`: move.
+- `W/A/S/D`: move (`A`/`D` strafe).
 - `Space`: jump (playable mode) / raise camera (viewer mode).
 - Right mouse drag: camera look.
 - Mouse wheel: zoom in playable mode or move camera in viewer mode.
 - `Shift`: faster movement.
+- Double-tap `A` or `D`: lateral dodge.
 - `P`: toggle playable mode.
 - Phoenix UI panel: map loading, fog, distances, overlays, audio toggles, character/loadout selection, mount, and weather/sky style.
 
@@ -225,11 +232,12 @@ columns the engine consumes:
 | `npc/npcdata.csv` | NPC catalog: `npc_index,npc_id,npc_type,npc_type_name,npc_type_id,model,name` — the svmap `(NpcType, NpcId)` resolves to `(npc_type, npc_type_id)`. |
 | `monster/monsterdata.csv` | Monster catalog: `monster_id,name,model_id,size` — the svmap `MobId` resolves to `monster_id`; `size` is a percentage scale. |
 
-All textures are expected in the canonical format: **BC3 (DXT5) with a full mip
-chain** (256x256 for content textures, native dimensions for lightmaps).
-`dds_normalize` converts any DDS tree to this format in one idempotent pass;
-it's a standalone data tool (not part of this repo — build it separately) that
-uses the same decode/resize/encode logic the engine runs at load time:
+For fastest startup, textures should use the canonical format: **BC3 (DXT5)
+with a full mip chain** (256x256 for content textures, native dimensions for
+lightmaps). The runtime also accepts PNG, BMP, TGA, BC1/BC2, and uncompressed
+DDS inputs and converts them to the upload format when needed.
+`dds_normalize` converts a DDS tree to the canonical format in one idempotent
+pass; it is a standalone data tool (not part of this repository):
 
 ```powershell
 dds_normalize.exe data\entity 256 256   # resize + convert

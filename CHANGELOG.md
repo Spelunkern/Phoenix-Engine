@@ -4,12 +4,58 @@ All notable changes to Phoenix Engine are documented here. Dates are ISO-8601.
 
 ## [Unreleased]
 
+### Added
+- **Native Phoenix UI.** The debug panel, performance HUD, controls reference,
+  and graphics controls now render through the engine's own lightweight
+  screen-space UI. Graphics settings include persistent VSync, anti-aliasing,
+  FPS cap, world shadows, and render/fog distances through `phoenix.ini`.
+- **Native world labels and canonical entity names.** NPC and monster names no
+  longer depend on a debug UI backend; monster names appear on hover and use
+  the matching names imported from the canonical game data when available.
+
 ### Changed
-- **Dear ImGui replaced by Phoenix UI.** The debug panel, performance HUD and
-  weather overlays now share the engine's existing screen-space font atlas and
-  a tiny immediate command list. The SDL/OpenGL backends, dependency sources,
-  icon textures and legacy `imgui.ini` integration have been removed. Graphics
-  values and panel position persist in the compact `phoenix.ini` file.
+- **Godot presentation parity.** World handedness, playable-character
+  orientation and controls, camera behavior/collision, environment lighting,
+  shadows, sky, water, cloak simulation, default equipment, and map-effect
+  composition/timing now follow the established Phoenix Godot client as
+  closely as the C++ renderer permits.
+- **Aggressive world LOD is now the default.** Terrain detail is preserved,
+  while static world objects and actors use distance-aware batching and LOD.
+  Fog distance consistently controls world-asset visibility, and asset/effect
+  selectors no longer have fixed index ceilings.
+- **World texture sampling matches the canonical client more closely.** Static
+  assets use stable trilinear filtering and regenerated mip chains derived
+  from their base texture level to reduce movement shimmer.
+- **Texture fallback support is explicit.** Canonical BC3 DDS data still takes
+  the fast path; PNG, BMP, TGA, BC1/BC2, and uncompressed inputs are accepted
+  and normalised when needed.
+
+### Fixed
+- Camera penetration into terrain, reversed lateral movement/dodge input, and
+  inconsistent character/cloak lighting.
+- Map-effect sequence composition and timing differences from the canonical
+  client.
+- A missing or unreadable binary asset can no longer turn a failed stream
+  length (`tellg() == -1`) into a huge allocation and terminate the runtime.
+- Negative bot spawn counts are rejected instead of converting to an enormous
+  unsigned reservation.
+- Loader bounds, image-size arithmetic, signed effect-name sanitisation, and
+  partial OpenGL buffer update checks are now overflow-safe.
+
+### Removed
+- Dear ImGui, its SDL/OpenGL backends, icon resources, settings integration,
+  and build dependency after the native UI replacement became functional.
+- Obsolete sky presets and the unused aurora shader path.
+- Unreachable legacy terrain/object rendering code and the permanently
+  disabled compute-culling scaffolding.
+
+## [v0.10] - 2026-07-19
+
+### Changed
+- **Perf HUD icons moved from hardcoded arrays to PNG files.** The Windows/
+  Linux/Nvidia/AMD/Intel icons in `src/ui/perf_hud_icons.h` (raw RGBA byte
+  arrays baked into the source) became loose `res/icons/*.png` resources
+  loaded through the new PNG loader. The generated header was removed.
 
 ### Added
 - **PNG loading via stb_image.** Vendored `external/stb_image.h` (same
@@ -18,7 +64,7 @@ All notable changes to Phoenix Engine are documented here. Dates are ISO-8601.
   `read_file_binary`/case-insensitive path resolution instead of stb's own
   `fopen` path, for consistency with every other asset loader. New
   `src/renderer/png_loader.{h,cpp}` (`PngImage load_png(path)`) decodes to
-  8-bit RGBA for regular texture uploads.
+  8-bit RGBA for UI texture uploads.
 
 ### Performance
 - **CPU skinning: skin matrices hoisted out of the per-vertex loop.**

@@ -44,6 +44,14 @@ not download dependencies during configuration. Linux uses the platform
 allocator and calls `malloc_trim()` when explicitly releasing large loading
 caches.
 
+For a warning-focused local audit build:
+
+```bash
+cmake -S . -B build/audit -DCMAKE_BUILD_TYPE=Debug \
+  -DCMAKE_CXX_FLAGS="-Wall -Wextra -Wpedantic -Wshadow -Wconversion -Wsign-conversion -Wnull-dereference -Wdouble-promotion -Wformat=2"
+cmake --build build/audit -j"$(nproc)"
+```
+
 ## Run
 
 Place `Data/` next to the executable or in the repository root, then:
@@ -64,3 +72,7 @@ PHOENIX_ENGINE_DATA=/path/to/Data ./build/linux-release/PhoenixEngine
   GPU (mesa or vendor) and confirm 4.5 core support with `glxinfo | grep "OpenGL version"`.
 - Wrong or missing models on Linux: keep the `Data/` tree intact. The engine has
   case-insensitive path resolution, but it cannot recover from missing files.
+- Missing shaders after launching the executable directly: keep `shaders/gl/`
+  beside the packaged executable. The runtime also searches from its executable
+  directory, so the current working directory does not need to be the source
+  tree.
