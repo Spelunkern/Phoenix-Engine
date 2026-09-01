@@ -1602,8 +1602,11 @@ int main(int, char**)
             const float cameraUpWorld[3]{ -sinPitch * sinYaw, cosPitch, -sinPitch * cosYaw };
             const float cameraForwardWorld[3]{ cosPitch * sinYaw, sinPitch, cosPitch * cosYaw };
             const float cameraPositionWorld[3]{ renderCameraX, renderCameraY, renderCameraZ };
+            const float effectCullDistance = runtime.state().world.isDungeon
+                ? std::min(fogCullDistance, 20.0f)
+                : std::min(fogCullDistance, 70.0f);
             effectParticleSystem.update(deltaSeconds, cameraPositionWorld,
-                cameraRightWorld, cameraUpWorld, cameraForwardWorld, fogCullDistance);
+                cameraRightWorld, cameraUpWorld, cameraForwardWorld, effectCullDistance);
 
             // WeatherMode -> WeatherParticleSystem kind/intensity. Storm/
             // Snowstorm map to Heavy for now; Light/Medium are already wired

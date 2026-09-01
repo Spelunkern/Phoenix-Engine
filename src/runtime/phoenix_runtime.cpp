@@ -39,7 +39,10 @@ namespace phoenix::runtime
         constexpr float kManiTicksPerSecond = 30.0f;
         // VANI (vertex-animated decor) render cutoff: an extra distance rule on
         // top of the universal fog/view distance, same as any other asset.
-        constexpr float kVaniRenderDistance = 200.0f;
+        constexpr float kVaniRenderDistance = 140.0f;
+        constexpr float kSmallPropRenderDistance = 145.0f;
+        constexpr float kMediumPropRenderDistance = 200.0f;
+        constexpr float kLargePropRenderDistance = 246.0f;
 
         inline std::filesystem::path resolve_ci(const std::filesystem::path& path)
         {
@@ -2240,7 +2243,11 @@ namespace phoenix::runtime
         if (state_.worldAssets.empty() || state_.sceneObjects.empty())
             return scene;
 
-        constexpr float kCellSize = 512.0f;
+        // Compatibility's object LOD gains most of its value by rejecting small
+        // spatial groups before drawing.  Keep the original meshes intact, but
+        // split each asset's instances into compact cells so frustum/indirect
+        // culling can discard distant or off-screen decor as a unit.
+        constexpr float kCellSize = 128.0f;
         struct CellGroup
         {
             std::int32_t cellX{};
@@ -2296,7 +2303,7 @@ namespace phoenix::runtime
             const auto& asset = state_.worldAssets[assetSlot];
             vertexCount += asset.previewVertices.size();
             indexCount += asset.previewIndices.size();
-            ++batchCount; // one merged batch per unique asset
+            batchCount += groupsByAsset[assetSlot].size();
             for (const auto& group : groupsByAsset[assetSlot])
                 instanceCount += group.objectIndices.size();
         }
@@ -2307,10 +2314,21 @@ namespace phoenix::runtime
         scene.batches.reserve(batchCount);
         scene.batchBounds.reserve(batchCount);
 
-        float currentCullDistance = 0.0f; // 0 = no cull, >0 = max render distance (VANI)
-
+        const auto objectCullDistance = [&](const SceneObject& object) {
+            if (state_.world.isDungeon)
+                return 0.0f;
+            if (object.assetSlot >= 0
+                && static_cast<std::size_t>(object.assetSlot) < state_.worldAssets.size()
+                && state_.worldAssets[static_cast<std::size_t>(object.assetSlot)].vertexAnimated)
+                return kVaniRenderDistance;
+            if (object.radius <= 10.0f)
+                return kSmallPropRenderDistance;
+            if (object.radius <= 28.0f)
+                return kMediumPropRenderDistance;
+            return kLargePropRenderDistance;
+        };
         const auto appendInstance = [&](const SceneObject& object) {
-            scene.instances.push_back(make_object_instance(object, currentCullDistance));
+            scene.instances.push_back(make_object_instance(object, objectCullDistance(object)));
         };
 
         for (std::size_t assetSlot = 0; assetSlot < state_.worldAssets.size(); ++assetSlot)
@@ -2326,34 +2344,24 @@ namespace phoenix::runtime
 
             const auto& asset = state_.worldAssets[assetSlot];
 
-            // VANI assets get an extra fixed 200m render cutoff on top of the
-            // universal fog/view distance culling every other asset already
-            // gets (the vertex shader clamps this to whichever is smaller).
-            const auto assetKey = phoenix::assets::lower_ascii(asset.name);
-            currentCullDistance = assetKey.ends_with(".vani") ? kVaniRenderDistance : 0.0f;
-
             const auto baseVertex = static_cast<std::uint32_t>(scene.vertices.size());
             const auto firstIndex = static_cast<std::uint32_t>(scene.indices.size());
             scene.vertices.insert(scene.vertices.end(), asset.previewVertices.begin(), asset.previewVertices.end());
             for (const auto index : asset.previewIndices)
                 scene.indices.push_back(baseVertex + index);
 
-            // Merge all spatial groups of this asset into ONE batch.
-            // Instances are contiguous per asset, so a single draw call
-            // covers all instances — trading per-cell frustum culling for
-            // dramatically fewer draw calls (GPU clips off-screen instances
-            // after vertex shading, which is cheap).
-            const auto firstInstance = static_cast<std::uint32_t>(scene.instances.size());
-
-            float minX = std::numeric_limits<float>::max();
-            float minY = std::numeric_limits<float>::max();
-            float minZ = std::numeric_limits<float>::max();
-            float maxX = -std::numeric_limits<float>::max();
-            float maxY = -std::numeric_limits<float>::max();
-            float maxZ = -std::numeric_limits<float>::max();
-
+            // One batch per compact spatial cell. The indirect path consumes all
+            // of these in one GPU submission; the fallback path only emits the
+            // cells that pass the same bounds test.
             for (const auto& group : groups)
             {
+                const auto firstInstance = static_cast<std::uint32_t>(scene.instances.size());
+                float minX = std::numeric_limits<float>::max();
+                float minY = std::numeric_limits<float>::max();
+                float minZ = std::numeric_limits<float>::max();
+                float maxX = -std::numeric_limits<float>::max();
+                float maxY = -std::numeric_limits<float>::max();
+                float maxZ = -std::numeric_limits<float>::max();
                 for (const auto objectIndex : group.objectIndices)
                 {
                     const auto& object = state_.sceneObjects[objectIndex];
@@ -2366,27 +2374,24 @@ namespace phoenix::runtime
                     maxY = std::max(maxY, object.y + radius);
                     maxZ = std::max(maxZ, object.z + radius);
                 }
+
+                StaticObjectScene::BatchBounds bounds{};
+                bounds.x = (minX + maxX) * 0.5f;
+                bounds.y = (minY + maxY) * 0.5f;
+                bounds.z = (minZ + maxZ) * 0.5f;
+                const auto extentX = (maxX - minX) * 0.5f;
+                const auto extentY = (maxY - minY) * 0.5f;
+                const auto extentZ = (maxZ - minZ) * 0.5f;
+                bounds.radius = std::sqrt(extentX * extentX + extentY * extentY + extentZ * extentZ);
+
+                phoenix::renderer::ObjectBatch batch{};
+                batch.firstIndex = firstIndex;
+                batch.indexCount = static_cast<std::uint32_t>(asset.previewIndices.size());
+                batch.firstInstance = firstInstance;
+                batch.instanceCount = static_cast<std::uint32_t>(scene.instances.size()) - firstInstance;
+                scene.batches.push_back(batch);
+                scene.batchBounds.push_back(bounds);
             }
-
-            const auto totalInstances = static_cast<std::uint32_t>(scene.instances.size()) - firstInstance;
-
-            StaticObjectScene::BatchBounds bounds{};
-            bounds.x = (minX + maxX) * 0.5f;
-            bounds.y = (minY + maxY) * 0.5f;
-            bounds.z = (minZ + maxZ) * 0.5f;
-            const auto extentX = (maxX - minX) * 0.5f;
-            const auto extentY = (maxY - minY) * 0.5f;
-            const auto extentZ = (maxZ - minZ) * 0.5f;
-            bounds.radius = std::sqrt(extentX * extentX + extentY * extentY + extentZ * extentZ);
-
-            phoenix::renderer::ObjectBatch batch{};
-            batch.firstIndex = firstIndex;
-            batch.indexCount = static_cast<std::uint32_t>(asset.previewIndices.size());
-            batch.firstInstance = firstInstance;
-            batch.instanceCount = totalInstances;
-            scene.batches.push_back(batch);
-
-            scene.batchBounds.push_back(bounds);
         }
 
         return scene;
@@ -2430,7 +2435,7 @@ namespace phoenix::runtime
 
             const auto& asset = state_.worldAssets[assetSlot];
             const auto animKey = phoenix::assets::lower_ascii(asset.name);
-            // VANI assets get an extra fixed 200m render cutoff on top of the
+            // VANI assets get an aggressive fixed render cutoff on top of the
             // universal fog/view distance culling every other asset already
             // gets (the vertex shader clamps this to whichever is smaller).
             animCullDistance = animKey.ends_with(".vani") ? kVaniRenderDistance : 0.0f;
@@ -2521,7 +2526,8 @@ namespace phoenix::runtime
                 const float dx = position[0] - cameraX;
                 const float dy = position[1] - cameraY;
                 const float dz = position[2] - cameraZ;
-                if (dx * dx + dy * dy + dz * dz <= kAnimateDistanceSq)
+                const float renderDistance = position[3] > 0.0f ? position[3] : kVaniRenderDistance;
+                if (dx * dx + dy * dy + dz * dz <= renderDistance * renderDistance)
                 {
                     anyInstanceNear = true;
                     break;

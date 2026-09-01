@@ -22,11 +22,11 @@ namespace phoenix::character
     namespace
     {
         constexpr float kMonsterBaseScale = 0.95f;
-        // Animation-LOD distance tiers (squared, world units): near -> 60/s pose
-        // rate; mid -> 30/s; far -> 15/s. Coarser rates let distant mobs share a
-        // skinning job (imperceptible at distance).
-        constexpr float kAnimLodNearSq = 25.0f * 25.0f;
-        constexpr float kAnimLodMidSq = 55.0f * 55.0f;
+        // Aggressive default animation LOD: preserve full motion around combat,
+        // then quantize distant poses early so many mobs share one skinning job.
+        // This mirrors Compatibility's entity profile without changing topology.
+        constexpr float kAnimLodNearSq = 15.0f * 15.0f;
+        constexpr float kAnimLodMidSq = 35.0f * 35.0f;
         constexpr float kAniFramesPerSecond = 30.0f;
         constexpr float kAnimationBlendDuration = 0.12f;
         constexpr float kOneShotBlendDuration = 0.25f;
@@ -1613,7 +1613,7 @@ namespace phoenix::character
                 const float dx = monster.x - view.x, dy = monster.y - view.y, dz = monster.z - view.z;
                 const float d2 = dx * dx + dy * dy + dz * dz;
                 const float rate = d2 < kAnimLodNearSq ? 60.0f
-                    : (d2 < kAnimLodMidSq ? 30.0f : 15.0f);
+                    : (d2 < kAnimLodMidSq ? 20.0f : 10.0f);
                 tier = d2 < kAnimLodNearSq ? 0 : (d2 < kAnimLodMidSq ? 1 : 2);
                 bucket = static_cast<std::int32_t>(std::lround(monster.animationSeconds * rate));
                 for (const auto& k : poseKeys)
