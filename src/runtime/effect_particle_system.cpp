@@ -326,10 +326,10 @@ namespace phoenix::runtime
             std::copy(cameraForward, cameraForward + 3, outForward);
         }
 
-        // Rotation is defined in the object's local frame (spin first, then the
-        // per-spawn initial rotation on top — matches the quaternion composition
-        // order `initial.multiply(spin)` in the effect-renderer reference), with
-        // each axis resolved through the *unrotated* orientation basis.
+        // Rotation is defined in the object's local frame, with each axis
+        // resolved through the unrotated orientation basis. Native EFT uses a
+        // single authored rotation matrix: continuous rotation takes precedence
+        // over the per-spawn initial rotation instead of composing both.
         // rotationSign follows the reference's usesMesh ? 1 : -1.
         void apply_particle_spin(float right[3], float up[3], float forward[3],
             const float origRight[3], const float origUp[3], const float origForward[3],
@@ -344,7 +344,8 @@ namespace phoenix::runtime
                 rodrigues(up, axis, cosA, sinA);
                 rodrigues(forward, axis, cosA, sinA);
             }
-            if (axis_vector(effect.initialRotationAxis, origRight, origUp, origForward, axis))
+            if (!effect.rotationEnabled
+                && axis_vector(effect.initialRotationAxis, origRight, origUp, origForward, axis))
             {
                 const float angle = rotationSign * initialRotation;
                 const float cosA = std::cos(angle), sinA = std::sin(angle);
@@ -773,15 +774,26 @@ namespace phoenix::runtime
                 effectPtr = &overridden;
             }
             const auto& effect = *effectPtr;
-            step_emitter(emitter, effect, dt);
+            const auto* mesh = mesh_for(effect);
+            // A .3DE's local draw basis rotates source X/Z by 180 degrees. Its
+            // authored emitter offsets, velocities and forces live in that same
+            // frame. Keep those vectors coherent with the geometry, matching
+            // Godot's _effect_space_vector conversion.
+            EftEffect effectSpace = effect;
+            if (mesh)
+            {
+                for (auto* vector : { effectSpace.emitOrigin, effectSpace.emitPositionSpread,
+                        effectSpace.velocityMin, effectSpace.velocityMax,
+                        effectSpace.acceleration, effectSpace.attractPoint })
+                {
+                    vector[0] = -vector[0];
+                    vector[2] = -vector[2];
+                }
+            }
+            step_emitter(emitter, effectSpace, dt);
             if (emitter.elapsed < 0.0f)
                 return; // still waiting out this record's start delay
 
-            const auto textureLayer = select_texture_layer_for(effect, emitter.elapsed);
-            if (textureLayer == 0xFFFFFFFFu)
-                return;
-
-            const auto* mesh = mesh_for(effect);
             // Real .3DE geometry is authored in its own local space (not a
             // unit quad), so the reference renderer flips rotation sign for
             // mesh particles vs. billboards (usesMesh ? 1 : -1).
@@ -793,26 +805,16 @@ namespace phoenix::runtime
 
             const bool animated = mesh && !mesh->frames.empty();
 
-            Bucket* sharedBucket = nullptr;
-            if (!animated)
-            {
-                auto found = std::find_if(buckets.begin(), buckets.end(), [&](const Bucket& b) {
-                    return !b.prebaked && b.mesh == mesh && b.layer == textureLayer
-                        && b.sourceBlend == effect.sourceBlend && b.destinationBlend == effect.destinationBlend
-                        && b.mirrorTexture == effect.mirrorTexture;
-                });
-                if (found == buckets.end())
-                {
-                    buckets.push_back(Bucket{ mesh, textureLayer, effect.sourceBlend, effect.destinationBlend,
-                        effect.mirrorTexture, {}, false, {}, {} });
-                    found = buckets.end() - 1;
-                }
-                sharedBucket = &*found;
-            }
-
             for (const auto& particle : emitter.particles)
             {
                 if (!particle.active) continue;
+
+                // Animated textures are particle-local in Godot: every birth
+                // starts at frame zero instead of inheriting the emitter's
+                // global phase.
+                const auto textureLayer = select_texture_layer_for(effect, particle.age);
+                if (textureLayer == 0xFFFFFFFFu)
+                    continue;
 
                 const Color4 color = color_at(effect, particle.age);
                 const float alpha = clampf(color.a, 0.0f, 1.0f);
@@ -852,7 +854,7 @@ namespace phoenix::runtime
                     // Sample this particle's own animation tick (matching the
                     // reference's textureSeconds*30 mesh-tick convention) and
                     // bake the transformed geometry straight to world space.
-                    const auto sample = sample_mesh_frame_index(*mesh, emitter.elapsed * 30.0f);
+                    const auto sample = sample_mesh_frame_index(*mesh, particle.age * 30.0f);
                     Bucket baked{ nullptr, textureLayer, effect.sourceBlend, effect.destinationBlend, effect.mirrorTexture, {}, true, {}, {} };
                     baked.bakedVertices.reserve(mesh->vertices.size());
                     for (std::size_t v = 0; v < mesh->vertices.size(); ++v)
@@ -882,12 +884,24 @@ namespace phoenix::runtime
                     continue;
                 }
 
+                auto found = std::find_if(buckets.begin(), buckets.end(), [&](const Bucket& b) {
+                    return !b.prebaked && b.mesh == mesh && b.layer == textureLayer
+                        && b.sourceBlend == effect.sourceBlend && b.destinationBlend == effect.destinationBlend
+                        && b.mirrorTexture == effect.mirrorTexture;
+                });
+                if (found == buckets.end())
+                {
+                    buckets.push_back(Bucket{ mesh, textureLayer, effect.sourceBlend, effect.destinationBlend,
+                        effect.mirrorTexture, {}, false, {}, {} });
+                    found = buckets.end() - 1;
+                }
+
                 instance.right[0] = right[0]; instance.right[1] = right[1]; instance.right[2] = right[2];
                 instance.up[0] = up[0]; instance.up[1] = up[1]; instance.up[2] = up[2];
                 instance.forward[0] = forward[0]; instance.forward[1] = forward[1]; instance.forward[2] = forward[2];
                 instance.position[0] = renderPos[0]; instance.position[1] = renderPos[1]; instance.position[2] = renderPos[2];
 
-                sharedBucket->items.push_back(instance);
+                found->items.push_back(instance);
             }
         };
 
