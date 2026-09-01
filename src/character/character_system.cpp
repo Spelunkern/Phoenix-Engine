@@ -112,6 +112,22 @@ namespace phoenix::character
             float z{};
         };
 
+        // Per-rig corrections from data/mantles/profiles/*.cloth.json in the
+        // Godot game. The native .3dc path already preserves the authored grid
+        // order, so only these profile values are needed by this renderer.
+        std::array<float, 3> cloak_shoulder_offset(std::string_view prefix)
+        {
+            if (prefix == "demf") return { 0.0f,  0.000f, -0.019f };
+            if (prefix == "demr") return { 0.0f, -0.018f, -0.013f };
+            if (prefix == "dewf") return { 0.0f,  0.007f,  0.000f };
+            if (prefix == "dewr") return { 0.0f,  0.009f,  0.000f };
+            if (prefix == "elmr") return { 0.0f,  0.003f,  0.020f };
+            if (prefix == "elwm") return { 0.0f,  0.008f,  0.000f };
+            if (prefix == "elwr") return { 0.0f,  0.011f,  0.000f };
+            if (prefix == "humm") return { 0.0f,  0.004f, -0.013f };
+            return {};
+        }
+
         struct Quat
         {
             float x{};
@@ -969,6 +985,7 @@ namespace phoenix::character
         const auto animationRoot = resolve_ci(root / "ANI");
 
         data_ = {};
+        cloakShoulderOffset_ = {};
         worldVertices_.clear();
         localSkinned_.clear();
         localSkinnedValid_ = false;
@@ -1483,6 +1500,7 @@ namespace phoenix::character
             // Lowercase prefix to match filenames on disk.
             auto lowerPrefix = appearance.prefix;
             for (auto& c : lowerPrefix) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+            cloakShoulderOffset_ = cloak_shoulder_offset(lowerPrefix);
 
             const auto bodyFilename    = lowerPrefix + "_mentle_l.3dc";
             const auto bodyFilenameFallback = lowerPrefix + "_mentle_hl.3dc";
@@ -3109,7 +3127,6 @@ namespace phoenix::character
                 // local displacement between the cloak's bind position and the body
                 // vertex's bind position; re-added (yaw-rotated) every frame.
                 clothPinBody_.assign(cols, UINT32_MAX);
-                clothPinOffset_.assign(static_cast<std::size_t>(cols) * 3u, 0.0f);
                 // Prefer anchoring to the shoulder piece: both cloak parts are
                 // authored as one garment, so hanging the cloth off the collar
                 // keeps them welded — anchoring to arbitrary body vertices lets
@@ -3141,12 +3158,6 @@ namespace phoenix::character
                         if (d2 < bestDist) { bestDist = d2; bestSlot = slot; }
                     }
                     clothPinBody_[c] = bestSlot;
-                    if (bestSlot != UINT32_MAX)
-                    {
-                        clothPinOffset_[c * 3 + 0] = cx - data_.bindVertices[bestSlot].position[0];
-                        clothPinOffset_[c * 3 + 1] = cy - data_.bindVertices[bestSlot].position[1];
-                        clothPinOffset_[c * 3 + 2] = cz - data_.bindVertices[bestSlot].position[2];
-                    }
                 }
                 clothInitialized_ = true;
             }
@@ -3164,9 +3175,11 @@ namespace phoenix::character
                 float px, py, pz;
                 if (slot != UINT32_MAX && slot < worldVertices_.size())
                 {
-                    const float ox = clothPinOffset_[c * 3 + 0];
-                    const float oy = clothPinOffset_[c * 3 + 1];
-                    const float oz = clothPinOffset_[c * 3 + 2];
+                    // ClothSim.PIN_SEAM is zero in Godot: discard the fixed
+                    // authored gap and retain only the per-rig profile offset.
+                    const float ox = -cloakShoulderOffset_[0];
+                    const float oy = cloakShoulderOffset_[1];
+                    const float oz = cloakShoulderOffset_[2];
                     px = worldVertices_[slot].position[0] + (ox * pinCos + oz * pinSin);
                     py = worldVertices_[slot].position[1] + oy;
                     pz = worldVertices_[slot].position[2] + (-ox * pinSin + oz * pinCos);
@@ -3290,69 +3303,31 @@ namespace phoenix::character
                 }
             }
 
-            // Write simulated positions back into the render buffer.
+            // Godot rebuilds the visible mesh every render frame, interpolated
+            // between the previous and current 60 Hz cloth states. Without this
+            // the cape visibly freezes on frames where no fixed step ran.
+            const float renderAlpha = std::clamp(clothAccum_ / kFixedDt, 0.0f, 1.0f);
             for (std::uint32_t i = 0; i < n; ++i)
             {
-                worldVertices_[off + i].position[0] = clothWorld_[i * 3 + 0];
-                worldVertices_[off + i].position[1] = clothWorld_[i * 3 + 1];
-                worldVertices_[off + i].position[2] = clothWorld_[i * 3 + 2];
+                for (int axis = 0; axis < 3; ++axis)
+                    worldVertices_[off + i].position[axis] = std::lerp(
+                        clothPrev_[i * 3 + axis], clothWorld_[i * 3 + axis], renderAlpha);
             }
 
-            // Recompute normals from the actual triangle winding of the cloak mesh
-            // and accumulate per vertex. Using the mesh's own faces (consistent
-            // winding) avoids the orientation flips that produced dark patches.
-            // Reference direction (the world-transformed bind normals) lets us
-            // globally flip if the winding points the opposite way.
-            float refDot = 0.0f;
-            clothRefNormals_.resize(static_cast<std::size_t>(n) * 3u);
+            // Match ClothSim._rebuild_mesh: every vertex in a column uses the
+            // corresponding animated shoulder-anchor normal. Geometry-derived
+            // normals make lighting pulse as the simulated folds move.
             for (std::uint32_t i = 0; i < n; ++i)
             {
-                clothRefNormals_[i * 3 + 0] = worldVertices_[off + i].normal[0];
-                clothRefNormals_[i * 3 + 1] = worldVertices_[off + i].normal[1];
-                clothRefNormals_[i * 3 + 2] = worldVertices_[off + i].normal[2];
-                worldVertices_[off + i].normal[0] = 0.0f;
-                worldVertices_[off + i].normal[1] = 0.0f;
-                worldVertices_[off + i].normal[2] = 0.0f;
-            }
-            for (const auto& face : data_.cloakBody.faces)
-            {
-                const std::uint32_t a = face.indices[0];
-                const std::uint32_t b = face.indices[1];
-                const std::uint32_t cI = face.indices[2];
-                if (a >= n || b >= n || cI >= n) continue;
-                const Vec3 e1{
-                    clothWorld_[b * 3 + 0] - clothWorld_[a * 3 + 0],
-                    clothWorld_[b * 3 + 1] - clothWorld_[a * 3 + 1],
-                    clothWorld_[b * 3 + 2] - clothWorld_[a * 3 + 2] };
-                const Vec3 e2{
-                    clothWorld_[cI * 3 + 0] - clothWorld_[a * 3 + 0],
-                    clothWorld_[cI * 3 + 1] - clothWorld_[a * 3 + 1],
-                    clothWorld_[cI * 3 + 2] - clothWorld_[a * 3 + 2] };
-                const Vec3 fn{
-                    e1.y * e2.z - e1.z * e2.y,
-                    e1.z * e2.x - e1.x * e2.z,
-                    e1.x * e2.y - e1.y * e2.x };
-                for (std::uint32_t k : { a, b, cI })
+                const auto column = i % cols;
+                const auto slot = column < clothPinBody_.size()
+                    ? clothPinBody_[column] : UINT32_MAX;
+                if (slot != UINT32_MAX && slot < worldVertices_.size())
                 {
-                    worldVertices_[off + k].normal[0] += fn.x;
-                    worldVertices_[off + k].normal[1] += fn.y;
-                    worldVertices_[off + k].normal[2] += fn.z;
+                    worldVertices_[off + i].normal[0] = worldVertices_[slot].normal[0];
+                    worldVertices_[off + i].normal[1] = worldVertices_[slot].normal[1];
+                    worldVertices_[off + i].normal[2] = worldVertices_[slot].normal[2];
                 }
-            }
-            for (std::uint32_t i = 0; i < n; ++i)
-                refDot += worldVertices_[off + i].normal[0] * clothRefNormals_[i * 3 + 0]
-                        + worldVertices_[off + i].normal[1] * clothRefNormals_[i * 3 + 1]
-                        + worldVertices_[off + i].normal[2] * clothRefNormals_[i * 3 + 2];
-            const float gsign = (refDot < 0.0f) ? -1.0f : 1.0f;
-            for (std::uint32_t i = 0; i < n; ++i)
-            {
-                const Vec3 nn = normalize_vec3({
-                    worldVertices_[off + i].normal[0] * gsign,
-                    worldVertices_[off + i].normal[1] * gsign,
-                    worldVertices_[off + i].normal[2] * gsign });
-                worldVertices_[off + i].normal[0] = nn.x;
-                worldVertices_[off + i].normal[1] = nn.y;
-                worldVertices_[off + i].normal[2] = nn.z;
             }
         }
     }
@@ -3379,6 +3354,7 @@ namespace phoenix::character
         }
         cloakBodyBoneIndex = source.cloakBodyBoneIndex;
         cloakShoulderBoneIndex = source.cloakShoulderBoneIndex;
+        cloakShoulderOffset_ = source.cloakShoulderOffset_;
         mountBoneIndex = source.mountBoneIndex;
         characterX_ = 0.0f;
         characterY_ = 0.0f;

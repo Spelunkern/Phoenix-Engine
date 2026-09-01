@@ -4,6 +4,7 @@
 #include "renderer/opengl_renderer.h"
 #include "world/character_loader.h"
 
+#include <array>
 #include <cstdint>
 #include <filesystem>
 #include <mutex>
@@ -614,11 +615,12 @@ namespace phoenix::character
         // bind grid spacing. Solved with position-based Verlet each frame.
         std::vector<float> clothWorld_;     // 3*N current world positions
         std::vector<float> clothPrev_;      // 3*N previous world positions (Verlet)
-        std::vector<float> clothRefNormals_; // 3*N scratch: pre-recompute normals, reused instead of a fresh per-frame vector
         std::vector<float> clothRestUp_;    // per-vertex rest length to row above (world units)
         std::vector<float> clothRestLeft_;  // per-vertex rest length to col to the left
         std::vector<std::uint32_t> clothPinBody_;  // per-column: skinned body vertex the top row follows
-        std::vector<float> clothPinOffset_;        // per-column local offset (3 each): cloak bind - body bind
+        // Godot deliberately closes the authored seam between the two cloak
+        // pieces, then applies a small per-rig correction from its cloth profile.
+        std::array<float, 3> cloakShoulderOffset_{};
         std::uint32_t clothRows_{};
         static constexpr std::uint32_t kClothCols = 5;
         bool clothInitialized_{};
