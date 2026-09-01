@@ -14,14 +14,18 @@ namespace phoenix::ui
     enum class WeatherMode
     {
         Default,
+        ClearDay,
         Dawn,
         MidAfternoon,
-        Dusk,
         Sunset,
+        Dusk,
         Night,
         Overcast,
-        Storm,
         Snowstorm,
+        MistyMorning,
+        BlueHour,
+        Aurora,
+        Storm,
     };
 
     // One selectable character preset discovered by scanning the data folder.

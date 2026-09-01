@@ -72,11 +72,11 @@ void main()
             color = textureColor.rgb * lm;
         }
         else
-            color = textureColor.rgb * vLighting;
+            color = textureColor.rgb * environmentMaterialLighting(vNormal, vWorldPos);
     }
     else
     {
-        color = vColor * vLighting;
+        color = vColor * environmentMaterialLighting(vNormal, vWorldPos);
     }
 
     color = applyUnderwaterView(color, vWorldPos);

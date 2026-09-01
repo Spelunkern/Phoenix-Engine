@@ -50,11 +50,88 @@ namespace phoenix::ui
             { 0.025f, 0.13f, 0.27f, 0.94f },
             { 0.05f, 0.030f, 0.58f, 4.0f },
             { 0.75f, 0.22f, 6.0f, 0.04f },
+            { -0.4575f, 0.6691f, 0.5855f, 1.18f },
+            { -0.5708f, 0.3746f, 0.7305f, 0.42f },
+            { 1.00f, 0.93f, 0.78f, 0.70f },
+            { 0.54f, 0.62f, 0.74f, 0.48f },
+            { 1.00f, 0.94f, 0.78f, 18.0f },
+            { 1.00f, 0.98f, 0.90f, 0.62f },
+            { 1.05f, 0.0f, 0.014f, 0.0f },
+            { 0.92f, 0.95f, 1.00f, 220.0f },
+            { 0.10f, 0.85f, 0.45f, 0.30f },
+            { 0.35f, 0.25f, 0.85f, 0.06f },
+            { 0.0f, 0.5f, 0.0f, 0.0f },
+            { 0.95f, 0.97f, 1.00f, 0.0f },
         };
         const auto set4 = [](float (&target)[4], float x, float y, float z, float w) {
             target[0] = x; target[1] = y; target[2] = z; target[3] = w;
         };
-        if (weatherMode == WeatherMode::Storm)
+        const auto set_direction = [](float (&target)[4], float elevationDegrees,
+            float azimuthDegrees, float value) {
+            constexpr float degreesToRadians = 3.14159265358979323846f / 180.0f;
+            const auto elevation = elevationDegrees * degreesToRadians;
+            const auto azimuth = azimuthDegrees * degreesToRadians;
+            const auto horizontal = std::cos(elevation);
+            target[0] = horizontal * std::sin(azimuth);
+            target[1] = std::sin(elevation);
+            target[2] = horizontal * std::cos(azimuth);
+            target[3] = value;
+        };
+        if (weatherMode == WeatherMode::ClearDay)
+        {
+            weatherFog = { 0.70f, 0.84f, 0.96f };
+            set4(environment.horizonCurve, 0.70f, 0.84f, 0.96f, 0.25f);
+            set4(environment.zenithMidWeight, 0.08f, 0.29f, 0.70f, 0.25f);
+            set4(environment.midHeight, 0.42f, 0.67f, 0.91f, 0.29f);
+            set4(environment.groundCloudCover, 0.30f, 0.28f, 0.26f, 0.28f);
+            set4(environment.cloudColorOpacity, 1.00f, 1.00f, 0.98f, 0.98f);
+            set4(environment.cloudShadeSpeed, 0.64f, 0.72f, 0.84f, 1.10f);
+            set4(environment.cloudShape, 0.31f, 0.48f, 0.25f, 40.0f);
+            set4(environment.waterShallowAlpha, 0.19f, 0.49f, 0.57f, 0.18f);
+            set4(environment.waterDeepAlpha, 0.02f, 0.14f, 0.29f, 0.94f);
+            set4(environment.waterSurface, 0.05f, 0.030f, 0.60f, 4.0f);
+        }
+        else if (weatherMode == WeatherMode::MistyMorning)
+        {
+            weatherFog = { 0.76f, 0.76f, 0.72f };
+            set4(environment.horizonCurve, 0.90f, 0.86f, 0.78f, 0.50f);
+            set4(environment.zenithMidWeight, 0.56f, 0.64f, 0.70f, 0.0f);
+            set4(environment.midHeight, 0.0f, 0.0f, 0.0f, 0.35f);
+            set4(environment.groundCloudCover, 0.34f, 0.33f, 0.30f, 0.55f);
+            set4(environment.cloudColorOpacity, 0.94f, 0.93f, 0.90f, 0.90f);
+            set4(environment.cloudShadeSpeed, 0.70f, 0.70f, 0.72f, 0.60f);
+            set4(environment.cloudShape, 0.29f, 0.52f, 0.25f, 40.0f);
+            set4(environment.waterShallowAlpha, 0.30f, 0.38f, 0.40f, 0.18f);
+            set4(environment.waterDeepAlpha, 0.09f, 0.15f, 0.20f, 0.94f);
+            set4(environment.waterSurface, 0.05f, 0.018f, 0.35f, 4.0f);
+        }
+        else if (weatherMode == WeatherMode::BlueHour)
+        {
+            weatherFog = { 0.10f, 0.13f, 0.18f };
+            set4(environment.horizonCurve, 0.32f, 0.48f, 0.70f, 0.30f);
+            set4(environment.zenithMidWeight, 0.06f, 0.12f, 0.34f, 0.40f);
+            set4(environment.midHeight, 0.20f, 0.34f, 0.60f, 0.30f);
+            set4(environment.groundCloudCover, 0.10f, 0.13f, 0.18f, 0.32f);
+            set4(environment.cloudColorOpacity, 0.62f, 0.68f, 0.84f, 1.0f);
+            set4(environment.cloudShadeSpeed, 0.28f, 0.32f, 0.46f, 0.60f);
+            set4(environment.cloudShape, 0.33f, 0.42f, 0.25f, 40.0f);
+            set4(environment.waterShallowAlpha, 0.10f, 0.20f, 0.36f, 0.18f);
+            set4(environment.waterDeepAlpha, 0.01f, 0.04f, 0.13f, 0.94f);
+            set4(environment.waterSurface, 0.05f, 0.022f, 0.45f, 4.0f);
+        }
+        else if (weatherMode == WeatherMode::Aurora)
+        {
+            weatherFog = { 0.080f, 0.105f, 0.160f };
+            set4(environment.horizonCurve, 0.075f, 0.100f, 0.180f, 0.28f);
+            set4(environment.zenithMidWeight, 0.018f, 0.035f, 0.085f, 0.0f);
+            set4(environment.midHeight, 0.0f, 0.0f, 0.0f, 0.35f);
+            set4(environment.groundCloudCover, 0.045f, 0.050f, 0.070f, 0.0f);
+            set4(environment.cloudColorOpacity, 0.0f, 0.0f, 0.0f, 0.0f);
+            set4(environment.waterShallowAlpha, 0.24f, 0.44f, 0.52f, 0.18f);
+            set4(environment.waterDeepAlpha, 0.10f, 0.22f, 0.32f, 0.94f);
+            set4(environment.waterSurface, 0.05f, 0.020f, 0.40f, 4.0f);
+        }
+        else if (weatherMode == WeatherMode::Storm)
         {
             weatherFog = { 0.20f, 0.22f, 0.25f };
             set4(environment.horizonCurve, 0.34f, 0.36f, 0.40f, 0.40f);
@@ -67,6 +144,7 @@ namespace phoenix::ui
             set4(environment.waterShallowAlpha, 0.16f, 0.24f, 0.24f, 0.18f);
             set4(environment.waterDeepAlpha, 0.03f, 0.07f, 0.08f, 0.94f);
             set4(environment.waterSurface, 0.05f, 0.075f, 1.60f, 4.0f);
+            set4(environment.groundWeather, 1.0f, 0.5f, 0.0f, 0.0f);
         }
         else if (weatherMode == WeatherMode::Snowstorm)
         {
@@ -81,6 +159,8 @@ namespace phoenix::ui
             set4(environment.waterShallowAlpha, 0.30f, 0.44f, 0.50f, 0.18f);
             set4(environment.waterDeepAlpha, 0.07f, 0.16f, 0.24f, 0.94f);
             set4(environment.waterSurface, 0.05f, 0.026f, 0.50f, 4.0f);
+            set4(environment.groundWeather, 0.0f, 0.5f, 0.62f, 0.0f);
+            set4(environment.snowColor, 0.95f, 0.97f, 1.00f, 0.0f);
         }
         else if (weatherMode == WeatherMode::Sunset)
         {
@@ -165,6 +245,122 @@ namespace phoenix::ui
             set4(environment.waterShallowAlpha, 0.20f, 0.30f, 0.34f, 0.18f);
             set4(environment.waterDeepAlpha, 0.04f, 0.09f, 0.14f, 0.94f);
             set4(environment.waterSurface, 0.05f, 0.042f, 0.85f, 4.0f);
+            set4(environment.groundWeather, 0.18f, 0.5f, 0.0f, 0.0f);
+        }
+
+        // Port the complete lighting/astro side of the corresponding Godot
+        // preset. The visible astro may deliberately sit lower than the
+        // directional light, exactly as it does in SkyPresets.
+        switch (weatherMode)
+        {
+            case WeatherMode::ClearDay:
+                set_direction(environment.lightDirectionEnergy, 47.0f, 35.0f, 1.28f);
+                set_direction(environment.astroDirectionGlow, 24.0f, 35.0f, 0.46f);
+                set4(environment.lightColorShadow, 1.00f, 0.96f, 0.84f, 0.70f);
+                set4(environment.ambientColorEnergy, 0.55f, 0.64f, 0.77f, 0.48f);
+                set4(environment.glowColorFocus, 1.00f, 0.96f, 0.84f, 20.0f);
+                set4(environment.diskColorSize, 1.00f, 0.99f, 0.92f, 0.56f);
+                set4(environment.skyOptics, 1.08f, 0.0f, 0.014f, 0.0f);
+                break;
+            case WeatherMode::Dawn:
+                set_direction(environment.lightDirectionEnergy, 9.0f, 95.0f, 0.95f);
+                set_direction(environment.astroDirectionGlow, 8.0f, 95.0f, 0.85f);
+                set4(environment.lightColorShadow, 1.00f, 0.80f, 0.60f, 0.72f);
+                set4(environment.ambientColorEnergy, 0.48f, 0.46f, 0.58f, 0.40f);
+                set4(environment.glowColorFocus, 1.00f, 0.74f, 0.42f, 10.0f);
+                set4(environment.diskColorSize, 1.0f, 1.0f, 1.0f, 0.0f);
+                break;
+            case WeatherMode::MidAfternoon:
+                set_direction(environment.lightDirectionEnergy, 34.0f, -50.0f, 1.20f);
+                set_direction(environment.astroDirectionGlow, 20.0f, -50.0f, 0.45f);
+                set4(environment.lightColorShadow, 1.00f, 0.92f, 0.76f, 0.70f);
+                set4(environment.ambientColorEnergy, 0.58f, 0.56f, 0.52f, 0.42f);
+                set4(environment.glowColorFocus, 1.00f, 0.90f, 0.68f, 14.0f);
+                set4(environment.diskColorSize, 1.0f, 1.0f, 1.0f, 0.0f);
+                break;
+            case WeatherMode::Dusk:
+                set_direction(environment.lightDirectionEnergy, 3.0f, -120.0f, 0.75f);
+                set_direction(environment.astroDirectionGlow, 3.0f, -120.0f, 0.60f);
+                set4(environment.lightColorShadow, 0.88f, 0.70f, 0.66f, 0.68f);
+                set4(environment.ambientColorEnergy, 0.42f, 0.40f, 0.50f, 0.46f);
+                set4(environment.glowColorFocus, 0.92f, 0.50f, 0.32f, 12.0f);
+                set4(environment.diskColorSize, 1.0f, 1.0f, 1.0f, 0.0f);
+                break;
+            case WeatherMode::Sunset:
+                set_direction(environment.lightDirectionEnergy, 7.0f, -110.0f, 1.15f);
+                set_direction(environment.astroDirectionGlow, 6.0f, -110.0f, 1.10f);
+                set4(environment.lightColorShadow, 1.00f, 0.74f, 0.52f, 0.72f);
+                set4(environment.ambientColorEnergy, 0.58f, 0.48f, 0.52f, 0.50f);
+                set4(environment.glowColorFocus, 1.00f, 0.58f, 0.28f, 8.0f);
+                set4(environment.diskColorSize, 1.0f, 1.0f, 1.0f, 0.0f);
+                break;
+            case WeatherMode::Night:
+                set_direction(environment.lightDirectionEnergy, 34.0f, 150.0f, 0.46f);
+                set_direction(environment.astroDirectionGlow, 14.0f, 150.0f, 0.30f);
+                set4(environment.lightColorShadow, 0.62f, 0.72f, 0.94f, 0.62f);
+                set4(environment.ambientColorEnergy, 0.25f, 0.30f, 0.44f, 0.52f);
+                set4(environment.glowColorFocus, 0.62f, 0.70f, 0.88f, 90.0f);
+                set4(environment.diskColorSize, 0.93f, 0.95f, 1.00f, 1.50f);
+                set4(environment.skyOptics, 1.15f, 1.0f, 0.045f, 0.0f);
+                break;
+            case WeatherMode::Overcast:
+                set_direction(environment.lightDirectionEnergy, 55.0f, 20.0f, 0.55f);
+                set_direction(environment.astroDirectionGlow, 55.0f, 20.0f, 0.0f);
+                set4(environment.lightColorShadow, 0.86f, 0.88f, 0.92f, 0.42f);
+                set4(environment.ambientColorEnergy, 0.62f, 0.64f, 0.68f, 0.70f);
+                set4(environment.diskColorSize, 1.0f, 1.0f, 1.0f, 0.0f);
+                break;
+            case WeatherMode::Storm:
+                set_direction(environment.lightDirectionEnergy, 40.0f, 70.0f, 0.35f);
+                set_direction(environment.astroDirectionGlow, 40.0f, 70.0f, 0.0f);
+                set4(environment.lightColorShadow, 0.66f, 0.70f, 0.78f, 0.55f);
+                set4(environment.ambientColorEnergy, 0.30f, 0.33f, 0.38f, 0.55f);
+                set4(environment.diskColorSize, 1.0f, 1.0f, 1.0f, 0.0f);
+                break;
+            case WeatherMode::Snowstorm:
+                set_direction(environment.lightDirectionEnergy, 30.0f, -25.0f, 0.70f);
+                set_direction(environment.astroDirectionGlow, 30.0f, -25.0f, 0.0f);
+                set4(environment.lightColorShadow, 0.90f, 0.94f, 1.00f, 0.42f);
+                set4(environment.ambientColorEnergy, 0.72f, 0.78f, 0.86f, 0.72f);
+                set4(environment.diskColorSize, 1.0f, 1.0f, 1.0f, 0.0f);
+                break;
+            case WeatherMode::MistyMorning:
+                set_direction(environment.lightDirectionEnergy, 14.0f, 80.0f, 0.55f);
+                set_direction(environment.astroDirectionGlow, 10.0f, 80.0f, 0.40f);
+                set4(environment.lightColorShadow, 1.00f, 0.95f, 0.86f, 0.40f);
+                set4(environment.ambientColorEnergy, 0.76f, 0.76f, 0.72f, 0.78f);
+                set4(environment.glowColorFocus, 1.00f, 0.94f, 0.80f, 5.0f);
+                set4(environment.diskColorSize, 1.0f, 1.0f, 1.0f, 0.0f);
+                break;
+            case WeatherMode::BlueHour:
+                set_direction(environment.lightDirectionEnergy, -4.0f, -130.0f, 0.42f);
+                set_direction(environment.astroDirectionGlow, -4.0f, -130.0f, 0.35f);
+                set4(environment.lightColorShadow, 0.62f, 0.72f, 0.94f, 0.60f);
+                set4(environment.ambientColorEnergy, 0.34f, 0.42f, 0.58f, 0.50f);
+                set4(environment.glowColorFocus, 0.70f, 0.60f, 0.62f, 14.0f);
+                set4(environment.diskColorSize, 1.0f, 1.0f, 1.0f, 0.0f);
+                break;
+            case WeatherMode::Aurora:
+                set_direction(environment.lightDirectionEnergy, 55.0f, 165.0f, 0.46f);
+                set_direction(environment.astroDirectionGlow, 20.0f, 165.0f, 0.25f);
+                set4(environment.lightColorShadow, 0.62f, 0.72f, 0.94f, 0.62f);
+                set4(environment.ambientColorEnergy, 0.25f, 0.30f, 0.44f, 0.52f);
+                set4(environment.glowColorFocus, 0.55f, 0.62f, 0.80f, 28.0f);
+                set4(environment.diskColorSize, 0.93f, 0.95f, 1.00f, 1.50f);
+                set4(environment.skyOptics, 1.05f, 1.0f, 0.045f, 1.0f);
+                set4(environment.auroraLowSpread, 0.10f, 0.85f, 0.45f, 0.30f);
+                set4(environment.auroraHighSpeed, 0.35f, 0.25f, 0.85f, 0.06f);
+                break;
+            case WeatherMode::Default:
+            default:
+                break;
+        }
+        if (dungeon)
+        {
+            set4(environment.lightDirectionEnergy, 0.0f, 1.0f, 0.0f, 0.0f);
+            set4(environment.ambientColorEnergy, 1.0f, 1.0f, 1.0f, 1.0f);
+            set4(environment.astroDirectionGlow, 0.0f, 1.0f, 0.0f, 0.0f);
+            set4(environment.skyOptics, 0.0f, 0.0f, 0.0f, 0.0f);
         }
         renderer.set_environment_style(environment);
         if (!fogEnabled && !dungeon)
@@ -357,11 +553,13 @@ namespace phoenix::ui
             result.viewDistanceChanged = std::abs(previousViewDistance - viewDistance) > 1.0f;
 
             const WeatherMode previousWeatherMode = weatherMode;
-            const char* weatherItems[] = { "Default", "Dawn", "Mid-Afternoon", "Dusk", "Sunset", "Night", "Overcast", "Storm", "Snowstorm" };
+            const char* weatherItems[] = { "Default", "Clear day", "Dawn", "Afternoon",
+                "Sunset", "Dusk", "Night", "Overcast", "Snow", "Misty morning",
+                "Blue hour", "Aurora", "Storm" };
             int weatherIndex = static_cast<int>(weatherMode);
             ImGui::SetNextItemWidth(180.0f);
             if (ImGui::Combo("Sky", &weatherIndex, weatherItems, IM_ARRAYSIZE(weatherItems)))
-                weatherMode = static_cast<WeatherMode>(std::clamp(weatherIndex, 0, 8));
+                weatherMode = static_cast<WeatherMode>(std::clamp(weatherIndex, 0, 12));
             result.weatherChanged = weatherMode != previousWeatherMode;
         }
         else if (activeSection == Section::Display)

@@ -137,7 +137,12 @@ namespace phoenix::renderer
         GLuint skinnedCharacterProgram{};
         GLuint effectParticleProgram{};
         GLuint skyProgram{};
+        GLuint shadowTerrainProgram{};
+        GLuint shadowStaticProgram{};
+        GLuint shadowSkinnedProgram{};
         bool skyReady{};
+        bool shadowReady{};
+        bool shadowsEnabled{ true };
         // Tracks the last value passed to set_antialiasing_enabled so the
         // effect-particle draw (which deliberately disables MSAA/alpha-to-
         // coverage around itself — see render_frame) knows what to restore
@@ -158,6 +163,12 @@ namespace phoenix::renderer
 
         // --- camera/environment uniform buffer (19 std140 vec4s, binding 0) ---
         GLuint cameraUbo{};
+        GLuint shadowFramebuffer{};
+        GLuint shadowDepthTexture{};
+        GLuint shadowSampler{};
+        static constexpr std::uint32_t shadowResolution = 2048u;
+        float shadowMatrix[16]{};
+        float shadowInfo[4]{ 0.0f, 1.0f / 2048.0f, 0.0012f, 0.0f };
 
         // --- terrain ---
         GlBuffer terrainVertexBuffer;
@@ -321,6 +332,18 @@ namespace phoenix::renderer
             { 0.025f, 0.13f, 0.27f, 0.94f },
             { 0.05f, 0.030f, 0.58f, 4.0f },
             { 0.75f, 0.22f, 6.0f, 0.04f },
+            { -0.4575f, 0.6691f, 0.5855f, 1.18f },
+            { -0.5708f, 0.3746f, 0.7305f, 0.42f },
+            { 1.00f, 0.93f, 0.78f, 0.70f },
+            { 0.54f, 0.62f, 0.74f, 0.48f },
+            { 1.00f, 0.94f, 0.78f, 18.0f },
+            { 1.00f, 0.98f, 0.90f, 0.62f },
+            { 1.05f, 0.0f, 0.014f, 0.0f },
+            { 0.92f, 0.95f, 1.00f, 220.0f },
+            { 0.10f, 0.85f, 0.45f, 0.30f },
+            { 0.35f, 0.25f, 0.85f, 0.06f },
+            { 0.0f, 0.5f, 0.0f, 0.0f },
+            { 0.95f, 0.97f, 1.00f, 0.0f },
         };
         std::string adapterName;
     };

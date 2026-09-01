@@ -83,12 +83,12 @@ void main()
     float cameraZ = sp * delta.y + cp * yawZ;
     float nearPlane = 2.0;
 
-    float lit = neutralMaterialLighting(worldNormal);
+    float lit = 1.0;
 
     float fogStart = camera.fogDistances.x;
     float fogEnd = max(fogStart + 1.0, camera.fogDistances.y);
     float fogLinear = clamp((cameraZ - fogStart) / (fogEnd - fogStart), 0.0, 1.0);
-    float fogFactor = 1.0 - exp(-fogLinear * fogLinear * 5.0);
+    float fogFactor = fogLinear * fogLinear;
 
     float ndcZ = cameraZ * farPlane / (farPlane - nearPlane) - nearPlane * farPlane / (farPlane - nearPlane);
     float glZ = 2.0 * ndcZ - cameraZ;

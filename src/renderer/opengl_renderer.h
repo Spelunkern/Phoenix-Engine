@@ -111,6 +111,18 @@ namespace phoenix::renderer
         float waterDeepAlpha[4]{};     // deep rgb, alpha
         float waterSurface[4]{};       // ripple scale/speed/strength, Fresnel power
         float waterOptics[4]{};        // Fresnel opacity, underside fade, depth distance, roughness
+        float lightDirectionEnergy[4]{}; // direction toward key light xyz, energy
+        float astroDirectionGlow[4]{};   // visible sun/moon direction xyz, halo strength
+        float lightColorShadow[4]{};     // key-light rgb, shadow darkness
+        float ambientColorEnergy[4]{};   // ambient rgb, energy
+        float glowColorFocus[4]{};       // halo rgb, focus exponent
+        float diskColorSize[4]{};        // disk rgb, angular radius in degrees
+        float skyOptics[4]{};            // disk strength, star strength/amount, aurora strength
+        float starColorDensity[4]{};      // star rgb, cells per sphere axis
+        float auroraLowSpread[4]{};       // lower curtain rgb, spread
+        float auroraHighSpeed[4]{};       // upper curtain rgb, movement speed
+        float groundWeather[4]{};         // wetness, puddle amount, snow cover, reserved
+        float snowColor[4]{};             // accumulated-snow rgb, reserved
     };
 
     class OpenGLRenderer
@@ -229,6 +241,7 @@ namespace phoenix::renderer
         void set_sky_settings(const float* fogColor, float fogStartDistance, float fogEndDistance, bool hasWorldSky);
         void set_sky_texture_layers(std::uint32_t skyLayer, std::uint32_t primaryCloudLayer, std::uint32_t secondaryCloudLayer);
         void set_environment_style(const EnvironmentStyle& style);
+        void set_shadows_enabled(bool enabled);
         // Live toggle for MSAA + alpha-to-coverage — safe to call every
         // frame regardless of whether the context actually has multisample
         // buffers (glEnable/glDisable(GL_MULTISAMPLE) is a no-op without

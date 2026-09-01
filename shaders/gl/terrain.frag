@@ -119,6 +119,40 @@ vec3 applyUnderwaterView(vec3 color, vec3 worldPos)
     return mix(cooled, waterTint, underwaterAmount);
 }
 
+vec3 applyGroundWeather(vec3 color, vec3 worldPosition, vec3 worldNormal)
+{
+    float wetness = camera.groundWeather.x;
+    color *= mix(1.0, 0.55, wetness);
+
+    if (camera.groundWeather.y > 0.0 && wetness > 0.35)
+    {
+        float fill = smoothstep(0.35, 1.0, wetness);
+        float flatEnough = smoothstep(0.88, 1.0, abs(worldNormal.y));
+        float base = texture(environmentNormalNoise,
+            worldPosition.xz * 0.03 + vec2(0.53, 0.19)).a;
+        float detail = texture(environmentNormalNoise,
+            worldPosition.xz * 0.129 + vec2(0.11, 0.83)).a;
+        float maskValue = base + (detail - 0.5) * 0.26;
+        float threshold = mix(0.90, 0.70, fill * camera.groundWeather.y * 2.0);
+        float puddle = smoothstep(threshold, threshold + 0.09, maskValue) * flatEnough;
+        color = mix(color, vec3(0.42, 0.46, 0.48) * 0.35, puddle);
+    }
+
+    float snowCover = camera.groundWeather.z;
+    if (snowCover > 0.0)
+    {
+        float liesFlat = smoothstep(0.55, 0.85, abs(worldNormal.y));
+        float base = texture(environmentNormalNoise, worldPosition.xz * 0.02).a;
+        float detail = texture(environmentNormalNoise,
+            worldPosition.xz * 0.086 + vec2(0.37, 0.61)).a;
+        float maskValue = base + (detail - 0.5) * 0.26;
+        float threshold = mix(0.80, 0.32, snowCover);
+        float cover = smoothstep(threshold, threshold + 0.14, maskValue) * liesFlat;
+        color = mix(color, camera.snowColor.rgb, cover);
+    }
+    return color;
+}
+
 void main()
 {
     if (vFogFactor >= 0.995)
@@ -176,7 +210,8 @@ void main()
         if (centerLayer == waterLayer)
             color = mix(vec3(0.01, 0.08, 0.34), color * vec3(0.42, 0.70, 1.22), 0.45);
 
-        color *= vLighting;
+        color = applyGroundWeather(color, vWorldPos, vNormal);
+        color *= environmentMaterialLighting(vNormal, vWorldPos);
     }
     else if (vTextureLayer != 0xFFFFFFFFu)
     {
@@ -185,12 +220,6 @@ void main()
             outColor = vec4(vColor, 0.85);
             return;
         }
-        if (vTextureLayer == 0xFFFFFFFCu)
-        {
-            outColor = vec4(0.0, 0.0, 0.0, vColor.r);
-            return;
-        }
-
         uint sampleLayer = vTextureLayer;
         bool alphaCutout = false;
         if (sampleLayer >= 2048u)
@@ -255,7 +284,7 @@ void main()
                 // Cloaks intentionally use a constant term because their
                 // simulation rebuilds normals every frame. All other player
                 // parts use the same neutral Lambert result as the world.
-                float lighting = flatLit ? 0.75 : vLighting;
+                vec3 lighting = flatLit ? vec3(0.75) : environmentMaterialLighting(vNormal, vWorldPos);
                 color = textureColor.rgb * lighting;
                 applyLightmap = false;
             }
@@ -263,13 +292,13 @@ void main()
             {
                 if (alphaCutout && textureColor.a - 0.3 < 0.0)
                     discard;
-                color = textureColor.rgb * vLighting;
+                color = textureColor.rgb * environmentMaterialLighting(vNormal, vWorldPos);
             }
         }
     }
     else
     {
-        color = vColor;
+        color = vColor * environmentMaterialLighting(vNormal, vWorldPos);
     }
 
     if (applyLightmap && camera.fogDistances.w > 0.5)

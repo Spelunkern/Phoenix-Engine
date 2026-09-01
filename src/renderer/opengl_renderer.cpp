@@ -151,7 +151,72 @@ namespace phoenix::renderer
             return program;
         }
 
-        constexpr std::size_t kCameraConstantFloatCount = 76;
+        constexpr std::size_t kCameraConstantFloatCount = 144;
+
+        void build_directional_shadow_matrix(float (&matrix)[16],
+            const float* camera, const float* lightDirection, float farPlane)
+        {
+            const auto normalize3 = [](float (&value)[3]) {
+                const auto length = std::sqrt(value[0] * value[0] + value[1] * value[1]
+                    + value[2] * value[2]);
+                const auto inverse = length > 0.00001f ? 1.0f / length : 1.0f;
+                value[0] *= inverse; value[1] *= inverse; value[2] *= inverse;
+            };
+            const auto cross3 = [](const float* a, const float* b, float (&result)[3]) {
+                result[0] = a[1] * b[2] - a[2] * b[1];
+                result[1] = a[2] * b[0] - a[0] * b[2];
+                result[2] = a[0] * b[1] - a[1] * b[0];
+            };
+            const auto dot3 = [](const float* a, const float* b) {
+                return a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+            };
+
+            float forward[3]{ -lightDirection[0], -lightDirection[1], -lightDirection[2] };
+            normalize3(forward);
+            float worldUp[3]{ 0.0f, 1.0f, 0.0f };
+            float right[3]{};
+            cross3(forward, worldUp, right);
+            if (std::abs(right[0]) + std::abs(right[1]) + std::abs(right[2]) < 0.001f)
+            {
+                worldUp[0] = 0.0f; worldUp[1] = 0.0f; worldUp[2] = 1.0f;
+                cross3(forward, worldUp, right);
+            }
+            normalize3(right);
+            float up[3]{};
+            cross3(right, forward, up);
+            normalize3(up);
+
+            const auto radius = std::clamp(farPlane * 0.58f, 220.0f, 850.0f);
+            const auto depth = radius * 2.4f;
+            float center[3]{
+                camera[0] + camera[9] * radius * 0.28f,
+                camera[1] - 35.0f,
+                camera[2] + camera[8] * radius * 0.28f,
+            };
+            // Snap the light-space center to texel increments. This prevents
+            // the directional map from swimming while the camera moves.
+            const auto worldUnitsPerTexel = radius * 2.0f / 2048.0f;
+            const auto rightCenter = std::round(dot3(right, center) / worldUnitsPerTexel)
+                * worldUnitsPerTexel;
+            const auto upCenter = std::round(dot3(up, center) / worldUnitsPerTexel)
+                * worldUnitsPerTexel;
+            const auto forwardCenter = dot3(forward, center);
+
+            std::fill(matrix, matrix + 16, 0.0f);
+            matrix[0] = right[0] / radius;
+            matrix[4] = right[1] / radius;
+            matrix[8] = right[2] / radius;
+            matrix[12] = -rightCenter / radius;
+            matrix[1] = up[0] / radius;
+            matrix[5] = up[1] / radius;
+            matrix[9] = up[2] / radius;
+            matrix[13] = -upCenter / radius;
+            matrix[2] = forward[0] / depth;
+            matrix[6] = forward[1] / depth;
+            matrix[10] = forward[2] / depth;
+            matrix[14] = -forwardCenter / depth;
+            matrix[15] = 1.0f;
+        }
 
         std::uint32_t hash_grid(std::uint32_t x, std::uint32_t y, std::uint32_t seed)
         {
@@ -302,8 +367,46 @@ namespace phoenix::renderer
             log_line("GL: effect particle pipeline unavailable (non-fatal)");
         if (!create_sky_pipeline())
             log_line("GL: sky pipeline unavailable (non-fatal)");
+        impl_->shadowTerrainProgram = build_program("shaders/gl/shadow_terrain.vert", "shaders/gl/shadow_depth.frag");
+        impl_->shadowStaticProgram = build_program("shaders/gl/shadow_static.vert", "shaders/gl/shadow_depth.frag");
+        impl_->shadowSkinnedProgram = build_program("shaders/gl/shadow_skinned.vert", "shaders/gl/shadow_depth.frag");
         create_cull_compute_pipeline(); // stub: GPU culling stays disabled, see internal header note
         create_descriptor_resources();
+
+        if (impl_->shadowTerrainProgram && impl_->shadowStaticProgram && impl_->shadowSkinnedProgram)
+        {
+            glGenTextures_(1, &impl_->shadowDepthTexture);
+            glBindTexture_(GL_TEXTURE_2D, impl_->shadowDepthTexture);
+            glTexParameteri_(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+            glTexParameteri_(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+            glTexParameteri_(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+            glTexParameteri_(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+            glTexImage2D_(GL_TEXTURE_2D, 0, GL_DEPTH_COMPONENT32F,
+                static_cast<GLsizei>(Impl::shadowResolution), static_cast<GLsizei>(Impl::shadowResolution),
+                0, GL_DEPTH_COMPONENT, GL_FLOAT, nullptr);
+            glBindTexture_(GL_TEXTURE_2D, 0);
+
+            glGenFramebuffers_(1, &impl_->shadowFramebuffer);
+            glBindFramebuffer_(GL_FRAMEBUFFER, impl_->shadowFramebuffer);
+            glFramebufferTexture2D_(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_TEXTURE_2D,
+                impl_->shadowDepthTexture, 0);
+            glDrawBuffer_(GL_NONE);
+            glReadBuffer_(GL_NONE);
+            impl_->shadowReady = glCheckFramebufferStatus_(GL_FRAMEBUFFER) == GL_FRAMEBUFFER_COMPLETE;
+            glBindFramebuffer_(GL_FRAMEBUFFER, 0);
+
+            glCreateSamplers_(1, &impl_->shadowSampler);
+            glSamplerParameteri_(impl_->shadowSampler, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+            glSamplerParameteri_(impl_->shadowSampler, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+            glSamplerParameteri_(impl_->shadowSampler, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+            glSamplerParameteri_(impl_->shadowSampler, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+            if (!impl_->shadowReady)
+                log_line("GL: directional shadow framebuffer unavailable");
+        }
+        else
+        {
+            log_line("GL: directional shadow shaders unavailable");
+        }
 
         ready_ = true;
         log_line("GL: initialized");
@@ -1797,6 +1900,12 @@ namespace phoenix::renderer
         impl_->environmentStyle = style;
     }
 
+    void OpenGLRenderer::set_shadows_enabled(bool enabled)
+    {
+        if (!impl_) return;
+        impl_->shadowsEnabled = enabled;
+    }
+
     void OpenGLRenderer::set_antialiasing_enabled(bool enabled)
     {
         if (!impl_ || !ready_) return;
@@ -1854,8 +1963,14 @@ namespace phoenix::renderer
             float constants[kCameraConstantFloatCount]{};
             std::memcpy(constants, impl_->cameraConstants, sizeof(impl_->cameraConstants));
             std::memcpy(constants + 12, impl_->skyConstants, sizeof(impl_->skyConstants));
-            static_assert(sizeof(EnvironmentStyle) == sizeof(float) * 48u);
+            static_assert(sizeof(EnvironmentStyle) == sizeof(float) * 96u);
             std::memcpy(constants + 28, &impl_->environmentStyle, sizeof(impl_->environmentStyle));
+            build_directional_shadow_matrix(impl_->shadowMatrix, impl_->cameraConstants,
+                impl_->environmentStyle.lightDirectionEnergy, impl_->cameraConstants[7]);
+            impl_->shadowInfo[0] = impl_->shadowReady && impl_->shadowsEnabled
+                && impl_->environmentStyle.lightDirectionEnergy[3] > 0.01f ? 1.0f : 0.0f;
+            std::memcpy(constants + 124, impl_->shadowMatrix, sizeof(impl_->shadowMatrix));
+            std::memcpy(constants + 140, impl_->shadowInfo, sizeof(impl_->shadowInfo));
 
             // Every draw call below re-specified its program and re-uploaded the
             // camera UBO even when back-to-back draws share both (e.g. monster then
@@ -1879,6 +1994,94 @@ namespace phoenix::renderer
                 }
             };
 
+            const auto frame = frameIndex_ % kMaxFramesInFlight;
+
+            if (impl_->shadowInfo[0] > 0.5f)
+            {
+                if (impl_->terrainTexturesReady)
+                {
+                    glBindTextureUnit_(0, impl_->terrainTextureArray.id);
+                    glBindSampler_(0, impl_->terrainSampler);
+                }
+                glBindFramebuffer_(GL_FRAMEBUFFER, impl_->shadowFramebuffer);
+                glViewport_(0, 0, static_cast<GLsizei>(Impl::shadowResolution),
+                    static_cast<GLsizei>(Impl::shadowResolution));
+                glClearDepth_(1.0);
+                glClear_(GL_DEPTH_BUFFER_BIT);
+                glEnable_(GL_DEPTH_TEST);
+                glDepthMask_(GL_TRUE);
+                glDisable_(GL_BLEND);
+                glDisable_(GL_MULTISAMPLE);
+                glDisable_(GL_SAMPLE_ALPHA_TO_COVERAGE);
+                set_camera_ubo(impl_->cameraUbo, constants);
+
+                const auto drawRanges = [&](GLuint vao, const std::vector<ObjectBatch>& batches,
+                    GLuint program) {
+                    if (!program || batches.empty()) return;
+                    glUseProgram_(program);
+                    glBindVertexArray_(vao);
+                    for (const auto& batch : batches)
+                    {
+                        if (batch.instanceCount == 0 || batch.indexCount == 0) continue;
+                        glDrawElementsInstancedBaseInstance_(GL_TRIANGLES,
+                            static_cast<GLsizei>(batch.indexCount), GL_UNSIGNED_INT,
+                            (const void*)(static_cast<std::uintptr_t>(batch.firstIndex) * sizeof(std::uint32_t)),
+                            static_cast<GLsizei>(batch.instanceCount), batch.firstInstance);
+                    }
+                };
+
+                if (impl_->terrainReady)
+                {
+                    glUseProgram_(impl_->shadowTerrainProgram);
+                    glBindVertexArray_(impl_->terrainVao);
+                    if (impl_->terrainDrawRanges.empty())
+                        glDrawElements_(GL_TRIANGLES, static_cast<GLsizei>(impl_->terrainIndexCount), GL_UNSIGNED_INT, nullptr);
+                    else
+                        for (const auto& range : impl_->terrainDrawRanges)
+                            if (range.indexCount > 0)
+                                glDrawElements_(GL_TRIANGLES, static_cast<GLsizei>(range.indexCount), GL_UNSIGNED_INT,
+                                    (const void*)(static_cast<std::uintptr_t>(range.firstIndex) * sizeof(std::uint32_t)));
+                }
+                if (impl_->objectsReady)
+                    drawRanges(impl_->objectVao, impl_->objectBatches, impl_->shadowStaticProgram);
+                if (impl_->animatedObjectsReady)
+                    drawRanges(impl_->animatedObjectVao, impl_->animatedObjectBatches, impl_->shadowStaticProgram);
+                if (impl_->characterVisible && impl_->characterReady)
+                {
+                    glUseProgram_(impl_->shadowTerrainProgram);
+                    glBindVertexArray_(impl_->characterVao);
+                    glDrawElements_(GL_TRIANGLES, static_cast<GLsizei>(impl_->characterIndexCount), GL_UNSIGNED_INT, nullptr);
+                }
+                if (impl_->botCharacterVisible && impl_->botCharacterReady)
+                    drawRanges(impl_->botCharacterVao, impl_->botCharacterBatches, impl_->shadowStaticProgram);
+                if (impl_->monsterCharacterVisible && impl_->monsterCharacterReady
+                    && impl_->monsterPaletteBuffer[frame].id)
+                {
+                    glBindBufferBase_(GL_SHADER_STORAGE_BUFFER, 3, impl_->monsterPaletteBuffer[frame].id);
+                    drawRanges(impl_->monsterCharacterVao, impl_->monsterCharacterBatches,
+                        impl_->shadowSkinnedProgram);
+                }
+                if (impl_->npcCharacterVisible && impl_->npcCharacterReady
+                    && impl_->npcPaletteBuffer[frame].id)
+                {
+                    glBindBufferBase_(GL_SHADER_STORAGE_BUFFER, 3, impl_->npcPaletteBuffer[frame].id);
+                    drawRanges(impl_->npcCharacterVao, impl_->npcCharacterBatches,
+                        impl_->shadowSkinnedProgram);
+                }
+
+                glBindFramebuffer_(GL_FRAMEBUFFER, 0);
+                glViewport_(0, 0, static_cast<GLsizei>(impl_->surfaceWidth),
+                    static_cast<GLsizei>(impl_->surfaceHeight));
+                glEnable_(GL_BLEND);
+                if (impl_->antialiasingEnabled)
+                {
+                    glEnable_(GL_MULTISAMPLE);
+                    glEnable_(GL_SAMPLE_ALPHA_TO_COVERAGE);
+                }
+                boundProgram = 0;
+                uploadedConstants = nullptr;
+            }
+
             if (impl_->terrainTexturesReady)
             {
                 glBindTextureUnit_(0, impl_->terrainTextureArray.id);
@@ -1893,6 +2096,8 @@ namespace phoenix::renderer
             }
             glBindTextureUnit_(4, impl_->environmentNoiseTexture);
             glBindSampler_(4, impl_->terrainSampler);
+            glBindTextureUnit_(5, impl_->shadowDepthTexture);
+            glBindSampler_(5, impl_->shadowSampler);
             glBindBufferBase_(GL_SHADER_STORAGE_BUFFER, 1, impl_->terrainMapBuffer.id);
 
             // sky
@@ -1962,7 +2167,6 @@ namespace phoenix::renderer
             {
                 drawStaticBatches(impl_->botCharacterVao, impl_->botCharacterBatches, constants);
             }
-            const auto frame = frameIndex_ % kMaxFramesInFlight;
             if (impl_->monsterCharacterVisible && impl_->monsterCharacterReady
                 && impl_->monsterCharacterInstanceBuffer[frame].id && !impl_->monsterCharacterBatches.empty()
                 && impl_->monsterCharacterSkinned && impl_->skinnedCharacterProgram
@@ -2165,12 +2369,15 @@ namespace phoenix::renderer
         if (impl_->lightmapTexture.id) glDeleteTextures_(1, &impl_->lightmapTexture.id);
         if (impl_->previewTexture) glDeleteTextures_(1, &impl_->previewTexture);
         if (impl_->environmentNoiseTexture) glDeleteTextures_(1, &impl_->environmentNoiseTexture);
+        if (impl_->shadowDepthTexture) glDeleteTextures_(1, &impl_->shadowDepthTexture);
         for (auto& icon : impl_->imguiIconTextures)
             if (icon.texture) glDeleteTextures_(1, &icon.texture);
 
         if (impl_->terrainSampler) glDeleteSamplers_(1, &impl_->terrainSampler);
         if (impl_->debugEffectSampler) glDeleteSamplers_(1, &impl_->debugEffectSampler);
         if (impl_->lightmapSampler) glDeleteSamplers_(1, &impl_->lightmapSampler);
+        if (impl_->shadowSampler) glDeleteSamplers_(1, &impl_->shadowSampler);
+        if (impl_->shadowFramebuffer) glDeleteFramebuffers_(1, &impl_->shadowFramebuffer);
 
         auto destroyProg = [](GLuint& p) { if (p) glDeleteProgram_(p); p = 0; };
         destroyProg(impl_->terrainProgram);
@@ -2178,6 +2385,9 @@ namespace phoenix::renderer
         destroyProg(impl_->skinnedCharacterProgram);
         destroyProg(impl_->effectParticleProgram);
         destroyProg(impl_->skyProgram);
+        destroyProg(impl_->shadowTerrainProgram);
+        destroyProg(impl_->shadowStaticProgram);
+        destroyProg(impl_->shadowSkinnedProgram);
 
         delete impl_;
         impl_ = nullptr;

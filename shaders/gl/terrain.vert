@@ -34,12 +34,12 @@ void main()
     float cameraZ = sp * delta.y + cp * yawZ;
     float nearPlane = 2.0;
 
-    float lit = neutralMaterialLighting(inNormal);
+    float lit = 1.0;
 
     float fogStart = camera.fogDistances.x;
     float fogEnd = max(fogStart + 1.0, camera.fogDistances.y);
     float fogLinear = clamp((cameraZ - fogStart) / (fogEnd - fogStart), 0.0, 1.0);
-    float fogFactor = 1.0 - exp(-fogLinear * fogLinear * 5.0);
+    float fogFactor = fogLinear * fogLinear;
 
     // Vulkan NDC depth is [0,1] with Y flipped vs GL's [-1,1] with Y up;
     // gl_Position.z here still targets [0,1] via glClipControl-free trick:

@@ -141,6 +141,7 @@ int main(int, char**)
     if (imguiAvailable)
         phoenix::ui::register_app_settings(displaySettings.characterShadow, perfHud.fpsCapIndex, perfHud.antialiasingEnabled);
     renderer.set_antialiasing_enabled(perfHud.antialiasingAvailable && perfHud.antialiasingEnabled);
+    renderer.set_shadows_enabled(displaySettings.characterShadow);
 
     // Closing the window must work even mid-load: skip all teardown and let
     // the OS reclaim the process — waiting on loaders/GPU only delays the user.
@@ -286,9 +287,6 @@ int main(int, char**)
     phoenix::runtime::AnimatedObjectScene animatedObjectScene;
     phoenix::runtime::EffectParticleSystem effectParticleSystem;
     phoenix::runtime::WeatherParticleSystem weatherParticleSystem;
-    phoenix::runtime::CelestialSystem celestialSystem;
-    phoenix::runtime::StarField starField;
-    starField.build(); // fixed star directions, independent of map/runtime state — generated once
     // Debug "Effects" panel: the full data/effects catalog (built once, lazily,
     // since it's independent of the loaded map), the currently selected file's
     // loaded/resolved library (cached by path so re-selecting is instant), and
@@ -1579,48 +1577,9 @@ int main(int, char**)
             weatherParticleSystem.update(deltaSeconds, cameraPositionWorld,
                 cameraRightWorld, cameraUpWorld, cameraForwardWorld);
 
-            // WeatherMode -> sun/moon body, brightness and tint. Overcast
-            // skies and storms are fully clouded over, so neither the sun
-            // nor its glow should be visible at all — not even dimmed.
-            // Dusk still gets a warm partial glow, dawn/afternoon a warmer
-            // tint, night swaps to the moon.
-            auto celestialBody = phoenix::runtime::CelestialBody::Sun;
-            float celestialStrength = 1.0f;
-            float celestialTint[3]{ 1.0f, 0.74f, 0.42f };
-            switch (weatherMode)
-            {
-                case WeatherMode::Storm:
-                case WeatherMode::Snowstorm:
-                case WeatherMode::Overcast:
-                    celestialBody = phoenix::runtime::CelestialBody::None;
-                    break;
-                case WeatherMode::Night:
-                    celestialBody = phoenix::runtime::CelestialBody::Moon;
-                    celestialTint[0] = 0.90f; celestialTint[1] = 0.93f; celestialTint[2] = 1.0f;
-                    break;
-                case WeatherMode::Dawn:
-                    celestialTint[0] = 1.0f; celestialTint[1] = 0.58f; celestialTint[2] = 0.32f;
-                    break;
-                case WeatherMode::Dusk:
-                    celestialStrength = 0.72f;
-                    celestialTint[0] = 0.92f; celestialTint[1] = 0.38f; celestialTint[2] = 0.28f;
-                    break;
-                case WeatherMode::MidAfternoon:
-                    celestialTint[0] = 1.0f; celestialTint[1] = 0.82f; celestialTint[2] = 0.52f;
-                    break;
-                default: break; // Default/Sunset: full strength, default warm tint
-            }
-            // Dungeons are indoor/underground — no sky at all (see the
-            // "Dungeons always use pitch-black sky and fog" fog logic
-            // elsewhere), so no sun/moon/stars either regardless of the
-            // selected weather mode.
-            const bool isDungeon = runtime.state().world.isDungeon;
-            if (isDungeon)
-                celestialBody = phoenix::runtime::CelestialBody::None;
-            celestialSystem.update(celestialBody, celestialStrength, celestialTint,
-                cameraPositionWorld, cameraRightWorld, cameraUpWorld, cameraForwardWorld, fogCullDistance);
-            starField.update(!isDungeon && weatherMode == WeatherMode::Night, cameraPositionWorld,
-                cameraRightWorld, cameraUpWorld, cameraForwardWorld, fogCullDistance, totalTime);
+            // Sun/moon discs, their halos, stars and aurora now live in the
+            // sky shader itself. This preserves cloud occlusion and prevents
+            // the old billboard systems from drawing a second astro/field.
 
             // Merge every source into the single-upload buffers
             // update_effect_particles() expects — it fully replaces the GPU
@@ -1657,13 +1616,6 @@ int main(int, char**)
             if (weatherParticleSystem.has_particles())
                 append_source(weatherParticleSystem.vertices(), weatherParticleSystem.indices(),
                     weatherParticleSystem.instances(), weatherParticleSystem.batches());
-            if (celestialSystem.has_particles())
-                append_source(celestialSystem.vertices(), celestialSystem.indices(),
-                    celestialSystem.instances(), celestialSystem.batches());
-            if (starField.has_particles())
-                append_source(starField.vertices(), starField.indices(),
-                    starField.instances(), starField.batches());
-
             renderer.update_effect_particles(combinedVertices, combinedIndices, combinedInstances, combinedBatches);
         }
 
@@ -1736,10 +1688,8 @@ int main(int, char**)
                 effectComponentIndex,
                 assetsFullyLoaded.load());
 
-            // The shadow toggle changes the character mesh topology (extra
-            // flattened range), so rebuild the GPU buffers on change.
             if (prevCharacterShadow != displaySettings.characterShadow)
-                uploadCharacterMesh();
+                renderer.set_shadows_enabled(displaySettings.characterShadow);
 
             if (panelResult.loadRequested)
                 pendingMapLoad = static_cast<std::size_t>(std::max(0, selectedMapIndex));

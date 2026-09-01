@@ -82,6 +82,8 @@ PFNGLDELETEFRAMEBUFFERSPROC glDeleteFramebuffers_;
 PFNGLBINDFRAMEBUFFERPROC glBindFramebuffer_;
 PFNGLFRAMEBUFFERTEXTURE2DPROC glFramebufferTexture2D_;
 PFNGLCHECKFRAMEBUFFERSTATUSPROC glCheckFramebufferStatus_;
+PFNGLDRAWBUFFERPROC glDrawBuffer_;
+PFNGLREADBUFFERPROC glReadBuffer_;
 
 PFNGLDRAWELEMENTSPROC glDrawElements_;
 PFNGLDRAWELEMENTSINSTANCEDPROC glDrawElementsInstanced_;
@@ -241,6 +243,8 @@ namespace phoenix::gl
         GLLOAD(glBindFramebuffer);
         GLLOAD(glFramebufferTexture2D);
         GLLOAD(glCheckFramebufferStatus);
+        GLLOAD(glDrawBuffer);
+        GLLOAD(glReadBuffer);
 
         GLLOAD(glDrawElements);
         GLLOAD(glDrawElementsInstanced);

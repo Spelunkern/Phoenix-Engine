@@ -40,6 +40,8 @@ typedef char GLcharARB;
 typedef unsigned short GLhalf;
 typedef uint64_t GLuint64;
 typedef int64_t GLint64;
+typedef void (APIENTRYGL *PFNGLDRAWBUFFERPROC)(GLenum mode);
+typedef void (APIENTRYGL *PFNGLREADBUFFERPROC)(GLenum mode);
 
 // --- Core GL 1.0-1.5 constants ---
 #define GL_FALSE 0
@@ -134,6 +136,7 @@ typedef int64_t GLint64;
 #define GL_DEPTH_COMPONENT32F 0x8CAC
 #define GL_DEPTH_COMPONENT 0x1902
 #define GL_FRAMEBUFFER_COMPLETE 0x8CD5
+#define GL_NONE 0
 
 // --- Compressed textures (S3TC / DXT via GL_EXT_texture_compression_s3tc) ---
 #define GL_COMPRESSED_RGBA_S3TC_DXT1_EXT 0x83F1
@@ -386,6 +389,8 @@ extern PFNGLDELETEFRAMEBUFFERSPROC glDeleteFramebuffers_;
 extern PFNGLBINDFRAMEBUFFERPROC glBindFramebuffer_;
 extern PFNGLFRAMEBUFFERTEXTURE2DPROC glFramebufferTexture2D_;
 extern PFNGLCHECKFRAMEBUFFERSTATUSPROC glCheckFramebufferStatus_;
+extern PFNGLDRAWBUFFERPROC glDrawBuffer_;
+extern PFNGLREADBUFFERPROC glReadBuffer_;
 
 extern PFNGLDRAWELEMENTSPROC glDrawElements_;
 extern PFNGLDRAWELEMENTSINSTANCEDPROC glDrawElementsInstanced_;
