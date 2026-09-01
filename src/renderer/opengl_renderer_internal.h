@@ -186,6 +186,8 @@ namespace phoenix::renderer
         GlBuffer objectVertexBuffer;
         GlBuffer objectIndexBuffer;
         GlBuffer objectInstanceBuffer;
+        GlBuffer objectIndirectBuffer;
+        std::uint32_t objectIndirectCount{};
         std::vector<ObjectBatch> objectBatches;
         bool objectsReady{};
 

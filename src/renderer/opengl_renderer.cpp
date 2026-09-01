@@ -680,13 +680,11 @@ namespace phoenix::renderer
 
     bool OpenGLRenderer::create_cull_compute_pipeline()
     {
-        // GPU frustum culling / indirect draw is intentionally not wired up:
+        // GPU frustum culling is intentionally not wired up:
         // the original Vulkan renderer's upload_indirect_draw_data() early-
         // returns false permanently ("single indirect buffer is not frame-
-        // safe"), so indirectReady is always false there and the direct
-        // per-batch draw path is the only one that ever executes. Preserving
-        // that exact behavior here for parity; static objects always draw via
-        // the direct per-batch loop in render_frame().
+        // safe"). Visibility therefore remains CPU-authored, while the visible
+        // commands are still submitted together with OpenGL multi-draw indirect.
         return true;
     }
 
@@ -717,6 +715,49 @@ namespace phoenix::renderer
             glNamedBufferData_(buf.id, static_cast<GLsizeiptr>(byteSize), data, usage);
             buf.byteSize = byteSize;
             return buf;
+        }
+
+        struct DrawElementsIndirectCommand
+        {
+            std::uint32_t count{};
+            std::uint32_t instanceCount{};
+            std::uint32_t firstIndex{};
+            std::int32_t baseVertex{};
+            std::uint32_t baseInstance{};
+        };
+        static_assert(sizeof(DrawElementsIndirectCommand) == 20);
+
+        void update_object_indirect_buffer(GlBuffer& buffer, std::uint32_t& drawCount,
+            const std::vector<ObjectBatch>& batches)
+        {
+            std::vector<DrawElementsIndirectCommand> commands;
+            commands.reserve(batches.size());
+            for (const auto& batch : batches)
+            {
+                if (batch.instanceCount == 0 || batch.indexCount == 0)
+                    continue;
+                commands.push_back({ batch.indexCount, batch.instanceCount,
+                    batch.firstIndex, 0, batch.firstInstance });
+            }
+
+            drawCount = static_cast<std::uint32_t>(commands.size());
+            if (commands.empty())
+                return;
+
+            const auto requiredBytes = commands.size() * sizeof(DrawElementsIndirectCommand);
+            if (!buffer.id)
+                glCreateBuffers_(1, &buffer.id);
+            if (requiredBytes > buffer.byteSize)
+            {
+                glNamedBufferData_(buffer.id, static_cast<GLsizeiptr>(requiredBytes),
+                    commands.data(), GL_DYNAMIC_DRAW);
+                buffer.byteSize = requiredBytes;
+            }
+            else
+            {
+                glNamedBufferSubData_(buffer.id, 0, static_cast<GLsizeiptr>(requiredBytes),
+                    commands.data());
+            }
         }
 
         void setup_terrain_vao_attribs(GLuint vao, GLuint vbo)
@@ -989,6 +1030,8 @@ namespace phoenix::renderer
         setup_object_vao_attribs(impl_->objectVao, impl_->objectVertexBuffer.id, impl_->objectIndexBuffer.id, impl_->objectInstanceBuffer.id);
 
         impl_->objectBatches = batches;
+        update_object_indirect_buffer(impl_->objectIndirectBuffer,
+            impl_->objectIndirectCount, impl_->objectBatches);
         impl_->objectsReady = true;
         return true;
     }
@@ -997,6 +1040,8 @@ namespace phoenix::renderer
     {
         if (!impl_) return;
         impl_->objectBatches = batches;
+        update_object_indirect_buffer(impl_->objectIndirectBuffer,
+            impl_->objectIndirectCount, impl_->objectBatches);
         impl_->objectsReady = !impl_->objectBatches.empty()
             && impl_->objectVertexBuffer.id && impl_->objectIndexBuffer.id && impl_->objectInstanceBuffer.id;
     }
@@ -1048,6 +1093,8 @@ namespace phoenix::renderer
         impl_->objectInstanceBuffer = make_static_buffer(instances.data(), instances.size() * sizeof(ObjectInstance));
         setup_object_vao_attribs(impl_->objectVao, impl_->objectVertexBuffer.id, impl_->objectIndexBuffer.id, impl_->objectInstanceBuffer.id);
         impl_->objectBatches = batches;
+        update_object_indirect_buffer(impl_->objectIndirectBuffer,
+            impl_->objectIndirectCount, impl_->objectBatches);
         impl_->objectsReady = true;
         return true;
     }
@@ -2057,6 +2104,16 @@ namespace phoenix::renderer
                             static_cast<GLsizei>(batch.instanceCount), batch.firstInstance);
                     }
                 };
+                const auto drawIndirect = [&](GLuint vao, const GlBuffer& commands,
+                    std::uint32_t drawCount, GLuint program) {
+                    if (!program || !commands.id || drawCount == 0) return;
+                    glUseProgram_(program);
+                    glBindVertexArray_(vao);
+                    glBindBuffer_(GL_DRAW_INDIRECT_BUFFER, commands.id);
+                    glMultiDrawElementsIndirect_(GL_TRIANGLES, GL_UNSIGNED_INT, nullptr,
+                        static_cast<GLsizei>(drawCount), sizeof(DrawElementsIndirectCommand));
+                    glBindBuffer_(GL_DRAW_INDIRECT_BUFFER, 0);
+                };
 
                 if (impl_->terrainReady)
                 {
@@ -2071,7 +2128,8 @@ namespace phoenix::renderer
                                     (const void*)(static_cast<std::uintptr_t>(range.firstIndex) * sizeof(std::uint32_t)));
                 }
                 if (impl_->objectsReady)
-                    drawRanges(impl_->objectVao, impl_->objectBatches, impl_->shadowStaticProgram);
+                    drawIndirect(impl_->objectVao, impl_->objectIndirectBuffer,
+                        impl_->objectIndirectCount, impl_->shadowStaticProgram);
                 if (impl_->animatedObjectsReady)
                     drawRanges(impl_->animatedObjectVao, impl_->animatedObjectBatches, impl_->shadowStaticProgram);
                 if (impl_->characterVisible && impl_->characterReady)
@@ -2162,12 +2220,22 @@ namespace phoenix::renderer
                 }
             }
 
-            auto drawStaticBatches = [&](GLuint vao, const std::vector<ObjectBatch>& batches, const float* push)
+            auto drawStaticBatches = [&](GLuint vao, const std::vector<ObjectBatch>& batches,
+                const float* push, const GlBuffer* indirect = nullptr,
+                std::uint32_t indirectCount = 0)
             {
                 if (batches.empty()) return;
                 useProgram(impl_->staticObjectProgram);
                 useCamera(push);
                 glBindVertexArray_(vao);
+                if (indirect && indirect->id && indirectCount > 0)
+                {
+                    glBindBuffer_(GL_DRAW_INDIRECT_BUFFER, indirect->id);
+                    glMultiDrawElementsIndirect_(GL_TRIANGLES, GL_UNSIGNED_INT, nullptr,
+                        static_cast<GLsizei>(indirectCount), sizeof(DrawElementsIndirectCommand));
+                    glBindBuffer_(GL_DRAW_INDIRECT_BUFFER, 0);
+                    return;
+                }
                 for (const auto& batch : batches)
                 {
                     if (batch.instanceCount == 0 || batch.indexCount == 0) continue;
@@ -2178,7 +2246,8 @@ namespace phoenix::renderer
             };
 
             if (impl_->objectsReady && impl_->staticObjectProgram)
-                drawStaticBatches(impl_->objectVao, impl_->objectBatches, constants);
+                drawStaticBatches(impl_->objectVao, impl_->objectBatches, constants,
+                    &impl_->objectIndirectBuffer, impl_->objectIndirectCount);
             if (impl_->animatedObjectsReady && impl_->staticObjectProgram)
                 drawStaticBatches(impl_->animatedObjectVao, impl_->animatedObjectBatches, constants);
 
@@ -2347,6 +2416,7 @@ namespace phoenix::renderer
         destroyBuf(impl_->objectVertexBuffer);
         destroyBuf(impl_->objectIndexBuffer);
         destroyBuf(impl_->objectInstanceBuffer);
+        destroyBuf(impl_->objectIndirectBuffer);
         destroyBuf(impl_->animatedObjectVertexBuffer);
         destroyBuf(impl_->animatedObjectIndexBuffer);
         destroyBuf(impl_->animatedObjectInstanceBuffer);
