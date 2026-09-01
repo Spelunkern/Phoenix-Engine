@@ -113,7 +113,7 @@ void main()
     float cp = camera.precomputedTrig.z;
     float sp = camera.precomputedTrig.w;
 
-    float cameraX = cy * delta.x - sy * delta.z;
+    float cameraX = -cy * delta.x + sy * delta.z;
     float yawZ = sy * delta.x + cy * delta.z;
     float cameraY = cp * delta.y - sp * yawZ;
     float cameraZ = sp * delta.y + cp * yawZ;

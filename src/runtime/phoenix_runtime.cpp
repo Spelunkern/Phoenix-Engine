@@ -2588,8 +2588,8 @@ namespace phoenix::runtime
         const auto sy = std::sin(camera_.yaw);
         const auto forwardX = sy;
         const auto forwardZ = cy;
-        const auto rightX = cy;
-        const auto rightZ = -sy;
+        const auto rightX = -cy;
+        const auto rightZ = sy;
 
         float moveX = 0.0f;
         float moveY = 0.0f;

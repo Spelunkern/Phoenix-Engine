@@ -33,7 +33,7 @@ namespace phoenix::renderer
         const float cp = std::cos(view.pitch);
         const float sp = std::sin(view.pitch);
 
-        const float cameraX = cy * dx - sy * dz;
+        const float cameraX = -cy * dx + sy * dz;
         const float yawZ = sy * dx + cy * dz;
         const float cameraY = cp * dy - sp * yawZ;
         const float cameraZ = sp * dy + cp * yawZ;
@@ -63,7 +63,7 @@ namespace phoenix::renderer
         const float cp = std::cos(view.pitch);
         const float sp = std::sin(view.pitch);
 
-        const float cameraX = cy * dx - sy * dz;
+        const float cameraX = -cy * dx + sy * dz;
         const float yawZ = sy * dx + cy * dz;
         const float cameraY = cp * dy - sp * yawZ;
         const float cameraZ = sp * dy + cp * yawZ;

@@ -25,7 +25,10 @@ vec3 worldEyeDirection(vec2 uv)
     float sy = camera.precomputedTrig.y;
     float cp = camera.precomputedTrig.z;
     float sp = camera.precomputedTrig.w;
-    vec3 right = vec3(cy, 0.0, -sy);
+    // Godot's camera looks along -Z locally. In this engine the forward view
+    // depth is represented as +Z, therefore screen-right is the negated X
+    // basis when looking toward world +Z.
+    vec3 right = vec3(-cy, 0.0, sy);
     vec3 up = vec3(-sp * sy, cp, -sp * cy);
     vec3 forward = vec3(cp * sy, sp, cp * cy);
     return normalize(right * cameraDirection.x + up * cameraDirection.y
