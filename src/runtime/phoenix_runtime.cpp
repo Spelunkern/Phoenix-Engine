@@ -36,12 +36,6 @@ namespace phoenix::runtime
         constexpr std::uint32_t kAssetTextureLayerBase = 66;
         constexpr std::uint32_t kAssetCutoutLayerBase = 2048;
         constexpr float kManiTicksPerSecond = 30.0f;
-        // VANI (vertex-animated decor) render cutoff: an extra distance rule on
-        // top of the universal fog/view distance, same as any other asset.
-        constexpr float kVaniRenderDistance = 140.0f;
-        constexpr float kSmallPropRenderDistance = 145.0f;
-        constexpr float kMediumPropRenderDistance = 200.0f;
-        constexpr float kLargePropRenderDistance = 246.0f;
 
         inline std::filesystem::path resolve_ci(const std::filesystem::path& path)
         {
@@ -2313,21 +2307,10 @@ namespace phoenix::runtime
         scene.batches.reserve(batchCount);
         scene.batchBounds.reserve(batchCount);
 
-        const auto objectCullDistance = [&](const SceneObject& object) {
-            if (state_.world.isDungeon)
-                return 0.0f;
-            if (object.assetSlot >= 0
-                && static_cast<std::size_t>(object.assetSlot) < state_.worldAssets.size()
-                && state_.worldAssets[static_cast<std::size_t>(object.assetSlot)].vertexAnimated)
-                return kVaniRenderDistance;
-            if (object.radius <= 10.0f)
-                return kSmallPropRenderDistance;
-            if (object.radius <= 28.0f)
-                return kMediumPropRenderDistance;
-            return kLargePropRenderDistance;
-        };
         const auto appendInstance = [&](const SceneObject& object) {
-            scene.instances.push_back(make_object_instance(object, objectCullDistance(object)));
+            // Zero means there is no per-asset cap: the universal fog/view
+            // distance is the single render boundary for every world asset.
+            scene.instances.push_back(make_object_instance(object, 0.0f));
         };
 
         for (std::size_t assetSlot = 0; assetSlot < state_.worldAssets.size(); ++assetSlot)
@@ -2418,10 +2401,8 @@ namespace phoenix::runtime
                 groupsByAsset[assetSlot].push_back(objectIndex);
         }
 
-        float animCullDistance = 0.0f;
-
         const auto appendInstance = [&](const SceneObject& object) {
-            const auto instance = make_object_instance(object, animCullDistance);
+            const auto instance = make_object_instance(object, 0.0f);
             scene.baseInstances.push_back(instance);
             scene.instances.push_back(instance);
         };
@@ -2433,11 +2414,6 @@ namespace phoenix::runtime
                 continue;
 
             const auto& asset = state_.worldAssets[assetSlot];
-            const auto animKey = phoenix::assets::lower_ascii(asset.name);
-            // VANI assets get an aggressive fixed render cutoff on top of the
-            // universal fog/view distance culling every other asset already
-            // gets (the vertex shader clamps this to whichever is smaller).
-            animCullDistance = animKey.ends_with(".vani") ? kVaniRenderDistance : 0.0f;
             const auto baseVertex = static_cast<std::uint32_t>(scene.vertices.size());
             const auto firstIndex = static_cast<std::uint32_t>(scene.indices.size());
             scene.vertices.insert(scene.vertices.end(), asset.previewVertices.begin(), asset.previewVertices.end());
@@ -2501,13 +2477,10 @@ namespace phoenix::runtime
     }
 
     void PhoenixRuntime::update_animated_object_scene(AnimatedObjectScene& scene, float totalTime,
-        float cameraX, float cameraY, float cameraZ) const
+        float cameraX, float cameraY, float cameraZ, float viewDistance) const
     {
         constexpr float kDecorFps = 12.0f;
-        // Matches kVaniRenderDistance: beyond the render cutoff a VANI instance
-        // isn't drawn at all, so skip the CPU frame update too (no freeze —
-        // it simply isn't on screen past this distance).
-        constexpr float kAnimateDistanceSq = kVaniRenderDistance * kVaniRenderDistance;
+        const float animateDistanceSq = viewDistance * viewDistance;
 
         for (auto& animation : scene.vertexAnimations)
         {
@@ -2525,8 +2498,7 @@ namespace phoenix::runtime
                 const float dx = position[0] - cameraX;
                 const float dy = position[1] - cameraY;
                 const float dz = position[2] - cameraZ;
-                const float renderDistance = position[3] > 0.0f ? position[3] : kVaniRenderDistance;
-                if (dx * dx + dy * dy + dz * dz <= renderDistance * renderDistance)
+                if (dx * dx + dy * dy + dz * dz <= animateDistanceSq)
                 {
                     anyInstanceNear = true;
                     break;

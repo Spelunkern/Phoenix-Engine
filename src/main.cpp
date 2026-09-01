@@ -1584,7 +1584,7 @@ int main(int, char**)
         if (!animatedObjectScene.vertexAnimations.empty())
         {
             runtime.update_animated_object_scene(animatedObjectScene, totalTime,
-                renderCameraX, renderCameraY, renderCameraZ);
+                renderCameraX, renderCameraY, renderCameraZ, fogCullDistance);
             animatedObjectScene.merge_dirty_ranges();
             for (const auto& range : animatedObjectScene.dirtyVertexRanges)
             {
