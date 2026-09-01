@@ -493,6 +493,7 @@ namespace phoenix::ui
             Monsters,
             Animations,
             Effects,
+            Controls,
         };
         static Section activeSection = Section::Map;
 
@@ -524,6 +525,7 @@ namespace phoenix::ui
         sectionButton(Section::Bots, "Bots##nav"); ImGui::SameLine();
         sectionButton(Section::NPCs, "NPCs##nav"); ImGui::SameLine();
         sectionButton(Section::Monsters, "Monsters##nav");
+        sectionButton(Section::Controls, "Controls##nav");
         ImGui::Separator();
 
         if (activeSection == Section::Map)
@@ -565,6 +567,21 @@ namespace phoenix::ui
             if (ImGui::Combo("Sky", &weatherIndex, weatherItems, IM_ARRAYSIZE(weatherItems)))
                 weatherMode = static_cast<WeatherMode>(std::clamp(weatherIndex, 0, 12));
             result.weatherChanged = weatherMode != previousWeatherMode;
+        }
+        else if (activeSection == Section::Controls)
+        {
+            ImGui::TextUnformatted("Essential keys");
+            ImGui::Separator();
+            ImGui::BulletText("P   Character / free camera mode");
+            ImGui::BulletText("W A S D   Move");
+            ImGui::BulletText("Mouse wheel   Camera zoom");
+            ImGui::BulletText("Left mouse drag   Orbit camera");
+            ImGui::BulletText("Right mouse drag   Turn camera and character");
+            ImGui::BulletText("Space   Jump");
+            ImGui::BulletText("Shift   Walk (running is default)");
+            ImGui::BulletText("C   Sit / stand");
+            ImGui::Spacing();
+            ImGui::TextDisabled("Free camera: Q/E move vertically; Shift accelerates.");
         }
         else if (activeSection == Section::Graphics)
         {
