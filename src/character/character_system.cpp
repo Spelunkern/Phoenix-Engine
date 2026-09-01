@@ -67,6 +67,12 @@ namespace phoenix::character
         constexpr float kMountedCameraDistanceScale = 1.35f;
         constexpr float kCameraClearance = 0.35f;
         constexpr float kCameraPullOutResponse = 4.0f;
+        // Ten fixed ray samples left gaps wider than two metres at maximum
+        // mounted zoom, allowing narrow terrain ridges to be skipped entirely.
+        constexpr float kCameraCollisionSampleSpacing = 0.25f;
+        constexpr int kCameraCollisionMaxSteps = 128;
+        constexpr int kCameraCollisionRefineSteps = 8;
+        constexpr float kCameraCollisionSkin = 0.025f;
 
         float turn_toward(float current, float desired, float rate, float delta)
         {
@@ -3443,7 +3449,7 @@ namespace phoenix::character
     {
         // Third-person orbit camera behind the character.
         // Uses the EMA-smoothed Y to eliminate terrain jitter.
-        const float lookTargetY = smoothCameraY_;
+        float lookTargetY = smoothCameraY_;
         const float dirX = std::cos(cameraPitch_) * std::sin(cameraYaw_);
         const float dirY = std::sin(cameraPitch_);
         const float dirZ = std::cos(cameraPitch_) * std::cos(cameraYaw_);
@@ -3457,23 +3463,61 @@ namespace phoenix::character
 
         // Match Godot's camera collision: move toward the character when the
         // line of sight meets terrain instead of changing the requested angle
-        // by raising the camera. Entry is immediate; recovery is smoothed.
+        // by raising the camera. Entry is immediate; recovery is smoothed. Use
+        // a bounded world-space spacing rather than a fixed sample count so a
+        // long zoom cannot jump across a narrow ridge.
         if (heightFn_)
         {
-            constexpr int kCameraCollisionSteps = 10;
+            // Uphill movement can briefly leave the independently smoothed
+            // look target below a sharp terrain step. The collision ray must
+            // begin in clear space or no shortened distance can be guaranteed
+            // safe, so lift only that exceptional target to the surface skin.
+            lookTargetY = std::max(lookTargetY,
+                heightFn_(smoothX_, smoothZ_, heightUserData_)
+                    + kCameraClearance + kCameraCollisionSkin);
+            const int collisionSteps = std::clamp(
+                static_cast<int>(std::ceil(wantedDistance / kCameraCollisionSampleSpacing)),
+                10, kCameraCollisionMaxSteps);
             float lastClear = 0.0f;
-            for (int step = 1; step <= kCameraCollisionSteps; ++step)
-            {
-                const float distance = wantedDistance
-                    * static_cast<float>(step) / static_cast<float>(kCameraCollisionSteps);
+            bool blocked = false;
+            const auto clearanceAt = [&](float distance) {
                 const float sampleX = smoothX_ - dirX * distance;
                 const float sampleY = lookTargetY - dirY * distance;
                 const float sampleZ = smoothZ_ - dirZ * distance;
-                if (sampleY < heightFn_(sampleX, sampleZ, heightUserData_) + kCameraClearance)
+                return sampleY
+                    - heightFn_(sampleX, sampleZ, heightUserData_)
+                    - kCameraClearance;
+            };
+
+            for (int step = 1; step <= collisionSteps; ++step)
+            {
+                const float distance = wantedDistance
+                    * static_cast<float>(step) / static_cast<float>(collisionSteps);
+                if (clearanceAt(distance) <= 0.0f)
+                {
+                    // Refine the first contact within the final 25 cm sample.
+                    // Retaining the clear side of the interval plus a small
+                    // skin prevents floating-point flicker on the surface.
+                    float clearDistance = lastClear;
+                    float blockedDistance = distance;
+                    for (int refine = 0; refine < kCameraCollisionRefineSteps; ++refine)
+                    {
+                        const float midpoint = (clearDistance + blockedDistance) * 0.5f;
+                        if (clearanceAt(midpoint) > 0.0f)
+                            clearDistance = midpoint;
+                        else
+                            blockedDistance = midpoint;
+                    }
+                    lastClear = std::max(0.0f, clearDistance - kCameraCollisionSkin);
+                    blocked = true;
                     break;
+                }
                 lastClear = distance;
             }
-            unblockedDistance = std::max(lastClear, 0.75f);
+            // Do not force the old 0.75 m minimum through terrain. In an
+            // exceptionally tight concavity the camera may approach the
+            // character further, but it always remains on the visible side.
+            unblockedDistance = blocked ? lastClear : wantedDistance;
         }
 
         if (!collisionCameraInitialized_)
