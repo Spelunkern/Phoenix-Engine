@@ -1511,13 +1511,18 @@ namespace phoenix::renderer
     }
 
     bool OpenGLRenderer::upload_terrain_textures(const std::vector<DdsTexture>& textures,
-        const std::function<void()>& pump)
+        const std::function<void()>& pump,
+        std::uint32_t assetFirstLayer,
+        std::uint32_t assetLayerCount)
     {
         if (!ready_) return false;
 
         if (impl_->terrainTextureArray.id)
             glDeleteTextures_(1, &impl_->terrainTextureArray.id);
+        if (impl_->assetTextureArray.id)
+            glDeleteTextures_(1, &impl_->assetTextureArray.id);
         impl_->terrainTextureArray = {};
+        impl_->assetTextureArray = {};
         impl_->terrainTextureLayerCount = 0;
         impl_->terrainTextureWidth = 0;
         impl_->terrainTextureHeight = 0;
@@ -1525,6 +1530,7 @@ namespace phoenix::renderer
         impl_->terrainTextureFormat = 0;
         impl_->terrainTextureCompressed = false;
         impl_->terrainTexturesReady = false;
+        impl_->assetTexturesReady = false;
 
         if (textures.empty())
             return false;
@@ -1641,6 +1647,65 @@ namespace phoenix::renderer
         impl_->terrainTextureWidth = texWidth;
         impl_->terrainTextureHeight = texHeight;
         impl_->terrainTexturesReady = true;
+
+        // The legacy DDS files contain pre-generated mip chains whose small
+        // levels shimmer noticeably as the camera moves. Godot discards those
+        // levels and builds a fresh chain from the source image. Reproduce
+        // that behaviour only for world assets in a compact secondary array:
+        // upload mip 0, let the driver generate all lower BC levels, then bind
+        // this array solely while drawing static/animated world props. Terrain,
+        // sky, water, effects and character textures retain their original
+        // chains in terrainTextureArray.
+        const auto assetEndLayer = std::min(layerCount, assetFirstLayer + assetLayerCount);
+        if (canUploadBc && nativeFormat != 0 && nativeMips > 1
+            && assetFirstLayer < assetEndLayer)
+        {
+            GLuint assetTexId{};
+            glCreateTextures_(GL_TEXTURE_2D_ARRAY, 1, &assetTexId);
+            const GLenum internalFormat = bc_gl_internal_format(nativeFormat);
+            glTextureStorage3D_(assetTexId, static_cast<GLsizei>(nativeMips), internalFormat,
+                static_cast<GLsizei>(texWidth), static_cast<GLsizei>(texHeight),
+                static_cast<GLsizei>(assetEndLayer));
+
+            for (std::uint32_t layer = assetFirstLayer; layer < assetEndLayer; ++layer)
+            {
+                if (pump && (layer & 63u) == 0u)
+                    pump();
+                const std::vector<std::uint8_t>* src{};
+                std::vector<std::uint8_t> fallback;
+                if (textures[layer].valid && !textures[layer].mipData.empty())
+                    src = &textures[layer].mipData[0];
+                else
+                {
+                    fallback = make_bc_fallback_mip(nativeFormat, texWidth, texHeight);
+                    src = &fallback;
+                }
+                glCompressedTextureSubImage3D_(assetTexId, 0,
+                    0, 0, static_cast<GLint>(layer),
+                    static_cast<GLsizei>(texWidth), static_cast<GLsizei>(texHeight), 1,
+                    internalFormat, static_cast<GLsizei>(src->size()), src->data());
+            }
+
+            // Ignore any stale error raised before this isolated operation so
+            // unsupported compressed-mipmap generation has a reliable fallback.
+            while (glGetError_() != GL_NO_ERROR) {}
+            glGenerateTextureMipmap_(assetTexId);
+            const auto mipError = glGetError_();
+            if (mipError == GL_NO_ERROR)
+            {
+                glTextureParameteri_(assetTexId, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR);
+                glTextureParameteri_(assetTexId, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+                glTextureParameteri_(assetTexId, GL_TEXTURE_WRAP_S, GL_REPEAT);
+                glTextureParameteri_(assetTexId, GL_TEXTURE_WRAP_T, GL_REPEAT);
+                impl_->assetTextureArray.id = assetTexId;
+                impl_->assetTexturesReady = true;
+            }
+            else
+            {
+                glDeleteTextures_(1, &assetTexId);
+                log_line("GL: compressed world-asset mip regeneration unsupported; using DDS mip chains");
+            }
+        }
         return true;
     }
 
@@ -2300,12 +2365,16 @@ namespace phoenix::renderer
 
             // World props intentionally use their own Godot-equivalent
             // trilinear sampler. Terrain keeps its sharper anisotropic sampler.
+            if (impl_->assetTexturesReady)
+                glBindTextureUnit_(0, impl_->assetTextureArray.id);
             glBindSampler_(0, impl_->assetSampler);
             if (impl_->objectsReady && impl_->staticObjectProgram)
                 drawStaticBatches(impl_->objectVao, impl_->objectBatches, constants,
                     &impl_->objectIndirectBuffer, impl_->objectIndirectCount);
             if (impl_->animatedObjectsReady && impl_->staticObjectProgram)
                 drawStaticBatches(impl_->animatedObjectVao, impl_->animatedObjectBatches, constants);
+            if (impl_->assetTexturesReady)
+                glBindTextureUnit_(0, impl_->terrainTextureArray.id);
             glBindSampler_(0, impl_->terrainSampler);
 
             if (impl_->characterVisible && impl_->characterReady)
@@ -2686,6 +2755,7 @@ namespace phoenix::renderer
         if (impl_->cameraUbo) glDeleteBuffers_(1, &impl_->cameraUbo);
 
         if (impl_->terrainTextureArray.id) glDeleteTextures_(1, &impl_->terrainTextureArray.id);
+        if (impl_->assetTextureArray.id) glDeleteTextures_(1, &impl_->assetTextureArray.id);
         if (impl_->debugEffectTextureArray.id) glDeleteTextures_(1, &impl_->debugEffectTextureArray.id);
         if (impl_->lightmapTexture.id) glDeleteTextures_(1, &impl_->lightmapTexture.id);
         if (impl_->previewTexture) glDeleteTextures_(1, &impl_->previewTexture);

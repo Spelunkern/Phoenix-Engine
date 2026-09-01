@@ -780,7 +780,9 @@ int main(int, char**)
             normalizeTexturesForBcUpload(terrainTextures, "Normalising textures to BC3", 0.70f, 0.735f);
 
             showLoading(0.74f, "Uploading BC3 textures");
-            terrainTexturesUploaded = renderer.upload_terrain_textures(terrainTextures, pumpQuitCheck);
+            terrainTexturesUploaded = renderer.upload_terrain_textures(terrainTextures, pumpQuitCheck,
+                static_cast<std::uint32_t>(kAssetTextureLayerBase),
+                static_cast<std::uint32_t>(assetTexturePaths.size()));
             if (terrainTexturesUploaded)
             {
                 releaseDecodedTextureRam(terrainTextures);

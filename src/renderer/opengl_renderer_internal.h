@@ -256,6 +256,7 @@ namespace phoenix::renderer
         GLuint assetSampler{};
         GLuint environmentNoiseTexture{};
         GlTexture terrainTextureArray;
+        GlTexture assetTextureArray;
         std::uint32_t terrainTextureLayerCount{};
         std::uint32_t terrainTextureWidth{};
         std::uint32_t terrainTextureHeight{};
@@ -263,6 +264,7 @@ namespace phoenix::renderer
         std::uint32_t terrainTextureFormat{};
         bool terrainTextureCompressed{};
         bool terrainTexturesReady{};
+        bool assetTexturesReady{};
         std::uint32_t maxImageArrayLayers{ 2048 };
 
         GlBuffer terrainMapBuffer;

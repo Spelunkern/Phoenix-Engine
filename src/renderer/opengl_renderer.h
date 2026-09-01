@@ -245,7 +245,9 @@ namespace phoenix::renderer
         // phase so the caller can keep processing window messages — the
         // upload takes seconds and the app must stay closable throughout.
         bool upload_terrain_textures(const std::vector<DdsTexture>& textures,
-            const std::function<void()>& pump = {});
+            const std::function<void()>& pump = {},
+            std::uint32_t assetFirstLayer = 0,
+            std::uint32_t assetLayerCount = 0);
         bool upload_terrain_texture_layers(std::uint32_t firstLayer, const std::vector<DdsTexture>& textures);
         // Dedicated array for the "Effects" debug panel (see effect_particle
         // .frag's high-bit texture-layer convention). Recreates the array
