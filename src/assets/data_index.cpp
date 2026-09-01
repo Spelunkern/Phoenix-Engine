@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <limits>
 
 namespace phoenix::assets
 {
@@ -244,8 +245,13 @@ namespace phoenix::assets
         auto file = open_ifstream(path, std::ios::binary | std::ios::ate);
         if (!file)
             return {};
-        const auto size = static_cast<std::size_t>(file.tellg());
-        file.seekg(0);
+        const auto end = file.tellg();
+        if (end <= 0 || end > std::numeric_limits<std::streamsize>::max())
+            return {};
+        const auto size = static_cast<std::size_t>(end);
+        file.seekg(0, std::ios::beg);
+        if (!file)
+            return {};
         std::vector<std::uint8_t> data(size);
         if (!file.read(reinterpret_cast<char*>(data.data()), static_cast<std::streamsize>(size)))
             data.clear();
