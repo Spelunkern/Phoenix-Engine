@@ -1,9 +1,3 @@
-<p align="center">
-  <img src="res/PhoenixMain.png" alt="Phoenix Client" width="480">
-</p>
-
-<p align="center"><em>But one day, tiny flames will dance across the darkness</em></p>
-
 # Phoenix Client
 
 Phoenix Client is an open-source C++ foundation for MMO game clients. It

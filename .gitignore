@@ -8,7 +8,6 @@
 /build-*/
 /dist/
 /.vs/
-/.claude/
 
 # Local runtime data and extracted assets
 /data/
