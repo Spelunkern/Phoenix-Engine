@@ -30,8 +30,8 @@ layout(std140, binding = 0) uniform CameraConstants
     vec4 diskColorSize;
     vec4 skyOptics;
     vec4 starColorDensity;
-    vec4 auroraLowSpread;
-    vec4 auroraHighSpeed;
+    vec4 reservedEnvironment0;
+    vec4 reservedEnvironment1;
     vec4 groundWeather;
     vec4 snowColor;
     mat4 shadowMatrix;

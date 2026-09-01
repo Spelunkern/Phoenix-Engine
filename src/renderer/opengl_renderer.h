@@ -139,10 +139,10 @@ namespace phoenix::renderer
         float ambientColorEnergy[4]{};   // ambient rgb, energy
         float glowColorFocus[4]{};       // halo rgb, focus exponent
         float diskColorSize[4]{};        // disk rgb, angular radius in degrees
-        float skyOptics[4]{};            // disk strength, star strength/amount, aurora strength
+        float skyOptics[4]{};            // disk strength, star strength/amount, reserved
         float starColorDensity[4]{};      // star rgb, cells per sphere axis
-        float auroraLowSpread[4]{};       // lower curtain rgb, spread
-        float auroraHighSpeed[4]{};       // upper curtain rgb, movement speed
+        float reservedEnvironment0[4]{};  // reserved; keeps the camera UBO layout stable
+        float reservedEnvironment1[4]{};  // reserved; keeps the camera UBO layout stable
         float groundWeather[4]{};         // wetness, puddle amount, snow cover, reserved
         float snowColor[4]{};             // accumulated-snow rgb, reserved
     };

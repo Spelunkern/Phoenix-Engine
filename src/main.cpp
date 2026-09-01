@@ -1626,9 +1626,9 @@ int main(int, char**)
             weatherParticleSystem.update(deltaSeconds, cameraPositionWorld,
                 cameraRightWorld, cameraUpWorld, cameraForwardWorld);
 
-            // Sun/moon discs, their halos, stars and aurora now live in the
-            // sky shader itself. This preserves cloud occlusion and prevents
-            // the old billboard systems from drawing a second astro/field.
+            // Sun/moon discs, their halos and stars live in the sky shader.
+            // This preserves cloud occlusion and prevents the old billboard
+            // systems from drawing a second astro/field.
 
             // Merge every source into the single-upload buffers
             // update_effect_particles() expects — it fully replaces the GPU
