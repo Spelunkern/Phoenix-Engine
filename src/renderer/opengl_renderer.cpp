@@ -2556,6 +2556,10 @@ namespace phoenix::renderer
                     };
                     glUniform4fv_(0, 1, viewport);
                     glBindTextureUnit_(0, impl_->worldLabelTexture);
+                    // Unit 0 normally carries the world's mipmapped terrain
+                    // sampler. The label atlas has a single level and must use
+                    // its own texture filtering state or it becomes incomplete.
+                    glBindSampler_(0, 0);
                     glBindVertexArray_(impl_->worldLabelVao);
                     glDrawArrays_(GL_TRIANGLES, 0, static_cast<GLsizei>(vertices.size()));
                     glDepthMask_(GL_TRUE);
