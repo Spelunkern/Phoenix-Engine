@@ -57,7 +57,6 @@ namespace phoenix::character
         // Airborne jumps hold the clip at this fraction; the remainder is the
         // landing tail, played by the touch-down recovery.
         constexpr float kJumpHoldFrameFraction = 0.80f;
-        constexpr float kTerrainFollowResponse = 10.0f;
         constexpr float kPi = 3.1415926535f;
         constexpr float kBackwardSpeedScale = 0.70f;
         constexpr float kStrafeSpeedScale = 0.85f;
@@ -2074,20 +2073,11 @@ namespace phoenix::character
             }
             else
             {
-                // Smooth terrain following for both the character model and camera.
-                // Without this the character visibly "jumps" at heightmap cell edges.
-                if (groundInitialized_)
-                {
-                    const float blend = 1.0f - std::exp(-kTerrainFollowResponse * clampedDelta);
-                    characterY_ += (groundY - characterY_) * blend;
-                    // Snap if very close to avoid perpetual micro-drift.
-                    if (std::abs(characterY_ - groundY) < 0.005f)
-                        characterY_ = groundY;
-                }
-                else
-                {
-                    characterY_ = groundY;
-                }
+                // Match the Godot controller: gameplay stays planted exactly on
+                // the sampled floor.  Only the render position and camera target
+                // below are smoothed; smoothing this value as well caused a second,
+                // visible layer of lag while climbing terrain.
+                characterY_ = groundY;
                 groundInitialized_ = true;
             }
         }

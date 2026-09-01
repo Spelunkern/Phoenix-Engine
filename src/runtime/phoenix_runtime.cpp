@@ -528,7 +528,7 @@ namespace phoenix::runtime
             camera_.y = floorY + 8.0f; // slightly above floor (eye height)
             camera_.z = centroidZ;
             camera_.pitch = 0.0f;
-            camera_.speed = 40.0f;
+            camera_.speed = 60.0f;
         }
 
         return state_.world.parsed;
@@ -2567,27 +2567,28 @@ namespace phoenix::runtime
     {
         if (input.look)
         {
-            camera_.yaw += input.mouseDx * 0.0032f;
-            camera_.pitch = std::clamp(camera_.pitch + input.mouseDy * 0.0032f, -1.25f, 0.45f);
+            camera_.yaw -= input.mouseDx * 0.003f;
+            camera_.pitch = std::clamp(camera_.pitch - input.mouseDy * 0.003f, -1.5f, 1.5f);
         }
         if (input.yawLeft)
             camera_.yaw -= deltaSeconds * 1.8f;
         if (input.yawRight)
             camera_.yaw += deltaSeconds * 1.8f;
         if (input.pitchUp)
-            camera_.pitch = std::clamp(camera_.pitch - deltaSeconds * 1.4f, -1.25f, 0.45f);
+            camera_.pitch = std::clamp(camera_.pitch - deltaSeconds * 1.4f, -1.5f, 1.5f);
         if (input.pitchDown)
-            camera_.pitch = std::clamp(camera_.pitch + deltaSeconds * 1.4f, -1.25f, 0.45f);
+            camera_.pitch = std::clamp(camera_.pitch + deltaSeconds * 1.4f, -1.5f, 1.5f);
 
-        const auto dungeonMode = state_.world.isDungeon;
-        const auto minSpeed = dungeonMode ? 15.0f : 80.0f;
-        const auto maxSpeed = dungeonMode ? 300.0f : 1400.0f;
-        camera_.speed = std::clamp(camera_.speed + input.wheel * 0.10f, minSpeed, maxSpeed);
-        const auto speed = camera_.speed * (input.fast ? 3.2f : 1.0f) * std::max(0.0f, deltaSeconds);
+        if (input.wheel != 0.0f)
+            camera_.speed = std::clamp(camera_.speed * std::pow(1.2f, input.wheel), 2.0f, 2000.0f);
+        const auto speed = camera_.speed * (input.fast ? 6.0f : 1.0f) * std::max(0.0f, deltaSeconds);
         const auto cy = std::cos(camera_.yaw);
         const auto sy = std::sin(camera_.yaw);
+        const auto cp = std::cos(camera_.pitch);
+        const auto sp = std::sin(camera_.pitch);
         const auto forwardX = sy;
-        const auto forwardZ = cy;
+        const auto forwardY = sp;
+        const auto forwardZ = cp * cy;
         const auto rightX = -cy;
         const auto rightZ = sy;
 
@@ -2596,12 +2597,14 @@ namespace phoenix::runtime
         float moveZ = 0.0f;
         if (input.forward)
         {
-            moveX += forwardX;
+            moveX += cp * forwardX;
+            moveY += forwardY;
             moveZ += forwardZ;
         }
         if (input.backward)
         {
-            moveX -= forwardX;
+            moveX -= cp * forwardX;
+            moveY -= forwardY;
             moveZ -= forwardZ;
         }
         if (input.right)
@@ -2619,11 +2622,12 @@ namespace phoenix::runtime
         if (input.down)
             moveY -= 1.0f;
 
-        const auto horizontalLength = std::sqrt(moveX * moveX + moveZ * moveZ);
-        if (horizontalLength > 0.001f)
+        const auto moveLength = std::sqrt(moveX * moveX + moveY * moveY + moveZ * moveZ);
+        if (moveLength > 0.001f)
         {
-            moveX /= horizontalLength;
-            moveZ /= horizontalLength;
+            moveX /= moveLength;
+            moveY /= moveLength;
+            moveZ /= moveLength;
         }
         camera_.x += moveX * speed;
         camera_.y += moveY * speed;

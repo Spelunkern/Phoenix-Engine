@@ -1264,9 +1264,11 @@ int main(int, char**)
         const auto [mouseDx, mouseDy] = window.consume_mouse_delta();
         const auto mouseWheel = window.consume_mouse_wheel_delta();
 
-        const bool orbitPointerDown = !imguiWantsMouse && playableMode
-            && characterLoaded && characterSystem.ready()
-            && (window.is_mouse_button_down(0) || window.is_mouse_button_down(1));
+        const bool playableOrbitAvailable = playableMode && characterLoaded && characterSystem.ready();
+        const bool orbitPointerDown = !imguiWantsMouse
+            && ((playableOrbitAvailable
+                    && (window.is_mouse_button_down(0) || window.is_mouse_button_down(1)))
+                || (!playableMode && window.is_mouse_button_down(1)));
         if (orbitPointerDown && !orbitPointerWasDown)
         {
             const auto [mouseX, mouseY] = window.mouse_position();
@@ -1404,9 +1406,9 @@ int main(int, char**)
                 cameraInput.pitchUp = window.is_key_down(SDLK_UP);
                 cameraInput.pitchDown = window.is_key_down(SDLK_DOWN);
             }
-            cameraInput.look = !imguiWantsMouse && window.is_mouse_button_down(1);
-            cameraInput.mouseDx = !imguiWantsMouse ? static_cast<float>(mouseDx) : 0.0f;
-            cameraInput.mouseDy = !imguiWantsMouse ? static_cast<float>(mouseDy) : 0.0f;
+            cameraInput.look = orbitMouseCaptured;
+            cameraInput.mouseDx = orbitMouseCaptured ? static_cast<float>(mouseDx) : 0.0f;
+            cameraInput.mouseDy = orbitMouseCaptured ? static_cast<float>(mouseDy) : 0.0f;
             cameraInput.wheel = !imguiWantsMouse ? static_cast<float>(mouseWheel) : 0.0f;
 
             const auto cameraChanged = cameraInput.forward || cameraInput.backward
@@ -1474,16 +1476,12 @@ int main(int, char**)
             debugEffectTexturesDirty = false;
         }
 
-        // Snap camera position to a fine grid to eliminate sub-pixel jitter
-        // caused by continuous EMA convergence (gravity/terrain smoothing).
-        // Grid = 1/512 world units, below a visible pixel at typical view distances.
-        constexpr float kCameraSnap = 512.0f;
-        const float snappedX = std::round(cameraX * kCameraSnap) / kCameraSnap;
-        const float snappedY = std::round(cameraY * kCameraSnap) / kCameraSnap;
-        const float snappedZ = std::round(cameraZ * kCameraSnap) / kCameraSnap;
-        const float renderCameraX = snappedX;
-        const float renderCameraY = snappedY;
-        const float renderCameraZ = snappedZ;
+        // Godot feeds the continuously smoothed transform to Camera3D.  Preserve
+        // it here as well: quantizing it to a 1/512 grid produced tiny but
+        // perceptible steps while orbiting slowly.
+        const float renderCameraX = cameraX;
+        const float renderCameraY = cameraY;
+        const float renderCameraZ = cameraZ;
         renderer.set_camera(
             renderCameraX,
             renderCameraY,
@@ -1600,7 +1598,7 @@ int main(int, char**)
             const float sinPitch = std::sin(cameraPitch);
             // World-space camera basis, matching the yaw-then-pitch rotation
             // static_object.vert/effect_particle.vert apply to world deltas.
-            const float cameraRightWorld[3]{ cosYaw, 0.0f, -sinYaw };
+            const float cameraRightWorld[3]{ -cosYaw, 0.0f, sinYaw };
             const float cameraUpWorld[3]{ -sinPitch * sinYaw, cosPitch, -sinPitch * cosYaw };
             const float cameraForwardWorld[3]{ cosPitch * sinYaw, sinPitch, cosPitch * cosYaw };
             const float cameraPositionWorld[3]{ renderCameraX, renderCameraY, renderCameraZ };

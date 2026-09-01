@@ -153,7 +153,7 @@ namespace phoenix::runtime
         float z{ -950.0f };
         float yaw{};
         float pitch{ -0.32f };
-        float speed{ 320.0f };
+        float speed{ 60.0f };
     };
 
     struct PreviewImage
