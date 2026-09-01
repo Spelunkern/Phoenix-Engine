@@ -393,9 +393,14 @@ namespace phoenix::renderer
             static constexpr int atlasWidth = 512;
             static constexpr int atlasHeight = 512;
             std::vector<std::uint8_t> fontBytes;
+            const auto exeDir = executable_dir();
+            const auto cwd = std::filesystem::current_path();
             for (const auto& fontPath : {
+                exeDir / "assets/fonts/NotoSans-Regular.ttf",
+                cwd / "assets/fonts/NotoSans-Regular.ttf",
                 std::filesystem::path("C:\\Windows\\Fonts\\arial.ttf"),
                 std::filesystem::path("C:\\Windows\\Fonts\\ARIAL.TTF"),
+                std::filesystem::path("/usr/share/fonts/noto/NotoSans-Regular.ttf"),
                 std::filesystem::path("/usr/share/fonts/truetype/liberation2/LiberationSans-Regular.ttf"),
                 std::filesystem::path("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf") })
             {
