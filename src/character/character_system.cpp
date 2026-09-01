@@ -1834,10 +1834,11 @@ namespace phoenix::character
         const float forwardX = std::sin(cameraYaw_);
         const float forwardZ = std::cos(cameraYaw_);
         const float swimForwardY = std::sin(cameraPitch_);
-        // Godot's reflected world uses this lateral basis. Keeping the old
-        // source-space sign made D travel screen-left after the map mirror.
-        const float rightX = -std::cos(cameraYaw_);
-        const float rightZ = std::sin(cameraYaw_);
+        // Camera-relative right vector. World mirroring is already handled by
+        // the renderer/runtime transforms; reflecting this basis a second time
+        // swaps the physical A/D movement.
+        const float rightX = std::cos(cameraYaw_);
+        const float rightZ = -std::sin(cameraYaw_);
         float moveX = 0.0f;
         float moveY = 0.0f;
         float moveZ = 0.0f;
