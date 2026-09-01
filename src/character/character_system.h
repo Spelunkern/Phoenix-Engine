@@ -77,10 +77,10 @@ namespace phoenix::character
         std::string raceFolder{ "Human" };
         std::string prefix{ "humf" };
         // Canonical Godot starting appearance (CharacterRig.DEFAULT_LOADOUT).
-        int upperIndex{ 18 };
-        int lowerIndex{ 18 };
-        int handIndex{ 18 };
-        int footIndex{ 18 };
+        int upperIndex{ 19 };
+        int lowerIndex{ 19 };
+        int handIndex{ 19 };
+        int footIndex{ 19 };
         int helmetIndex{ 10 };
         int faceIndex{ 0 };
         int hairIndex{ 0 };
