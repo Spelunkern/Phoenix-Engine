@@ -136,6 +136,7 @@ namespace phoenix::renderer
         GLuint staticObjectProgram{};
         GLuint skinnedCharacterProgram{};
         GLuint effectParticleProgram{};
+        GLuint worldLabelProgram{};
         GLuint skyProgram{};
         GLuint shadowTerrainProgram{};
         GLuint shadowStaticProgram{};
@@ -159,6 +160,7 @@ namespace phoenix::renderer
         GLuint monsterCharacterVao{};
         GLuint npcCharacterVao{};
         GLuint effectParticleVao{};
+        GLuint worldLabelVao{};
         GLuint emptyVao{}; // for sky (no vertex attribs, gl_VertexID driven)
 
         // --- camera/environment uniform buffer (19 std140 vec4s, binding 0) ---
@@ -235,6 +237,18 @@ namespace phoenix::renderer
         GlBuffer effectParticleInstanceBuffer;
         std::vector<EffectParticleBatch> effectParticleBatches;
         bool effectParticlesReady{};
+
+        struct WorldLabelGlyph
+        {
+            float x0{}, y0{}, x1{}, y1{};
+            float u0{}, v0{}, u1{}, v1{};
+            float advance{};
+        };
+        GlBuffer worldLabelVertexBuffer;
+        GLuint worldLabelTexture{};
+        std::array<WorldLabelGlyph, 224> worldLabelGlyphs{};
+        std::vector<ScreenLabel> worldLabels;
+        bool worldLabelsReady{};
 
         // --- textures ---
         GLuint terrainSampler{};

@@ -7,8 +7,6 @@
 #include <vector>
 
 struct SDL_Window;
-struct ImFont;
-
 namespace phoenix::renderer
 {
     struct DdsTexture;
@@ -94,6 +92,14 @@ namespace phoenix::renderer
         std::uint32_t indexCount{};
     };
 
+    struct ScreenLabel
+    {
+        float centerX{};
+        float topY{};
+        std::string text;
+        std::uint8_t color[4]{ 255, 255, 255, 255 };
+    };
+
     // Sky, cloud and water values shared by the full-screen sky and terrain
     // shaders. Each member is one std140 vec4 so the structure can be copied
     // directly behind the camera block without fragile per-field packing.
@@ -135,10 +141,10 @@ namespace phoenix::renderer
 
         bool initialize(SDL_Window* window, std::uint32_t width, std::uint32_t height);
         bool initialize_imgui(SDL_Window* window);
-        // Small Arial font for in-world NPC labels (nullptr if Arial wasn't found,
-        // in which case the caller should use the default ImGui font).
-        ImFont* npc_label_font() const { return npcLabelFont_; }
         void begin_imgui_frame();
+        // Native screen-space text, drawn by the engine after the 3D scene and
+        // before the debug ImGui pass.
+        void set_world_labels(std::vector<ScreenLabel> labels);
         std::uint64_t upload_imgui_icon_rgba(
             const std::uint8_t* rgba,
             std::uint32_t width,
@@ -299,7 +305,6 @@ namespace phoenix::renderer
         bool ready_{};
         bool imguiReady_{};
         bool imguiFrameStarted_{};
-        ImFont* npcLabelFont_{};
         std::string adapterName_;
         std::uint32_t graphicsQueueFamily_{ UINT32_MAX };
         std::uint32_t frameIndex_{};

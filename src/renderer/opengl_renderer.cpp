@@ -8,6 +8,10 @@
 #include "imgui_impl_opengl3.h"
 #include "imgui_impl_sdl2.h"
 
+#define STBTT_STATIC
+#define STB_TRUETYPE_IMPLEMENTATION
+#include "imstb_truetype.h"
+
 #include <algorithm>
 #include <array>
 #include <cmath>
@@ -18,10 +22,24 @@
 #include <string>
 #include <vector>
 
+#ifndef GL_R8
+#define GL_R8 0x8229
+#endif
+#ifndef GL_RED
+#define GL_RED 0x1903
+#endif
+
 namespace phoenix::renderer
 {
     namespace
     {
+        struct WorldLabelVertex
+        {
+            float position[2]{};
+            float uv[2]{};
+            float color[4]{};
+        };
+
         void* sdl_gl_get_proc(const char* name)
         {
             return SDL_GL_GetProcAddress(name);
@@ -369,6 +387,93 @@ namespace phoenix::renderer
             log_line("GL: skinned character pipeline unavailable (non-fatal)");
         if (!create_effect_particle_pipeline())
             log_line("GL: effect particle pipeline unavailable (non-fatal)");
+        impl_->worldLabelProgram = build_program("shaders/gl/world_label.vert", "shaders/gl/world_label.frag");
+        if (impl_->worldLabelProgram)
+        {
+            static constexpr int atlasWidth = 512;
+            static constexpr int atlasHeight = 512;
+            std::vector<std::uint8_t> fontBytes;
+            for (const auto& fontPath : {
+                std::filesystem::path("C:\\Windows\\Fonts\\arial.ttf"),
+                std::filesystem::path("C:\\Windows\\Fonts\\ARIAL.TTF"),
+                std::filesystem::path("/usr/share/fonts/truetype/liberation2/LiberationSans-Regular.ttf"),
+                std::filesystem::path("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf") })
+            {
+                std::ifstream input(fontPath, std::ios::binary | std::ios::ate);
+                if (!input)
+                    continue;
+                const auto size = input.tellg();
+                if (size <= 0)
+                    continue;
+                fontBytes.resize(static_cast<std::size_t>(size));
+                input.seekg(0, std::ios::beg);
+                input.read(reinterpret_cast<char*>(fontBytes.data()), static_cast<std::streamsize>(fontBytes.size()));
+                if (input)
+                    break;
+                fontBytes.clear();
+            }
+
+            std::vector<std::uint8_t> atlas(static_cast<std::size_t>(atlasWidth) * atlasHeight);
+            std::array<stbtt_bakedchar, 224> baked{};
+            if (!fontBytes.empty()
+                && stbtt_BakeFontBitmap(fontBytes.data(), 0, 14.0f, atlas.data(),
+                    atlasWidth, atlasHeight, 32, static_cast<int>(baked.size()), baked.data()) > 0)
+            {
+                for (std::size_t i = 0; i < baked.size(); ++i)
+                {
+                    const auto& source = baked[i];
+                    auto& glyph = impl_->worldLabelGlyphs[i];
+                    glyph.x0 = source.xoff;
+                    glyph.y0 = source.yoff;
+                    glyph.x1 = source.xoff + static_cast<float>(source.x1 - source.x0);
+                    glyph.y1 = source.yoff + static_cast<float>(source.y1 - source.y0);
+                    glyph.u0 = static_cast<float>(source.x0) / atlasWidth;
+                    glyph.v0 = static_cast<float>(source.y0) / atlasHeight;
+                    glyph.u1 = static_cast<float>(source.x1) / atlasWidth;
+                    glyph.v1 = static_cast<float>(source.y1) / atlasHeight;
+                    glyph.advance = source.xadvance;
+                }
+
+                glGenTextures_(1, &impl_->worldLabelTexture);
+                glBindTexture_(GL_TEXTURE_2D, impl_->worldLabelTexture);
+                glTexParameteri_(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+                glTexParameteri_(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+                glTexParameteri_(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+                glTexParameteri_(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+                glTexImage2D_(GL_TEXTURE_2D, 0, GL_R8, atlasWidth, atlasHeight, 0,
+                    GL_RED, GL_UNSIGNED_BYTE, atlas.data());
+                glBindTexture_(GL_TEXTURE_2D, 0);
+
+                glCreateBuffers_(1, &impl_->worldLabelVertexBuffer.id);
+                glNamedBufferData_(impl_->worldLabelVertexBuffer.id, 1, nullptr, GL_DYNAMIC_DRAW);
+                impl_->worldLabelVertexBuffer.byteSize = 1;
+                glCreateVertexArrays_(1, &impl_->worldLabelVao);
+                glBindVertexArray_(impl_->worldLabelVao);
+                glBindBuffer_(GL_ARRAY_BUFFER, impl_->worldLabelVertexBuffer.id);
+                const auto stride = static_cast<GLsizei>(sizeof(WorldLabelVertex));
+                glEnableVertexAttribArray_(0);
+                glVertexAttribPointer_(0, 2, GL_FLOAT, GL_FALSE, stride,
+                    reinterpret_cast<const void*>(offsetof(WorldLabelVertex, position)));
+                glEnableVertexAttribArray_(1);
+                glVertexAttribPointer_(1, 2, GL_FLOAT, GL_FALSE, stride,
+                    reinterpret_cast<const void*>(offsetof(WorldLabelVertex, uv)));
+                glEnableVertexAttribArray_(2);
+                glVertexAttribPointer_(2, 4, GL_FLOAT, GL_FALSE, stride,
+                    reinterpret_cast<const void*>(offsetof(WorldLabelVertex, color)));
+                glBindVertexArray_(0);
+                impl_->worldLabelsReady = true;
+            }
+            else
+            {
+                glDeleteProgram_(impl_->worldLabelProgram);
+                impl_->worldLabelProgram = 0;
+                log_line("GL: native world-label font unavailable");
+            }
+        }
+        else
+        {
+            log_line("GL: native world-label shaders unavailable");
+        }
         if (!create_sky_pipeline())
             log_line("GL: sky pipeline unavailable (non-fatal)");
         impl_->shadowTerrainProgram = build_program("shaders/gl/shadow_terrain.vert", "shaders/gl/shadow_depth.frag");
@@ -431,16 +536,6 @@ namespace phoenix::renderer
         ImGui::StyleColorsDark();
 
         io.Fonts->AddFontDefault();
-        npcLabelFont_ = nullptr;
-        for (const char* arialPath : { "C:\\Windows\\Fonts\\arial.ttf", "C:\\Windows\\Fonts\\ARIAL.TTF" })
-        {
-            std::error_code ec;
-            if (std::filesystem::exists(arialPath, ec))
-            {
-                npcLabelFont_ = io.Fonts->AddFontFromFileTTF(arialPath, 14.0f);
-                break;
-            }
-        }
 
         if (!ImGui_ImplSDL2_InitForOpenGL(window, impl_->glContext))
             return false;
@@ -466,6 +561,13 @@ namespace phoenix::renderer
         ImGui_ImplSDL2_NewFrame();
         ImGui::NewFrame();
         imguiFrameStarted_ = true;
+    }
+
+    void OpenGLRenderer::set_world_labels(std::vector<ScreenLabel> labels)
+    {
+        if (!impl_)
+            return;
+        impl_->worldLabels = std::move(labels);
     }
 
     std::uint64_t OpenGLRenderer::upload_imgui_icon_rgba(
@@ -2360,6 +2462,111 @@ namespace phoenix::renderer
                     glEnable_(GL_SAMPLE_ALPHA_TO_COVERAGE);
                 }
             }
+            if (impl_->worldLabelsReady && impl_->worldLabelProgram && !impl_->worldLabels.empty())
+            {
+                std::vector<WorldLabelVertex> vertices;
+                vertices.reserve(impl_->worldLabels.size() * 6u * 32u * 5u);
+
+                const auto decode = [](const std::string& text) {
+                    std::vector<std::uint32_t> codepoints;
+                    codepoints.reserve(text.size());
+                    for (std::size_t i = 0; i < text.size();)
+                    {
+                        const auto first = static_cast<std::uint8_t>(text[i++]);
+                        std::uint32_t codepoint = first;
+                        int continuationCount = 0;
+                        if ((first & 0xE0u) == 0xC0u) { codepoint = first & 0x1Fu; continuationCount = 1; }
+                        else if ((first & 0xF0u) == 0xE0u) { codepoint = first & 0x0Fu; continuationCount = 2; }
+                        else if ((first & 0xF8u) == 0xF0u) { codepoint = first & 0x07u; continuationCount = 3; }
+                        for (int j = 0; j < continuationCount && i < text.size(); ++j)
+                        {
+                            const auto next = static_cast<std::uint8_t>(text[i++]);
+                            if ((next & 0xC0u) != 0x80u) { codepoint = '?'; break; }
+                            codepoint = (codepoint << 6u) | (next & 0x3Fu);
+                        }
+                        codepoints.push_back(codepoint >= 32u && codepoint <= 255u ? codepoint : '?');
+                    }
+                    return codepoints;
+                };
+                const auto appendText = [&](const ScreenLabel& label, float offsetX, float offsetY,
+                    const float (&color)[4]) {
+                    const auto codepoints = decode(label.text);
+                    float width = 0.0f;
+                    for (const auto codepoint : codepoints)
+                        width += impl_->worldLabelGlyphs[codepoint - 32u].advance;
+                    float cursorX = std::floor(label.centerX - width * 0.5f + offsetX);
+                    const float baseline = std::floor(label.topY + 13.0f + offsetY);
+                    for (const auto codepoint : codepoints)
+                    {
+                        const auto& glyph = impl_->worldLabelGlyphs[codepoint - 32u];
+                        const float x0 = cursorX + glyph.x0;
+                        const float y0 = baseline + glyph.y0;
+                        const float x1 = cursorX + glyph.x1;
+                        const float y1 = baseline + glyph.y1;
+                        const WorldLabelVertex quad[6]{
+                            { { x0, y0 }, { glyph.u0, glyph.v0 }, { color[0], color[1], color[2], color[3] } },
+                            { { x1, y0 }, { glyph.u1, glyph.v0 }, { color[0], color[1], color[2], color[3] } },
+                            { { x1, y1 }, { glyph.u1, glyph.v1 }, { color[0], color[1], color[2], color[3] } },
+                            { { x0, y0 }, { glyph.u0, glyph.v0 }, { color[0], color[1], color[2], color[3] } },
+                            { { x1, y1 }, { glyph.u1, glyph.v1 }, { color[0], color[1], color[2], color[3] } },
+                            { { x0, y1 }, { glyph.u0, glyph.v1 }, { color[0], color[1], color[2], color[3] } },
+                        };
+                        vertices.insert(vertices.end(), std::begin(quad), std::end(quad));
+                        cursorX += glyph.advance;
+                    }
+                };
+
+                constexpr float outline[4]{ 0.0f, 0.0f, 0.0f, 0.92f };
+                static constexpr float outlineOffsets[4][2]{
+                    { -1.0f, 0.0f }, { 1.0f, 0.0f }, { 0.0f, -1.0f }, { 0.0f, 1.0f }
+                };
+                for (const auto& label : impl_->worldLabels)
+                {
+                    for (const auto& offset : outlineOffsets)
+                        appendText(label, offset[0], offset[1], outline);
+                    const float color[4]{
+                        label.color[0] / 255.0f, label.color[1] / 255.0f,
+                        label.color[2] / 255.0f, label.color[3] / 255.0f
+                    };
+                    appendText(label, 0.0f, 0.0f, color);
+                }
+
+                if (!vertices.empty())
+                {
+                    const auto bytes = vertices.size() * sizeof(WorldLabelVertex);
+                    if (bytes > impl_->worldLabelVertexBuffer.byteSize)
+                    {
+                        glNamedBufferData_(impl_->worldLabelVertexBuffer.id,
+                            static_cast<GLsizeiptr>(bytes), vertices.data(), GL_DYNAMIC_DRAW);
+                        impl_->worldLabelVertexBuffer.byteSize = bytes;
+                    }
+                    else
+                    {
+                        glNamedBufferSubData_(impl_->worldLabelVertexBuffer.id, 0,
+                            static_cast<GLsizeiptr>(bytes), vertices.data());
+                    }
+                    glDisable_(GL_DEPTH_TEST);
+                    glDepthMask_(GL_FALSE);
+                    glDisable_(GL_MULTISAMPLE);
+                    glDisable_(GL_SAMPLE_ALPHA_TO_COVERAGE);
+                    glBlendFunc_(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+                    useProgram(impl_->worldLabelProgram);
+                    const float viewport[4]{
+                        static_cast<float>(impl_->surfaceWidth), static_cast<float>(impl_->surfaceHeight), 0.0f, 0.0f
+                    };
+                    glUniform4fv_(0, 1, viewport);
+                    glBindTextureUnit_(0, impl_->worldLabelTexture);
+                    glBindVertexArray_(impl_->worldLabelVao);
+                    glDrawArrays_(GL_TRIANGLES, 0, static_cast<GLsizei>(vertices.size()));
+                    glDepthMask_(GL_TRUE);
+                    glEnable_(GL_DEPTH_TEST);
+                    if (impl_->antialiasingEnabled)
+                    {
+                        glEnable_(GL_MULTISAMPLE);
+                        glEnable_(GL_SAMPLE_ALPHA_TO_COVERAGE);
+                    }
+                }
+            }
             renderImguiWithoutAntialiasing();
         }
         else
@@ -2433,6 +2640,7 @@ namespace phoenix::renderer
         destroyBuf(impl_->effectParticleVertexBuffer);
         destroyBuf(impl_->effectParticleIndexBuffer);
         destroyBuf(impl_->effectParticleInstanceBuffer);
+        destroyBuf(impl_->worldLabelVertexBuffer);
         for (auto& b : impl_->monsterCharacterInstanceBuffer) destroyBuf(b);
         for (auto& b : impl_->monsterPaletteBuffer) destroyBuf(b);
         for (auto& b : impl_->npcCharacterInstanceBuffer) destroyBuf(b);
@@ -2448,6 +2656,7 @@ namespace phoenix::renderer
         destroyVao(impl_->monsterCharacterVao);
         destroyVao(impl_->npcCharacterVao);
         destroyVao(impl_->effectParticleVao);
+        destroyVao(impl_->worldLabelVao);
         destroyVao(impl_->emptyVao);
 
         if (impl_->cameraUbo) glDeleteBuffers_(1, &impl_->cameraUbo);
@@ -2458,6 +2667,7 @@ namespace phoenix::renderer
         if (impl_->previewTexture) glDeleteTextures_(1, &impl_->previewTexture);
         if (impl_->environmentNoiseTexture) glDeleteTextures_(1, &impl_->environmentNoiseTexture);
         if (impl_->shadowDepthTexture) glDeleteTextures_(1, &impl_->shadowDepthTexture);
+        if (impl_->worldLabelTexture) glDeleteTextures_(1, &impl_->worldLabelTexture);
         for (auto& icon : impl_->imguiIconTextures)
             if (icon.texture) glDeleteTextures_(1, &icon.texture);
 
@@ -2472,6 +2682,7 @@ namespace phoenix::renderer
         destroyProg(impl_->staticObjectProgram);
         destroyProg(impl_->skinnedCharacterProgram);
         destroyProg(impl_->effectParticleProgram);
+        destroyProg(impl_->worldLabelProgram);
         destroyProg(impl_->skyProgram);
         destroyProg(impl_->shadowTerrainProgram);
         destroyProg(impl_->shadowStaticProgram);

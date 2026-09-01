@@ -1969,14 +1969,13 @@ int main(int, char**)
             }
         }
 
-        // In-world labels: NPC name (yellow) over type (light blue/celeste), and
-        // monster name (yellow, no type). Small Arial, black outline, anchored
-        // just above each visible head, occluded by world geometry.
-        if (imguiAvailable && (npcManager.active() || monsterManager.active()))
+        // In-world labels are authored by the game and rendered by the engine's
+        // native text pass. ImGui remains exclusively a debug interface.
+        std::vector<phoenix::renderer::ScreenLabel> worldLabels;
+        if (npcManager.active() || monsterManager.active())
         {
             const float w = static_cast<float>(std::max(1u, renderer.surface_width()));
             const float h = static_cast<float>(std::max(1u, renderer.surface_height()));
-            ImFont* labelFont = renderer.npc_label_font();
             constexpr float labelFontSize = 14.0f;
             // Fixed screen gap between the NPC's head and the label: keeping this in
             // pixels (not world units) makes the label sit at a consistent spot
@@ -1985,26 +1984,15 @@ int main(int, char**)
             // Names show closer than the NPC render cull to avoid distant clutter.
             constexpr float labelMaxDistance = 50.0f;
             const float labelMaxDistSq = labelMaxDistance * labelMaxDistance;
-            auto* drawList = ImGui::GetForegroundDrawList();
-            const ImU32 outlineCol = IM_COL32(0, 0, 0, 235);
-            const ImU32 nameCol = IM_COL32(255, 226, 0, 255);    // yellow
-            const ImU32 typeCol = IM_COL32(90, 200, 255, 255);   // celeste
-            const auto drawCentered = [&](float cx, float top, const char* text, ImU32 col) {
-                const ImVec2 ts = labelFont
-                    ? labelFont->CalcTextSizeA(labelFontSize, 1e30f, 0.0f, text)
-                    : ImGui::CalcTextSize(text);
-                const float x = cx - ts.x * 0.5f;
-                // Thin 4-way (cardinal) outline rather than a full 8-way ring.
-                static constexpr int kOutline[4][2] = { { -1, 0 }, { 1, 0 }, { 0, -1 }, { 0, 1 } };
-                for (const auto& o : kOutline)
-                {
-                    const ImVec2 op(x + static_cast<float>(o[0]), top + static_cast<float>(o[1]));
-                    if (labelFont) drawList->AddText(labelFont, labelFontSize, op, outlineCol, text);
-                    else drawList->AddText(op, outlineCol, text);
-                }
-                const ImVec2 p(x, top);
-                if (labelFont) drawList->AddText(labelFont, labelFontSize, p, col, text);
-                else drawList->AddText(p, col, text);
+            constexpr std::uint8_t nameCol[4]{ 255, 226, 0, 255 };
+            constexpr std::uint8_t typeCol[4]{ 90, 200, 255, 255 };
+            const auto drawCentered = [&](float cx, float top, const char* text, const std::uint8_t (&color)[4]) {
+                phoenix::renderer::ScreenLabel output{};
+                output.centerX = cx;
+                output.topY = top;
+                output.text = text;
+                std::copy(std::begin(color), std::end(color), std::begin(output.color));
+                worldLabels.push_back(std::move(output));
             };
             // Case-insensitive match for the generic types whose label is hidden.
             const auto iequals = [](const std::string& a, const char* b) {
@@ -2066,20 +2054,22 @@ int main(int, char**)
                 // projected creature, matching the Godot client and avoiding a
                 // permanent field of labels. Derive the hit area from the actual
                 // head/feet projection so it remains stable at every distance.
-                const ImVec2 mouse = ImGui::GetIO().MousePos;
+                const auto [mouseX, mouseY] = window.mouse_position();
                 const float bodyHeight = std::clamp(std::abs(feet.y - sp.y), 10.0f, 180.0f);
                 const float halfWidth = std::clamp(bodyHeight * 0.34f, 7.0f, 55.0f);
                 const float top = std::min(sp.y, feet.y) - 4.0f;
                 const float bottom = std::max(sp.y, feet.y) + 5.0f;
                 const bool hovered = !imguiWantsMouse
-                    && mouse.x >= sp.x - halfWidth && mouse.x <= sp.x + halfWidth
-                    && mouse.y >= top && mouse.y <= bottom;
+                    && static_cast<float>(mouseX) >= sp.x - halfWidth && static_cast<float>(mouseX) <= sp.x + halfWidth
+                    && static_cast<float>(mouseY) >= top && static_cast<float>(mouseY) <= bottom;
                 if (!hovered)
                     continue;
                 if (label.name && !label.name->empty())
                     drawCentered(sp.x, sp.y - labelPixelGap - labelFontSize, label.name->c_str(), nameCol);
             }
         }
+
+        renderer.set_world_labels(std::move(worldLabels));
 
         renderer.render_frame();
 
