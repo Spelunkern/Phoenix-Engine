@@ -248,6 +248,7 @@ namespace phoenix::renderer
         GLuint worldLabelTexture{};
         std::array<WorldLabelGlyph, 224> worldLabelGlyphs{};
         std::vector<ScreenLabel> worldLabels;
+        std::vector<ScreenUiCommand> screenUi;
         bool worldLabelsReady{};
 
         // --- textures ---

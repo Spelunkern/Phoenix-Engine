@@ -38,6 +38,7 @@ namespace phoenix::renderer
             float position[2]{};
             float uv[2]{};
             float color[4]{};
+            float textured{ 1.0f };
         };
 
         void* sdl_gl_get_proc(const char* name)
@@ -465,6 +466,9 @@ namespace phoenix::renderer
                 glEnableVertexAttribArray_(2);
                 glVertexAttribPointer_(2, 4, GL_FLOAT, GL_FALSE, stride,
                     reinterpret_cast<const void*>(offsetof(WorldLabelVertex, color)));
+                glEnableVertexAttribArray_(3);
+                glVertexAttribPointer_(3, 1, GL_FLOAT, GL_FALSE, stride,
+                    reinterpret_cast<const void*>(offsetof(WorldLabelVertex, textured)));
                 glBindVertexArray_(0);
                 impl_->worldLabelsReady = true;
             }
@@ -573,6 +577,18 @@ namespace phoenix::renderer
         if (!impl_)
             return;
         impl_->worldLabels = std::move(labels);
+    }
+
+    void OpenGLRenderer::set_screen_ui(std::vector<ScreenUiCommand> commands)
+    {
+        if (!impl_)
+            return;
+        impl_->screenUi = std::move(commands);
+    }
+
+    bool OpenGLRenderer::native_ui_available() const
+    {
+        return impl_ && impl_->worldLabelsReady && impl_->worldLabelProgram;
     }
 
     std::uint64_t OpenGLRenderer::upload_imgui_icon_rgba(
@@ -2467,10 +2483,11 @@ namespace phoenix::renderer
                     glEnable_(GL_SAMPLE_ALPHA_TO_COVERAGE);
                 }
             }
-            if (impl_->worldLabelsReady && impl_->worldLabelProgram && !impl_->worldLabels.empty())
+            if (impl_->worldLabelsReady && impl_->worldLabelProgram
+                && (!impl_->worldLabels.empty() || !impl_->screenUi.empty()))
             {
                 std::vector<WorldLabelVertex> vertices;
-                vertices.reserve(impl_->worldLabels.size() * 6u * 32u * 5u);
+                vertices.reserve((impl_->worldLabels.size() + impl_->screenUi.size()) * 6u * 32u);
 
                 const auto decode = [](const std::string& text) {
                     std::vector<std::uint32_t> codepoints;
@@ -2534,6 +2551,80 @@ namespace phoenix::renderer
                         label.color[2] / 255.0f, label.color[3] / 255.0f
                     };
                     appendText(label, 0.0f, 0.0f, color);
+                }
+
+                // PhoenixUI shares this atlas and vertex buffer with native
+                // world labels. Rectangles bypass the atlas; text samples it.
+                // Commands remain in submission order, so later widgets and
+                // combo overlays naturally cover earlier panel contents.
+                const auto commandClip = [&](const ScreenUiCommand& item) {
+                    if (item.clipWidth <= 0.0f || item.clipHeight <= 0.0f)
+                        return std::array<float, 4>{ 0.0f, 0.0f,
+                            static_cast<float>(impl_->surfaceWidth), static_cast<float>(impl_->surfaceHeight) };
+                    return std::array<float, 4>{ item.clipX, item.clipY,
+                        item.clipX + item.clipWidth, item.clipY + item.clipHeight };
+                };
+                const auto appendRectangle = [&](const ScreenUiCommand& item) {
+                    const auto clip = commandClip(item);
+                    const float x0 = std::max(item.x, clip[0]);
+                    const float y0 = std::max(item.y, clip[1]);
+                    const float x1 = std::min(item.x + item.width, clip[2]);
+                    const float y1 = std::min(item.y + item.height, clip[3]);
+                    if (x1 <= x0 || y1 <= y0)
+                        return;
+                    const WorldLabelVertex quad[6]{
+                        { { x0, y0 }, {}, { item.color[0], item.color[1], item.color[2], item.color[3] }, 0.0f },
+                        { { x1, y0 }, {}, { item.color[0], item.color[1], item.color[2], item.color[3] }, 0.0f },
+                        { { x1, y1 }, {}, { item.color[0], item.color[1], item.color[2], item.color[3] }, 0.0f },
+                        { { x0, y0 }, {}, { item.color[0], item.color[1], item.color[2], item.color[3] }, 0.0f },
+                        { { x1, y1 }, {}, { item.color[0], item.color[1], item.color[2], item.color[3] }, 0.0f },
+                        { { x0, y1 }, {}, { item.color[0], item.color[1], item.color[2], item.color[3] }, 0.0f },
+                    };
+                    vertices.insert(vertices.end(), std::begin(quad), std::end(quad));
+                };
+                const auto appendUiText = [&](const ScreenUiCommand& item) {
+                    const auto clip = commandClip(item);
+                    const auto codepoints = decode(item.text);
+                    float cursorX = std::floor(item.x);
+                    const float baseline = std::floor(item.y + 13.0f);
+                    for (const auto codepoint : codepoints)
+                    {
+                        const auto& glyph = impl_->worldLabelGlyphs[codepoint - 32u];
+                        const float originalX0 = cursorX + glyph.x0;
+                        const float originalY0 = baseline + glyph.y0;
+                        const float originalX1 = cursorX + glyph.x1;
+                        const float originalY1 = baseline + glyph.y1;
+                        const float x0 = std::max(originalX0, clip[0]);
+                        const float y0 = std::max(originalY0, clip[1]);
+                        const float x1 = std::min(originalX1, clip[2]);
+                        const float y1 = std::min(originalY1, clip[3]);
+                        if (x1 > x0 && y1 > y0)
+                        {
+                            const float width = std::max(0.0001f, originalX1 - originalX0);
+                            const float height = std::max(0.0001f, originalY1 - originalY0);
+                            const float u0 = glyph.u0 + (glyph.u1 - glyph.u0) * ((x0 - originalX0) / width);
+                            const float v0 = glyph.v0 + (glyph.v1 - glyph.v0) * ((y0 - originalY0) / height);
+                            const float u1 = glyph.u0 + (glyph.u1 - glyph.u0) * ((x1 - originalX0) / width);
+                            const float v1 = glyph.v0 + (glyph.v1 - glyph.v0) * ((y1 - originalY0) / height);
+                            const WorldLabelVertex quad[6]{
+                                { { x0, y0 }, { u0, v0 }, { item.color[0], item.color[1], item.color[2], item.color[3] } },
+                                { { x1, y0 }, { u1, v0 }, { item.color[0], item.color[1], item.color[2], item.color[3] } },
+                                { { x1, y1 }, { u1, v1 }, { item.color[0], item.color[1], item.color[2], item.color[3] } },
+                                { { x0, y0 }, { u0, v0 }, { item.color[0], item.color[1], item.color[2], item.color[3] } },
+                                { { x1, y1 }, { u1, v1 }, { item.color[0], item.color[1], item.color[2], item.color[3] } },
+                                { { x0, y1 }, { u0, v1 }, { item.color[0], item.color[1], item.color[2], item.color[3] } },
+                            };
+                            vertices.insert(vertices.end(), std::begin(quad), std::end(quad));
+                        }
+                        cursorX += glyph.advance;
+                    }
+                };
+                for (const auto& item : impl_->screenUi)
+                {
+                    if (item.kind == ScreenUiCommandKind::Rectangle)
+                        appendRectangle(item);
+                    else
+                        appendUiText(item);
                 }
 
                 if (!vertices.empty())

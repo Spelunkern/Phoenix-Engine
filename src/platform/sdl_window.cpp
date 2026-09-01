@@ -1,7 +1,5 @@
 #include "platform/sdl_window.h"
 
-#include "imgui_impl_sdl2.h"
-
 namespace phoenix::platform
 {
     SdlWindow::~SdlWindow()
@@ -87,11 +85,10 @@ namespace phoenix::platform
 
     bool SdlWindow::pump_messages()
     {
+        mouseButtonsPressed_.fill(false);
         SDL_Event event{};
         while (SDL_PollEvent(&event))
         {
-            ImGui_ImplSDL2_ProcessEvent(&event);
-
             switch (event.type)
             {
             case SDL_QUIT:
@@ -159,9 +156,9 @@ namespace phoenix::platform
                 break;
 
             case SDL_MOUSEBUTTONDOWN:
-                if (event.button.button == SDL_BUTTON_LEFT)   mouseButtons_[0] = true;
-                if (event.button.button == SDL_BUTTON_RIGHT)  mouseButtons_[1] = true;
-                if (event.button.button == SDL_BUTTON_MIDDLE) mouseButtons_[2] = true;
+                if (event.button.button == SDL_BUTTON_LEFT)   mouseButtons_[0] = mouseButtonsPressed_[0] = true;
+                if (event.button.button == SDL_BUTTON_RIGHT)  mouseButtons_[1] = mouseButtonsPressed_[1] = true;
+                if (event.button.button == SDL_BUTTON_MIDDLE) mouseButtons_[2] = mouseButtonsPressed_[2] = true;
                 break;
 
             case SDL_MOUSEBUTTONUP:
@@ -223,6 +220,13 @@ namespace phoenix::platform
     std::pair<int, int> SdlWindow::mouse_position() const
     {
         return { lastMouseX_, lastMouseY_ };
+    }
+
+    bool SdlWindow::mouse_button_pressed(int button) const
+    {
+        if (button < 0 || button >= static_cast<int>(mouseButtonsPressed_.size()))
+            return false;
+        return mouseButtonsPressed_[static_cast<std::size_t>(button)];
     }
 
     void SdlWindow::set_relative_mouse_mode(bool enabled)

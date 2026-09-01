@@ -1,16 +1,12 @@
 #include "ui/perf_hud.h"
 
-#include "app/bootstrap.h"
-#include "renderer/png_loader.h"
-
-#include "imgui.h"
+#include "ui/phoenix_ui.h"
 
 #include <algorithm>
 #include <cctype>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
-#include <filesystem>
 #include <fstream>
 #include <string>
 #include <string_view>
@@ -46,94 +42,6 @@ namespace phoenix::ui
             return value;
         }
 
-        bool contains_ci(const std::string& haystack, const char* needle)
-        {
-            const auto len = std::strlen(needle);
-            if (haystack.size() < len) return false;
-            for (std::size_t i = 0; i <= haystack.size() - len; ++i)
-            {
-                bool match = true;
-                for (std::size_t j = 0; j < len; ++j)
-                {
-                    if (std::tolower(static_cast<unsigned char>(haystack[i + j])) !=
-                        static_cast<unsigned char>(needle[j]))
-                    { match = false; break; }
-                }
-                if (match) return true;
-            }
-            return false;
-        }
-
-        // Resolve a path under res/ regardless of whether the binary is launched
-        // from the repo root, the build folder, or an install dir (same
-        // candidate-search pattern used for shaders in opengl_renderer.cpp).
-        std::filesystem::path resolve_res_path(const std::filesystem::path& relativePath)
-        {
-            const auto cwd = std::filesystem::current_path();
-            const auto exeDir = phoenix::app::executable_directory();
-            const std::filesystem::path candidates[] = {
-                cwd / relativePath,
-                cwd.parent_path() / relativePath,
-                cwd.parent_path().parent_path().parent_path() / relativePath,
-                exeDir / relativePath,
-                exeDir.parent_path() / relativePath,
-            };
-            for (const auto& candidate : candidates)
-            {
-                std::error_code ec;
-                if (std::filesystem::exists(candidate, ec))
-                    return candidate;
-            }
-            return relativePath;
-        }
-
-        std::uint64_t load_icon(PerfHudState& hud, const char* fileName)
-        {
-            const auto path = resolve_res_path(std::filesystem::path("res/icons") / fileName);
-            const auto image = phoenix::renderer::load_png(path);
-            if (!image.valid)
-                return 0;
-            return hud.renderer->upload_imgui_icon_rgba(image.rgba.data(), image.width, image.height);
-        }
-
-        void upload_icons_if_needed(PerfHudState& hud)
-        {
-            if (hud.iconsUploaded || !hud.renderer) return;
-            hud.windowsIcon = load_icon(hud, "windows.png");
-            hud.linuxIcon = load_icon(hud, "linux.png");
-            hud.nvidiaIcon = load_icon(hud, "nvidia.png");
-            hud.amdIcon = load_icon(hud, "amd.png");
-            hud.intelIcon = load_icon(hud, "intel.png");
-            hud.iconsUploaded = true;
-
-            // Cache icon lookups once so draw never does string ops.
-            const auto& os = hud.osName;
-            if (contains_ci(os, "windows")) hud.cachedOsIcon = hud.windowsIcon;
-            else hud.cachedOsIcon = hud.linuxIcon; // Everything not Windows shows Tux
-
-            auto resolve_vendor = [&](const std::string& name) -> std::uint64_t {
-                if (contains_ci(name, "nvidia") || contains_ci(name, "geforce") || contains_ci(name, "rtx") || contains_ci(name, "gtx"))
-                    return hud.nvidiaIcon;
-                if (contains_ci(name, "amd") || contains_ci(name, "radeon") || contains_ci(name, "ryzen"))
-                    return hud.amdIcon;
-                if (contains_ci(name, "intel") || contains_ci(name, "arc"))
-                    return hud.intelIcon;
-                return 0;
-            };
-            hud.cachedCpuIcon = resolve_vendor(hud.cpuName);
-            hud.cachedGpuIcon = resolve_vendor(hud.gpuName);
-        }
-
-        void icon_text(std::uint64_t icon, const char* text, bool disabled = true)
-        {
-            if (icon != 0)
-            {
-                ImGui::Image(static_cast<ImTextureID>(icon), ImVec2(14.0f, 14.0f));
-                ImGui::SameLine(0.0f, 5.0f);
-            }
-            if (disabled) ImGui::TextDisabled("%s", text);
-            else ImGui::TextUnformatted(text);
-        }
     }
 
     float PerfHudState::fps_cap_seconds() const
@@ -325,52 +233,51 @@ namespace phoenix::ui
     void draw_perf_hud(PerfHudState& hud, float surfaceWidth)
     {
         const float hudWidth = 240.0f;
-        ImGui::SetNextWindowPos(ImVec2(surfaceWidth - hudWidth - 8.0f, 8.0f), ImGuiCond_Always);
-        ImGui::SetNextWindowSize(ImVec2(hudWidth, 0.0f));
-        ImGui::SetNextWindowBgAlpha(0.78f);
+        px::SetNextWindowPos(px::Vec2(surfaceWidth - hudWidth - 8.0f, 8.0f), px::Always);
+        px::SetNextWindowSize(px::Vec2(hudWidth, 0.0f));
+        px::SetNextWindowBgAlpha(0.78f);
 
-        const auto flags = ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize
-            | ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoFocusOnAppearing | ImGuiWindowFlags_NoMove;
+        const auto flags = px::NoTitleBar | px::NoResize
+            | px::NoScrollbar | px::NoFocusOnAppearing | px::NoMove;
 
-        if (!ImGui::Begin("##PerfHud", nullptr, flags)) { ImGui::End(); return; }
-        upload_icons_if_needed(hud);
+        if (!px::Begin("##PerfHud", nullptr, flags)) { px::End(); return; }
 
-        const auto pctColor = [](float pct) -> ImVec4 {
+        const auto pctColor = [](float pct) -> px::Color {
             if (pct < 60.0f) return { 0.2f, 1.0f, 0.4f, 1.0f };
             if (pct < 85.0f) return { 1.0f, 0.85f, 0.2f, 1.0f };
             return { 1.0f, 0.3f, 0.3f, 1.0f };
         };
 
-        if (!hud.osName.empty()) icon_text(hud.cachedOsIcon, hud.osName.c_str());
-        if (!hud.cpuName.empty()) icon_text(hud.cachedCpuIcon, hud.cpuName.c_str());
-        if (!hud.gpuName.empty()) icon_text(hud.cachedGpuIcon, hud.gpuName.c_str());
-        ImGui::Separator();
+        if (!hud.osName.empty()) px::TextDisabled("%s", hud.osName.c_str());
+        if (!hud.cpuName.empty()) px::TextDisabled("%s", hud.cpuName.c_str());
+        if (!hud.gpuName.empty()) px::TextDisabled("%s", hud.gpuName.c_str());
+        px::Separator();
 
-        const auto fpsColor = hud.fpsSmoothed >= 60.0f ? ImVec4(0.2f,1.0f,0.4f,1.0f)
-            : hud.fpsSmoothed >= 30.0f ? ImVec4(1.0f,0.85f,0.2f,1.0f) : ImVec4(1.0f,0.3f,0.3f,1.0f);
-        ImGui::TextColored(fpsColor, "FPS: %.0f", hud.fpsSmoothed);
+        const auto fpsColor = hud.fpsSmoothed >= 60.0f ? px::Color(0.2f,1.0f,0.4f,1.0f)
+            : hud.fpsSmoothed >= 30.0f ? px::Color(1.0f,0.85f,0.2f,1.0f) : px::Color(1.0f,0.3f,0.3f,1.0f);
+        px::TextColored(fpsColor, "FPS: %.0f", hud.fpsSmoothed);
 
-        ImGui::TextColored(pctColor(hud.cpuPercent), "CPU: %.0f%%", hud.cpuPercent);
-        ImGui::SameLine(130.0f);
-        ImGui::Text("%u cores", hud.cpuCores);
+        px::TextColored(pctColor(hud.cpuPercent), "CPU: %.0f%%", hud.cpuPercent);
+        px::SameLine(130.0f);
+        px::Text("%u cores", hud.cpuCores);
 
         if (hud.vramTotalMB > 0.0f)
         {
             const float vp = (hud.vramUsedMB / hud.vramTotalMB) * 100.0f;
-            ImGui::TextColored(pctColor(vp), "VRAM: %.0f%%", vp);
-            ImGui::SameLine(130.0f);
-            ImGui::Text("%.0f/%.0f MB", hud.vramUsedMB, hud.vramTotalMB);
+            px::TextColored(pctColor(vp), "VRAM: %.0f%%", vp);
+            px::SameLine(130.0f);
+            px::Text("%.0f/%.0f MB", hud.vramUsedMB, hud.vramTotalMB);
         }
 
-        ImGui::TextColored(pctColor(hud.ramPercent), "RAM: %.0f%%", hud.ramPercent);
-        ImGui::SameLine(130.0f);
-        ImGui::Text("%.1f/%.1f GB", hud.ramUsedMB / 1024.0f, hud.ramTotalMB / 1024.0f);
-        ImGui::Text("Process: %.0f MB", hud.processRamMB);
+        px::TextColored(pctColor(hud.ramPercent), "RAM: %.0f%%", hud.ramPercent);
+        px::SameLine(130.0f);
+        px::Text("%.1f/%.1f GB", hud.ramUsedMB / 1024.0f, hud.ramTotalMB / 1024.0f);
+        px::Text("Process: %.0f MB", hud.processRamMB);
 
-        ImGui::Separator();
-        ImGui::TextDisabled("Map: %s", hud.mapId.empty() ? "?" : hud.mapId.c_str());
-        ImGui::Text("XYZ: %.1f  %.1f  %.1f", hud.worldX, hud.worldY, hud.worldZ);
+        px::Separator();
+        px::TextDisabled("Map: %s", hud.mapId.empty() ? "?" : hud.mapId.c_str());
+        px::Text("XYZ: %.1f  %.1f  %.1f", hud.worldX, hud.worldY, hud.worldZ);
 
-        ImGui::End();
+        px::End();
     }
 }

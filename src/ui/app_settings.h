@@ -2,17 +2,10 @@
 
 namespace phoenix::ui
 {
-    // Persists small app-level graphics settings as a custom section inside the
-    // shared imgui.ini instead of separate
-    // display.ini / perf_hud.ini files. Call once, right after
-    // OpenGLRenderer::initialize_imgui() and before anything reads these
-    // values (the initial character mesh build happens during the loading
-    // sequence, well before the first ImGui frame) — this loads the ini
-    // immediately rather than waiting for the automatic on-first-NewFrame load.
+    // Loads the tiny cross-platform Phoenix UI/settings file before the loading
+    // sequence consumes graphics options.
     void register_app_settings(bool& worldShadows, int& fpsCapIndex, bool& antialiasingEnabled);
 
-    // Forces an immediate write to imgui.ini. Needed on hard-exit paths
-    // (std::_Exit after closing mid-load, or on normal quit) that skip
-    // ImGui::DestroyContext() and its automatic on-shutdown save.
+    // Forces an immediate write to phoenix.ini for hard-exit and normal quit.
     void flush_app_settings();
 }

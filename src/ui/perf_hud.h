@@ -19,17 +19,6 @@ namespace phoenix::ui
         std::uint32_t cpuCores{};
         phoenix::renderer::OpenGLRenderer* renderer{};
 
-        // Icons (uploaded once, cached forever).
-        bool iconsUploaded{};
-        std::uint64_t windowsIcon{};
-        std::uint64_t linuxIcon{};
-        std::uint64_t nvidiaIcon{};
-        std::uint64_t amdIcon{};
-        std::uint64_t intelIcon{};
-        std::uint64_t cachedOsIcon{};
-        std::uint64_t cachedCpuIcon{};
-        std::uint64_t cachedGpuIcon{};
-
         // Live metrics (refreshed every ~1s via push_frametime).
         float fpsSmoothed{};
         float cpuPercent{};

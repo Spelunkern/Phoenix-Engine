@@ -100,6 +100,22 @@ namespace phoenix::renderer
         std::uint8_t color[4]{ 255, 255, 255, 255 };
     };
 
+    enum class ScreenUiCommandKind : std::uint8_t
+    {
+        Rectangle,
+        Text,
+    };
+
+    struct ScreenUiCommand
+    {
+        ScreenUiCommandKind kind{ ScreenUiCommandKind::Rectangle };
+        float x{}, y{}, width{}, height{};
+        float color[4]{ 1.0f, 1.0f, 1.0f, 1.0f };
+        // Zero clip size means the entire viewport.
+        float clipX{}, clipY{}, clipWidth{}, clipHeight{};
+        std::string text;
+    };
+
     // Sky, cloud and water values shared by the full-screen sky and terrain
     // shaders. Each member is one std140 vec4 so the structure can be copied
     // directly behind the camera block without fragile per-field packing.
@@ -145,6 +161,8 @@ namespace phoenix::renderer
         // Native screen-space text, drawn by the engine after the 3D scene and
         // before the debug ImGui pass.
         void set_world_labels(std::vector<ScreenLabel> labels);
+        void set_screen_ui(std::vector<ScreenUiCommand> commands);
+        bool native_ui_available() const;
         std::uint64_t upload_imgui_icon_rgba(
             const std::uint8_t* rgba,
             std::uint32_t width,

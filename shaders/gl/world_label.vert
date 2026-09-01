@@ -3,11 +3,13 @@
 layout(location = 0) in vec2 inPosition;
 layout(location = 1) in vec2 inUv;
 layout(location = 2) in vec4 inColor;
+layout(location = 3) in float inTextured;
 
 layout(location = 0) uniform vec4 viewport;
 
 out vec2 vUv;
 out vec4 vColor;
+flat out float vTextured;
 
 void main()
 {
@@ -17,4 +19,5 @@ void main()
     gl_Position = vec4(ndc, 0.0, 1.0);
     vUv = inUv;
     vColor = inColor;
+    vTextured = inTextured;
 }

@@ -25,9 +25,8 @@
 #include "ui/editor_panel.h"
 #include "ui/loading_screen.h"
 #include "ui/perf_hud.h"
+#include "ui/phoenix_ui.h"
 #include "ui/weather_overlay.h"
-
-#include "imgui.h"
 
 #include <algorithm>
 #include <atomic>
@@ -132,7 +131,7 @@ int main(int, char**)
         return 1;
     }
 
-    const auto imguiAvailable = renderer.initialize_imgui(window.handle());
+    const auto uiAvailable = renderer.native_ui_available();
 
     phoenix::app::LoadingScheduler cpuLoader(phoenix::app::LoadingWorkKind::Cpu);
     phoenix::app::LoadingScheduler ioLoader(phoenix::app::LoadingWorkKind::Io);
@@ -142,8 +141,7 @@ int main(int, char**)
     perfHud.renderer = &renderer;
     perfHud.antialiasingAvailable = window.has_multisample_context();
     phoenix::ui::GraphicsSettings graphicsSettings{};
-    if (imguiAvailable)
-        phoenix::ui::register_app_settings(graphicsSettings.worldShadows, perfHud.fpsCapIndex, perfHud.antialiasingEnabled);
+    phoenix::ui::register_app_settings(graphicsSettings.worldShadows, perfHud.fpsCapIndex, perfHud.antialiasingEnabled);
     renderer.set_antialiasing_enabled(perfHud.antialiasingAvailable && perfHud.antialiasingEnabled);
     renderer.set_shadows_enabled(graphicsSettings.worldShadows);
 
@@ -279,8 +277,8 @@ int main(int, char**)
         fogCullDistance = apply_renderer_fog(renderer, runtime, fogEnabled, viewDistance, weatherMode);
     };
     applyFogSettings();
-    int pendingEmote = 0;   // emote triggered from ImGui, consumed next frame
-    std::size_t pendingAnimation = 0; // animation test triggered from ImGui, consumed next frame
+    int pendingEmote = 0;   // emote triggered from the debug panel, consumed next frame
+    std::size_t pendingAnimation = 0; // animation test triggered from the debug panel
 
     std::uint32_t terrainVertexCount{};
     std::uint32_t terrainIndexCount{};
@@ -1262,16 +1260,17 @@ int main(int, char**)
         }
         playToggleWasDown = playToggleDown;
 
-        if (imguiAvailable)
-            renderer.begin_imgui_frame();
-        const auto imguiWantsKeyboard = imguiAvailable && ImGui::GetIO().WantCaptureKeyboard;
-        const auto imguiWantsMouse = imguiAvailable && ImGui::GetIO().WantCaptureMouse;
+        phoenix::ui::px::begin_frame(window,
+            static_cast<float>(renderer.surface_width()),
+            static_cast<float>(renderer.surface_height()));
+        const auto uiWantsKeyboard = uiAvailable && phoenix::ui::px::wants_keyboard();
+        const auto uiWantsMouse = uiAvailable && phoenix::ui::px::wants_mouse();
 
         const auto [mouseDx, mouseDy] = window.consume_mouse_delta();
         const auto mouseWheel = window.consume_mouse_wheel_delta();
 
         const bool playableOrbitAvailable = playableMode && characterLoaded && characterSystem.ready();
-        const bool orbitPointerDown = !imguiWantsMouse
+        const bool orbitPointerDown = !uiWantsMouse
             && ((playableOrbitAvailable
                     && (window.is_mouse_button_down(0) || window.is_mouse_button_down(1)))
                 || (!playableMode && window.is_mouse_button_down(1)));
@@ -1317,7 +1316,7 @@ int main(int, char**)
         {
             // ---- Playable mode: third-person character control ----
             phoenix::character::PlayableInput pInput{};
-            if (!imguiWantsKeyboard)
+            if (!uiWantsKeyboard)
             {
                 pInput.forward = window.is_key_down(SDLK_w);
                 pInput.backward = window.is_key_down(SDLK_s);
@@ -1336,9 +1335,9 @@ int main(int, char**)
             pInput.cameraTurn = orbitMouseCaptured && window.is_mouse_button_down(1);
             pInput.mouseDx = orbitMouseCaptured ? static_cast<float>(mouseDx) : 0.0f;
             pInput.mouseDy = orbitMouseCaptured ? static_cast<float>(mouseDy) : 0.0f;
-            pInput.mouseWheel = !imguiWantsMouse ? static_cast<float>(mouseWheel) : 0.0f;
+            pInput.mouseWheel = !uiWantsMouse ? static_cast<float>(mouseWheel) : 0.0f;
 
-            // Apply pending emote from ImGui (set last frame's panel result).
+            // Apply a pending emote set by the previous debug-panel frame.
             pInput.emote = pendingEmote;
             pendingEmote = 0;  // consumed
             pInput.debugAnimation = pendingAnimation;
@@ -1398,7 +1397,7 @@ int main(int, char**)
         {
             // ---- Viewer mode: free camera ----
             phoenix::runtime::CameraInput cameraInput{};
-            if (!imguiWantsKeyboard)
+            if (!uiWantsKeyboard)
             {
                 cameraInput.forward = window.is_key_down(SDLK_w);
                 cameraInput.backward = window.is_key_down(SDLK_s);
@@ -1415,7 +1414,7 @@ int main(int, char**)
             cameraInput.look = orbitMouseCaptured;
             cameraInput.mouseDx = orbitMouseCaptured ? static_cast<float>(mouseDx) : 0.0f;
             cameraInput.mouseDy = orbitMouseCaptured ? static_cast<float>(mouseDy) : 0.0f;
-            cameraInput.wheel = !imguiWantsMouse ? static_cast<float>(mouseWheel) : 0.0f;
+            cameraInput.wheel = !uiWantsMouse ? static_cast<float>(mouseWheel) : 0.0f;
 
             const auto cameraChanged = cameraInput.forward || cameraInput.backward
                 || cameraInput.left || cameraInput.right
@@ -1670,7 +1669,7 @@ int main(int, char**)
         }
 
 
-        if (imguiAvailable)
+        if (uiAvailable)
         {
             // Lazily load (and cache) whichever data/effects file is currently
             // selected in the debug panel, rebuilding its sequence-name list.
@@ -1687,7 +1686,7 @@ int main(int, char**)
                 for (std::size_t i = 0; i < sequences.size(); ++i)
                 {
                     // .EFT sequence names are stored in an unconverted Korean
-                    // codepage, not UTF-8 — feeding the raw bytes to ImGui
+                    // codepage, not UTF-8 — feeding the raw bytes to the UI
                     // renders as garbage "?" glyphs and isn't guaranteed to be
                     // valid UTF-8 at all. Reduce to printable ASCII only.
                     std::string label = std::to_string(i) + ": ";
@@ -1970,7 +1969,7 @@ int main(int, char**)
         }
 
         // In-world labels are authored by the game and rendered by the engine's
-        // native text pass. ImGui remains exclusively a debug interface.
+        // native text pass; the debug UI uses the same tiny atlas renderer.
         std::vector<phoenix::renderer::ScreenLabel> worldLabels;
         if (npcManager.active() || monsterManager.active())
         {
@@ -2059,7 +2058,7 @@ int main(int, char**)
                 const float halfWidth = std::clamp(bodyHeight * 0.34f, 7.0f, 55.0f);
                 const float top = std::min(sp.y, feet.y) - 4.0f;
                 const float bottom = std::max(sp.y, feet.y) + 5.0f;
-                const bool hovered = !imguiWantsMouse
+                const bool hovered = !uiWantsMouse
                     && static_cast<float>(mouseX) >= sp.x - halfWidth && static_cast<float>(mouseX) <= sp.x + halfWidth
                     && static_cast<float>(mouseY) >= top && static_cast<float>(mouseY) <= bottom;
                 if (!hovered)
@@ -2070,6 +2069,7 @@ int main(int, char**)
         }
 
         renderer.set_world_labels(std::move(worldLabels));
+        renderer.set_screen_ui(phoenix::ui::px::end_frame());
 
         renderer.render_frame();
 

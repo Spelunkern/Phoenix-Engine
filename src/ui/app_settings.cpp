@@ -1,11 +1,12 @@
 #include "ui/app_settings.h"
 
-#include "imgui.h"
-#include "imgui_internal.h"
+#include "app/bootstrap.h"
+#include "ui/phoenix_ui.h"
 
 #include <algorithm>
-#include <cstdlib>
-#include <cstring>
+#include <filesystem>
+#include <fstream>
+#include <string>
 
 namespace phoenix::ui
 {
@@ -15,40 +16,19 @@ namespace phoenix::ui
         int* g_fpsCapIndex = nullptr;
         bool* g_antialiasingEnabled = nullptr;
 
-        void* read_open(ImGuiContext*, ImGuiSettingsHandler*, const char*)
+        std::filesystem::path settings_path()
         {
-            return (void*)1; // single fixed entry; no per-entry storage needed
+            return phoenix::app::executable_directory() / "phoenix.ini";
         }
 
-        // "Key=Value" line parsing (avoids sscanf's MSVC deprecation nag).
-        bool read_int_field(const char* line, const char* key, int& out)
+        bool read_int_field(const std::string& line, const char* key, int& out)
         {
-            const auto keyLen = std::strlen(key);
-            if (std::strncmp(line, key, keyLen) != 0 || line[keyLen] != '=')
+            const std::string prefix = std::string(key) + '=';
+            if (line.rfind(prefix, 0) != 0)
                 return false;
-            out = std::atoi(line + keyLen + 1);
+            try { out = std::stoi(line.substr(prefix.size())); }
+            catch (...) { return false; }
             return true;
-        }
-
-        void read_line(ImGuiContext*, ImGuiSettingsHandler*, void*, const char* line)
-        {
-            int value = 0;
-            if (g_worldShadows && (read_int_field(line, "WorldShadows", value)
-                || read_int_field(line, "CharacterShadow", value)))
-                *g_worldShadows = value != 0;
-            else if (g_fpsCapIndex && read_int_field(line, "FpsCapIndex", value))
-                *g_fpsCapIndex = std::clamp(value, 0, 9);
-            else if (g_antialiasingEnabled && read_int_field(line, "AntialiasingEnabled", value))
-                *g_antialiasingEnabled = value != 0;
-        }
-
-        void write_all(ImGuiContext*, ImGuiSettingsHandler* handler, ImGuiTextBuffer* buf)
-        {
-            buf->appendf("[%s][Config]\n", handler->TypeName);
-            buf->appendf("WorldShadows=%d\n", (g_worldShadows && *g_worldShadows) ? 1 : 0);
-            buf->appendf("FpsCapIndex=%d\n", g_fpsCapIndex ? *g_fpsCapIndex : 0);
-            buf->appendf("AntialiasingEnabled=%d\n", (g_antialiasingEnabled && *g_antialiasingEnabled) ? 1 : 0);
-            buf->append("\n");
         }
     }
 
@@ -58,23 +38,30 @@ namespace phoenix::ui
         g_fpsCapIndex = &fpsCapIndex;
         g_antialiasingEnabled = &antialiasingEnabled;
 
-        ImGuiSettingsHandler handler{};
-        handler.TypeName = "PhoenixSettings";
-        handler.TypeHash = ImHashStr(handler.TypeName);
-        handler.ReadOpenFn = read_open;
-        handler.ReadLineFn = read_line;
-        handler.WriteAllFn = write_all;
-        ImGui::AddSettingsHandler(&handler);
-
-        // Load immediately (rather than waiting for the first ImGui::NewFrame())
-        // so these values are correct before the loading sequence uses them.
-        ImGui::LoadIniSettingsFromDisk(ImGui::GetIO().IniFilename);
+        std::ifstream input(settings_path());
+        std::string line;
+        float windowX = 8.0f, windowY = 8.0f;
+        while (std::getline(input, line))
+        {
+            int value = 0;
+            if (read_int_field(line, "WorldShadows", value)) worldShadows = value != 0;
+            else if (read_int_field(line, "FpsCapIndex", value)) fpsCapIndex = std::clamp(value, 0, 9);
+            else if (read_int_field(line, "AntialiasingEnabled", value)) antialiasingEnabled = value != 0;
+            else if (read_int_field(line, "DebugWindowX", value)) windowX = static_cast<float>(value);
+            else if (read_int_field(line, "DebugWindowY", value)) windowY = static_cast<float>(value);
+        }
+        px::set_window_position(windowX, windowY);
     }
 
     void flush_app_settings()
     {
-        if (!ImGui::GetCurrentContext())
-            return;
-        ImGui::SaveIniSettingsToDisk(ImGui::GetIO().IniFilename);
+        std::ofstream output(settings_path(), std::ios::trunc);
+        if (!output) return;
+        const auto windowPosition = px::window_position();
+        output << "WorldShadows=" << ((g_worldShadows && *g_worldShadows) ? 1 : 0) << '\n'
+               << "FpsCapIndex=" << (g_fpsCapIndex ? *g_fpsCapIndex : 0) << '\n'
+               << "AntialiasingEnabled=" << ((g_antialiasingEnabled && *g_antialiasingEnabled) ? 1 : 0) << '\n'
+               << "DebugWindowX=" << static_cast<int>(windowPosition.x) << '\n'
+               << "DebugWindowY=" << static_cast<int>(windowPosition.y) << '\n';
     }
 }

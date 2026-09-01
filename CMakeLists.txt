@@ -42,6 +42,7 @@ set(ENGINE_SOURCES
     src/ui/loading_screen.cpp
     src/ui/cpu_profiler.cpp
     src/ui/perf_hud.cpp
+    src/ui/phoenix_ui.cpp
     src/ui/weather_overlay.cpp
     src/world/character_loader.cpp
     src/world/dg_loader.cpp

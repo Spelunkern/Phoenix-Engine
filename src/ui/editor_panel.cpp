@@ -2,7 +2,7 @@
 #include "ui/app_settings.h"
 #include "ui/cpu_profiler.h"
 
-#include "imgui.h"
+#include "ui/phoenix_ui.h"
 
 #include <algorithm>
 #include <array>
@@ -497,36 +497,36 @@ namespace phoenix::ui
         };
         static Section activeSection = Section::Map;
 
-        ImGui::SetNextWindowPos(ImVec2(8.0f, 8.0f), ImGuiCond_FirstUseEver);
-        ImGui::SetNextWindowSize(ImVec2(300.0f, 0.0f), ImGuiCond_FirstUseEver);
-        if (!ImGui::Begin("Phoenix Engine", nullptr, ImGuiWindowFlags_AlwaysAutoResize))
+        px::SetNextWindowPos(px::Vec2(8.0f, 8.0f), px::FirstUseEver);
+        px::SetNextWindowSize(px::Vec2(300.0f, 0.0f), px::FirstUseEver);
+        if (!px::Begin("Phoenix Engine", nullptr, px::AlwaysAutoResize))
         {
-            ImGui::End();
+            px::End();
             return result;
         }
 
         auto sectionButton = [&](Section section, const char* label) {
             const bool selected = activeSection == section;
             if (selected)
-                ImGui::PushStyleColor(ImGuiCol_Button, ImGui::GetStyleColorVec4(ImGuiCol_ButtonActive));
-            if (ImGui::Button(label, ImVec2(68.0f, 0.0f)))
+                px::PushStyleColor(px::ButtonColor, px::GetStyleColor(px::ButtonActiveColor));
+            if (px::Button(label, px::Vec2(68.0f, 0.0f)))
                 activeSection = section;
             if (selected)
-                ImGui::PopStyleColor();
+                px::PopStyleColor();
         };
 
-        sectionButton(Section::Map, "Map##nav"); ImGui::SameLine();
-        sectionButton(Section::Graphics, "Graphics##nav"); ImGui::SameLine();
-        sectionButton(Section::Sound, "Sound##nav"); ImGui::SameLine();
-        sectionButton(Section::Animations, "Animations##nav"); ImGui::SameLine();
+        sectionButton(Section::Map, "Map##nav"); px::SameLine();
+        sectionButton(Section::Graphics, "Graphics##nav"); px::SameLine();
+        sectionButton(Section::Sound, "Sound##nav"); px::SameLine();
+        sectionButton(Section::Animations, "Animations##nav"); px::SameLine();
         sectionButton(Section::Effects, "Effects##nav");
-        sectionButton(Section::Character, "Character##nav"); ImGui::SameLine();
-        sectionButton(Section::Vehicle, "Vehicle##nav"); ImGui::SameLine();
-        sectionButton(Section::Bots, "Bots##nav"); ImGui::SameLine();
-        sectionButton(Section::NPCs, "NPCs##nav"); ImGui::SameLine();
+        sectionButton(Section::Character, "Character##nav"); px::SameLine();
+        sectionButton(Section::Vehicle, "Vehicle##nav"); px::SameLine();
+        sectionButton(Section::Bots, "Bots##nav"); px::SameLine();
+        sectionButton(Section::NPCs, "NPCs##nav"); px::SameLine();
         sectionButton(Section::Monsters, "Monsters##nav");
         sectionButton(Section::Controls, "Controls##nav");
-        ImGui::Separator();
+        px::Separator();
 
         if (activeSection == Section::Map)
         {
@@ -534,28 +534,28 @@ namespace phoenix::ui
             if (!maps.empty())
             {
                 selectedMapIndex = std::clamp(selectedMapIndex, 0, static_cast<int>(maps.size() - 1));
-                ImGui::SetNextItemWidth(200.0f);
-                if (ImGui::BeginCombo("Map##mapCombo", maps[static_cast<std::size_t>(selectedMapIndex)].c_str()))
+                px::SetNextItemWidth(200.0f);
+                if (px::BeginCombo("Map##mapCombo", maps[static_cast<std::size_t>(selectedMapIndex)].c_str()))
                 {
                     for (std::size_t i = 0; i < maps.size(); ++i)
                     {
-                        if (ImGui::Selectable(maps[i].c_str(), selectedMapIndex == static_cast<int>(i)))
+                        if (px::Selectable(maps[i].c_str(), selectedMapIndex == static_cast<int>(i)))
                             selectedMapIndex = static_cast<int>(i);
                     }
-                    ImGui::EndCombo();
+                    px::EndCombo();
                 }
-                ImGui::SameLine();
-                result.loadRequested = ImGui::Button("Load");
+                px::SameLine();
+                result.loadRequested = px::Button("Load");
             }
 
             const auto previousFog = fogEnabled;
-            ImGui::Checkbox("Fog", &fogEnabled);
+            px::Checkbox("Fog", &fogEnabled);
             if (fogEnabled != previousFog)
                 apply_renderer_fog(renderer, runtime, fogEnabled, viewDistance, weatherMode);
 
             const auto previousViewDistance = viewDistance;
-            ImGui::SetNextItemWidth(220.0f);
-            ImGui::SliderFloat("Fog distance", &viewDistance, 100.0f, 2500.0f, "%.0f");
+            px::SetNextItemWidth(220.0f);
+            px::SliderFloat("Fog distance", &viewDistance, 100.0f, 2500.0f, "%.0f");
             result.viewDistanceChanged = std::abs(previousViewDistance - viewDistance) > 1.0f;
 
             const WeatherMode previousWeatherMode = weatherMode;
@@ -563,29 +563,29 @@ namespace phoenix::ui
                 "Sunset", "Dusk", "Night", "Overcast", "Snow", "Misty morning",
                 "Blue hour", "Aurora", "Storm" };
             int weatherIndex = static_cast<int>(weatherMode);
-            ImGui::SetNextItemWidth(180.0f);
-            if (ImGui::Combo("Sky", &weatherIndex, weatherItems, IM_ARRAYSIZE(weatherItems)))
+            px::SetNextItemWidth(180.0f);
+            if (px::Combo("Sky", &weatherIndex, weatherItems, static_cast<int>(std::size(weatherItems))))
                 weatherMode = static_cast<WeatherMode>(std::clamp(weatherIndex, 0, 12));
             result.weatherChanged = weatherMode != previousWeatherMode;
         }
         else if (activeSection == Section::Controls)
         {
-            ImGui::TextUnformatted("Essential keys");
-            ImGui::Separator();
-            ImGui::BulletText("P   Character / free camera mode");
-            ImGui::BulletText("W A S D   Move");
-            ImGui::BulletText("Mouse wheel   Camera zoom");
-            ImGui::BulletText("Left mouse drag   Orbit camera");
-            ImGui::BulletText("Right mouse drag   Turn camera and character");
-            ImGui::BulletText("Space   Jump");
-            ImGui::BulletText("Shift   Walk (running is default)");
-            ImGui::BulletText("C   Sit / stand");
-            ImGui::Spacing();
-            ImGui::TextDisabled("Free camera: Q/E move vertically; Shift accelerates.");
+            px::TextUnformatted("Essential keys");
+            px::Separator();
+            px::BulletText("P   Character / free camera mode");
+            px::BulletText("W A S D   Move");
+            px::BulletText("Mouse wheel   Camera zoom");
+            px::BulletText("Left mouse drag   Orbit camera");
+            px::BulletText("Right mouse drag   Turn camera and character");
+            px::BulletText("Space   Jump");
+            px::BulletText("Shift   Walk (running is default)");
+            px::BulletText("C   Sit / stand");
+            px::Spacing();
+            px::TextDisabled("Free camera: Q/E move vertically; Shift accelerates.");
         }
         else if (activeSection == Section::Graphics)
         {
-            if (ImGui::Checkbox("World shadows", &worldShadows))
+            if (px::Checkbox("World shadows", &worldShadows))
             {
                 renderer.set_shadows_enabled(worldShadows);
                 flush_app_settings();
@@ -593,7 +593,7 @@ namespace phoenix::ui
 
             if (antialiasingAvailable)
             {
-                if (ImGui::Checkbox("Anti-aliasing", &antialiasingEnabled))
+                if (px::Checkbox("Anti-aliasing", &antialiasingEnabled))
                 {
                     renderer.set_antialiasing_enabled(antialiasingEnabled);
                     flush_app_settings();
@@ -601,42 +601,42 @@ namespace phoenix::ui
             }
             else
             {
-                ImGui::TextDisabled("Anti-aliasing unavailable");
+                px::TextDisabled("Anti-aliasing unavailable");
             }
 
             const char* caps[] = { "Off", "30", "60", "75", "90", "120", "144", "165", "240", "360" };
-            ImGui::SetNextItemWidth(110.0f);
-            if (ImGui::Combo("FPS cap", &fpsCapIndex, caps, IM_ARRAYSIZE(caps)))
+            px::SetNextItemWidth(110.0f);
+            if (px::Combo("FPS cap", &fpsCapIndex, caps, static_cast<int>(std::size(caps))))
                 flush_app_settings();
         }
         else if (activeSection == Section::Sound)
         {
-            ImGui::Checkbox("Play Sounds", &playMapSounds);
-            ImGui::Checkbox("Play Music", &playMapMusic);
-            ImGui::SetNextItemWidth(220.0f);
-            ImGui::SliderFloat("Volume", &masterVolume, 0.0f, 1.0f, "%.2f");
+            px::Checkbox("Play Sounds", &playMapSounds);
+            px::Checkbox("Play Music", &playMapMusic);
+            px::SetNextItemWidth(220.0f);
+            px::SliderFloat("Volume", &masterVolume, 0.0f, 1.0f, "%.2f");
         }
         else if (activeSection == Section::Character)
         {
             if (characterOptions.empty())
             {
-                ImGui::TextDisabled("No character models found.");
+                px::TextDisabled("No character models found.");
             }
             else if (!assetsReady)
             {
-                ImGui::TextDisabled("Loading assets...");
+                px::TextDisabled("Loading assets...");
             }
             else
             {
                 selectedCharacterOption = std::clamp(selectedCharacterOption, 0, static_cast<int>(characterOptions.size() - 1));
                 const auto& selected = characterOptions[static_cast<std::size_t>(selectedCharacterOption)];
-                ImGui::SetNextItemWidth(190.0f);
-                if (ImGui::BeginCombo("Model", selected.label.c_str()))
+                px::SetNextItemWidth(190.0f);
+                if (px::BeginCombo("Model", selected.label.c_str()))
                 {
                     for (std::size_t i = 0; i < characterOptions.size(); ++i)
                     {
                         const bool isSelected = selectedCharacterOption == static_cast<int>(i);
-                        if (ImGui::Selectable(characterOptions[i].label.c_str(), isSelected))
+                        if (px::Selectable(characterOptions[i].label.c_str(), isSelected))
                         {
                             selectedCharacterOption = static_cast<int>(i);
                             appearance.raceFolder = characterOptions[i].raceFolder;
@@ -650,9 +650,9 @@ namespace phoenix::ui
                             appearance.hairIndex = nearest_available(appearance.hairIndex, characterOptions[i].hairIndices);
                         }
                         if (isSelected)
-                            ImGui::SetItemDefaultFocus();
+                            px::SetItemDefaultFocus();
                     }
-                    ImGui::EndCombo();
+                    px::EndCombo();
                 }
 
                 const auto& current = characterOptions[static_cast<std::size_t>(selectedCharacterOption)];
@@ -664,31 +664,31 @@ namespace phoenix::ui
                 appearance.faceIndex = nearest_available(appearance.faceIndex, current.faceIndices);
                 appearance.hairIndex = nearest_available(appearance.hairIndex, current.hairIndices);
 
-                ImGui::Checkbox("Helmet", &appearance.helmetVisible);
+                px::Checkbox("Helmet", &appearance.helmetVisible);
                 if (appearance.helmetVisible)
                 {
-                    ImGui::SameLine();
-                    ImGui::SetNextItemWidth(80.0f);
-                    ImGui::InputInt("##helmet", &appearance.helmetIndex);
+                    px::SameLine();
+                    px::SetNextItemWidth(80.0f);
+                    px::InputInt("##helmet", &appearance.helmetIndex);
                     appearance.helmetIndex = nearest_available(appearance.helmetIndex, current.helmetIndices);
                 }
-                ImGui::SetNextItemWidth(80.0f); ImGui::InputInt("Upper", &appearance.upperIndex);
+                px::SetNextItemWidth(80.0f); px::InputInt("Upper", &appearance.upperIndex);
                 appearance.upperIndex = nearest_available(appearance.upperIndex, current.upperIndices);
-                ImGui::SetNextItemWidth(80.0f); ImGui::InputInt("Lower", &appearance.lowerIndex);
+                px::SetNextItemWidth(80.0f); px::InputInt("Lower", &appearance.lowerIndex);
                 appearance.lowerIndex = nearest_available(appearance.lowerIndex, current.lowerIndices);
-                ImGui::SetNextItemWidth(80.0f); ImGui::InputInt("Gloves", &appearance.handIndex);
+                px::SetNextItemWidth(80.0f); px::InputInt("Gloves", &appearance.handIndex);
                 appearance.handIndex = nearest_available(appearance.handIndex, current.handIndices);
-                ImGui::SetNextItemWidth(80.0f); ImGui::InputInt("Boots", &appearance.footIndex);
+                px::SetNextItemWidth(80.0f); px::InputInt("Boots", &appearance.footIndex);
                 appearance.footIndex = nearest_available(appearance.footIndex, current.footIndices);
-                ImGui::SetNextItemWidth(80.0f); ImGui::InputInt("Face", &appearance.faceIndex);
+                px::SetNextItemWidth(80.0f); px::InputInt("Face", &appearance.faceIndex);
                 appearance.faceIndex = nearest_available(appearance.faceIndex, current.faceIndices);
                 if (!appearance.helmetVisible)
                 {
-                    ImGui::SetNextItemWidth(80.0f); ImGui::InputInt("Hair", &appearance.hairIndex);
+                    px::SetNextItemWidth(80.0f); px::InputInt("Hair", &appearance.hairIndex);
                     appearance.hairIndex = nearest_available(appearance.hairIndex, current.hairIndices);
                 }
 
-                ImGui::Separator();
+                px::Separator();
                 using WT = phoenix::character::WeaponType;
                 struct WeaponLabel { WT type; const char* label; };
                 static constexpr WeaponLabel weaponLabels[] = {
@@ -706,27 +706,27 @@ namespace phoenix::ui
                 int currentWeaponIdx = 0;
                 for (int i = 0; i < static_cast<int>(std::size(weaponLabels)); ++i)
                     if (weaponLabels[i].type == appearance.weaponType) { currentWeaponLabel = weaponLabels[i].label; currentWeaponIdx = i; break; }
-                ImGui::SetNextItemWidth(140.0f);
-                if (ImGui::BeginCombo("Weapon", currentWeaponLabel))
+                px::SetNextItemWidth(140.0f);
+                if (px::BeginCombo("Weapon", currentWeaponLabel))
                 {
                     for (int i = 0; i < static_cast<int>(std::size(weaponLabels)); ++i)
                     {
                         const bool isSelected = i == currentWeaponIdx;
-                        if (ImGui::Selectable(weaponLabels[i].label, isSelected))
+                        if (px::Selectable(weaponLabels[i].label, isSelected))
                         {
                             appearance.weaponType = weaponLabels[i].type;
                             if (appearance.weaponType == WT::None) appearance.weaponIndex = -1;
                             else if (appearance.weaponIndex < 0) appearance.weaponIndex = 1;
                         }
-                        if (isSelected) ImGui::SetItemDefaultFocus();
+                        if (isSelected) px::SetItemDefaultFocus();
                     }
-                    ImGui::EndCombo();
+                    px::EndCombo();
                 }
                 if (appearance.weaponType != WT::None)
                 {
-                    ImGui::SameLine();
-                    ImGui::SetNextItemWidth(60.0f);
-                    ImGui::InputInt("##weapIdx", &appearance.weaponIndex);
+                    px::SameLine();
+                    px::SetNextItemWidth(60.0f);
+                    px::InputInt("##weapIdx", &appearance.weaponIndex);
                     if (appearance.weaponIndex < 1) appearance.weaponIndex = 1;
                 }
 
@@ -734,39 +734,39 @@ namespace phoenix::ui
                 int currentShieldIdx = 0;
                 for (int i = 0; i < static_cast<int>(std::size(shieldLabels)); ++i)
                     if (shieldLabels[i].type == appearance.shieldType) { currentShieldLabel = shieldLabels[i].label; currentShieldIdx = i; break; }
-                ImGui::SetNextItemWidth(140.0f);
-                if (ImGui::BeginCombo("Shield", currentShieldLabel))
+                px::SetNextItemWidth(140.0f);
+                if (px::BeginCombo("Shield", currentShieldLabel))
                 {
                     for (int i = 0; i < static_cast<int>(std::size(shieldLabels)); ++i)
                     {
                         const bool isSelected = i == currentShieldIdx;
-                        if (ImGui::Selectable(shieldLabels[i].label, isSelected))
+                        if (px::Selectable(shieldLabels[i].label, isSelected))
                         {
                             appearance.shieldType = shieldLabels[i].type;
                             if (appearance.shieldType == WT::None) appearance.shieldIndex = -1;
                             else if (appearance.shieldIndex < 0) appearance.shieldIndex = 1;
                         }
-                        if (isSelected) ImGui::SetItemDefaultFocus();
+                        if (isSelected) px::SetItemDefaultFocus();
                     }
-                    ImGui::EndCombo();
+                    px::EndCombo();
                 }
                 if (appearance.shieldType != WT::None)
                 {
-                    ImGui::SameLine();
-                    ImGui::SetNextItemWidth(60.0f);
-                    ImGui::InputInt("##shldIdx", &appearance.shieldIndex);
+                    px::SameLine();
+                    px::SetNextItemWidth(60.0f);
+                    px::InputInt("##shldIdx", &appearance.shieldIndex);
                     if (appearance.shieldIndex < 1) appearance.shieldIndex = 1;
                 }
 
-                ImGui::Separator();
+                px::Separator();
                 bool hasCloak = appearance.cloakIndex > 0;
-                if (ImGui::Checkbox("Cloak", &hasCloak))
+                if (px::Checkbox("Cloak", &hasCloak))
                     appearance.cloakIndex = hasCloak ? 1 : -1;
                 if (hasCloak)
                 {
-                    ImGui::SameLine();
-                    ImGui::SetNextItemWidth(60.0f);
-                    ImGui::InputInt("##cloakIdx", &appearance.cloakIndex);
+                    px::SameLine();
+                    px::SetNextItemWidth(60.0f);
+                    px::InputInt("##cloakIdx", &appearance.cloakIndex);
                     if (appearance.cloakIndex < 1) appearance.cloakIndex = 1;
                 }
 
@@ -774,30 +774,30 @@ namespace phoenix::ui
                 const bool showBoneSection = appearance.weaponType != WT::None || appearance.shieldType != WT::None;
                 if (showBoneSection && maxBone > 0)
                 {
-                    ImGui::Separator();
-                    ImGui::Text("Bone attach (0-%d)", maxBone);
+                    px::Separator();
+                    px::Text("Bone attach (0-%d)", maxBone);
                     if (appearance.weaponType != WT::None)
                     {
-                        ImGui::SetNextItemWidth(80.0f);
-                        ImGui::InputInt("Wpn bone", &characterSystem.weaponBoneIndex);
+                        px::SetNextItemWidth(80.0f);
+                        px::InputInt("Wpn bone", &characterSystem.weaponBoneIndex);
                         characterSystem.weaponBoneIndex = std::clamp(characterSystem.weaponBoneIndex, 0, maxBone);
                         if (phoenix::character::weapon_type_dual_wield(appearance.weaponType))
                         {
-                            ImGui::SetNextItemWidth(80.0f);
-                            ImGui::InputInt("Dual bone", &characterSystem.dualWeaponBoneIndex);
+                            px::SetNextItemWidth(80.0f);
+                            px::InputInt("Dual bone", &characterSystem.dualWeaponBoneIndex);
                             characterSystem.dualWeaponBoneIndex = std::clamp(characterSystem.dualWeaponBoneIndex, 0, maxBone);
                             // Fine adjustment of the off-hand copy in its bone's
                             // local space (rotate, then translate).
-                            ImGui::SetNextItemWidth(200.0f);
-                            ImGui::DragFloat3("Dual offset", characterSystem.dualOffsetPos, 0.005f);
-                            ImGui::SetNextItemWidth(200.0f);
-                            ImGui::DragFloat3("Dual rot", characterSystem.dualOffsetRotDeg, 0.5f, -180.0f, 180.0f);
+                            px::SetNextItemWidth(200.0f);
+                            px::DragFloat3("Dual offset", characterSystem.dualOffsetPos, 0.005f);
+                            px::SetNextItemWidth(200.0f);
+                            px::DragFloat3("Dual rot", characterSystem.dualOffsetRotDeg, 0.5f, -180.0f, 180.0f);
                         }
                     }
                     if (appearance.shieldType != WT::None)
                     {
-                        ImGui::SetNextItemWidth(80.0f);
-                        ImGui::InputInt("Shld bone", &characterSystem.shieldBoneIndex);
+                        px::SetNextItemWidth(80.0f);
+                        px::InputInt("Shld bone", &characterSystem.shieldBoneIndex);
                         characterSystem.shieldBoneIndex = std::clamp(characterSystem.shieldBoneIndex, 0, maxBone);
                     }
                 }
@@ -807,37 +807,37 @@ namespace phoenix::ui
         {
             if (!assetsReady)
             {
-                ImGui::TextDisabled("Loading assets...");
+                px::TextDisabled("Loading assets...");
             }
             else
             {
-                ImGui::Checkbox("Mount", &appearance.mounted);
+                px::Checkbox("Mount", &appearance.mounted);
                 if (appearance.mounted)
                 {
                     static const char* mountClasses[] = { "hu", "de", "el", "vi" };
                     int classIdx = 0;
                     for (int i = 0; i < 4; ++i)
                         if (appearance.mountClass == mountClasses[i]) { classIdx = i; break; }
-                    ImGui::SetNextItemWidth(80.0f);
-                    if (ImGui::BeginCombo("Class", mountClasses[classIdx]))
+                    px::SetNextItemWidth(80.0f);
+                    if (px::BeginCombo("Class", mountClasses[classIdx]))
                     {
                         for (int i = 0; i < 4; ++i)
                         {
                             const bool selected = i == classIdx;
-                            if (ImGui::Selectable(mountClasses[i], selected))
+                            if (px::Selectable(mountClasses[i], selected))
                                 appearance.mountClass = mountClasses[i];
-                            if (selected) ImGui::SetItemDefaultFocus();
+                            if (selected) px::SetItemDefaultFocus();
                         }
-                        ImGui::EndCombo();
+                        px::EndCombo();
                     }
-                    ImGui::SetNextItemWidth(80.0f);
-                    ImGui::InputInt("Index", &appearance.mountIndex);
+                    px::SetNextItemWidth(80.0f);
+                    px::InputInt("Index", &appearance.mountIndex);
                     if (appearance.mountIndex < 0) appearance.mountIndex = 0;
 
                     // Always expose the seat bone — even mounts whose skeleton
                     // reports 0/1 bones must stay editable from the tool.
-                    ImGui::SetNextItemWidth(80.0f);
-                    ImGui::InputInt("Seat bone", &characterSystem.mountBoneIndex);
+                    px::SetNextItemWidth(80.0f);
+                    px::InputInt("Seat bone", &characterSystem.mountBoneIndex);
                     const int boneCount = characterSystem.mount_bone_count();
                     if (boneCount > 0)
                         characterSystem.mountBoneIndex = std::clamp(characterSystem.mountBoneIndex, 0, boneCount - 1);
@@ -848,113 +848,113 @@ namespace phoenix::ui
         }
         else if (activeSection == Section::Bots)
         {
-            ImGui::Text("Bots: %d", static_cast<int>(botCount));
+            px::Text("Bots: %d", static_cast<int>(botCount));
             if (botControlsAvailable)
             {
-                if (ImGui::Button("Spawn 10", ImVec2(95.0f, 0.0f)))
+                if (px::Button("Spawn 10", px::Vec2(95.0f, 0.0f)))
                     result.botSpawnCount = 10;
-                ImGui::SameLine();
-                if (ImGui::Button("Spawn 100", ImVec2(95.0f, 0.0f)))
+                px::SameLine();
+                if (px::Button("Spawn 100", px::Vec2(95.0f, 0.0f)))
                     result.botSpawnCount = 100;
-                if (ImGui::Button("Clear All", ImVec2(195.0f, 0.0f)))
+                if (px::Button("Clear All", px::Vec2(195.0f, 0.0f)))
                     result.clearBots = true;
-                ImGui::SetNextItemWidth(180.0f);
-                ImGui::SliderFloat("View dist", &botViewDistance, 20.0f, 300.0f, "%.0f m");
-                ImGui::Checkbox("Bot cast effects", &botEffectsEnabled);
+                px::SetNextItemWidth(180.0f);
+                px::SliderFloat("View dist", &botViewDistance, 20.0f, 300.0f, "%.0f m");
+                px::Checkbox("Bot cast effects", &botEffectsEnabled);
             }
             else
             {
-                ImGui::TextDisabled("Playable character required.");
+                px::TextDisabled("Playable character required.");
             }
         }
         else if (activeSection == Section::NPCs)
         {
             static int selectedNpc = 0;
-            ImGui::Text("Active: %d", static_cast<int>(npcActiveCount));
+            px::Text("Active: %d", static_cast<int>(npcActiveCount));
             if (!npcStatus.empty())
-                ImGui::TextDisabled("%s", npcStatus.c_str());
+                px::TextDisabled("%s", npcStatus.c_str());
             if (npcCatalog.empty())
             {
-                ImGui::TextDisabled("No NPC catalog loaded.");
+                px::TextDisabled("No NPC catalog loaded.");
             }
             else
             {
                 selectedNpc = std::clamp(selectedNpc, 0, static_cast<int>(npcCatalog.size()) - 1);
-                ImGui::SetNextItemWidth(240.0f);
-                if (ImGui::BeginCombo("NPC", npcCatalog[static_cast<std::size_t>(selectedNpc)].label.c_str()))
+                px::SetNextItemWidth(240.0f);
+                if (px::BeginCombo("NPC", npcCatalog[static_cast<std::size_t>(selectedNpc)].label.c_str()))
                 {
                     for (int i = 0; i < static_cast<int>(npcCatalog.size()); ++i)
                     {
                         const bool selected = selectedNpc == i;
-                        if (ImGui::Selectable(npcCatalog[static_cast<std::size_t>(i)].label.c_str(), selected))
+                        if (px::Selectable(npcCatalog[static_cast<std::size_t>(i)].label.c_str(), selected))
                             selectedNpc = i;
                         if (selected)
-                            ImGui::SetItemDefaultFocus();
+                            px::SetItemDefaultFocus();
                     }
-                    ImGui::EndCombo();
+                    px::EndCombo();
                 }
                 const auto spawnNpc = [&](int count) {
                     result.npcSpawnCatalogIndex = selectedNpc;
                     result.npcSpawnCount = count;
                 };
-                if (ImGui::Button("Spawn", ImVec2(95.0f, 0.0f)))    spawnNpc(1);
-                ImGui::SameLine();
-                if (ImGui::Button("Clear", ImVec2(95.0f, 0.0f)))    result.clearNpcs = true;
-                if (ImGui::Button("Spawn 10", ImVec2(95.0f, 0.0f))) spawnNpc(10);
-                ImGui::SameLine();
-                if (ImGui::Button("Spawn 50", ImVec2(95.0f, 0.0f))) spawnNpc(50);
-                if (ImGui::Button("Spawn 50 random", ImVec2(195.0f, 0.0f)))
+                if (px::Button("Spawn", px::Vec2(95.0f, 0.0f)))    spawnNpc(1);
+                px::SameLine();
+                if (px::Button("Clear", px::Vec2(95.0f, 0.0f)))    result.clearNpcs = true;
+                if (px::Button("Spawn 10", px::Vec2(95.0f, 0.0f))) spawnNpc(10);
+                px::SameLine();
+                if (px::Button("Spawn 50", px::Vec2(95.0f, 0.0f))) spawnNpc(50);
+                if (px::Button("Spawn 50 random", px::Vec2(195.0f, 0.0f)))
                 {
                     result.npcSpawnRandom = true;
                     result.npcSpawnCount = 50;
                 }
-                ImGui::SetNextItemWidth(180.0f);
-                ImGui::SliderFloat("Cull dist", &npcViewDistance, 20.0f, 300.0f, "%.0f m");
+                px::SetNextItemWidth(180.0f);
+                px::SliderFloat("Cull dist", &npcViewDistance, 20.0f, 300.0f, "%.0f m");
             }
         }
         else if (activeSection == Section::Monsters)
         {
             static int selectedMonster = 0;
-            ImGui::Text("Active: %d", static_cast<int>(monsterActiveCount));
+            px::Text("Active: %d", static_cast<int>(monsterActiveCount));
             if (!monsterStatus.empty())
-                ImGui::TextDisabled("%s", monsterStatus.c_str());
+                px::TextDisabled("%s", monsterStatus.c_str());
             if (monsterCatalog.empty())
             {
-                ImGui::TextDisabled("No monster catalog loaded.");
+                px::TextDisabled("No monster catalog loaded.");
             }
             else
             {
                 selectedMonster = std::clamp(selectedMonster, 0, static_cast<int>(monsterCatalog.size()) - 1);
-                ImGui::SetNextItemWidth(240.0f);
-                if (ImGui::BeginCombo("Monster", monsterCatalog[static_cast<std::size_t>(selectedMonster)].label.c_str()))
+                px::SetNextItemWidth(240.0f);
+                if (px::BeginCombo("Monster", monsterCatalog[static_cast<std::size_t>(selectedMonster)].label.c_str()))
                 {
                     for (int i = 0; i < static_cast<int>(monsterCatalog.size()); ++i)
                     {
                         const bool selected = selectedMonster == i;
-                        if (ImGui::Selectable(monsterCatalog[static_cast<std::size_t>(i)].label.c_str(), selected))
+                        if (px::Selectable(monsterCatalog[static_cast<std::size_t>(i)].label.c_str(), selected))
                             selectedMonster = i;
                         if (selected)
-                            ImGui::SetItemDefaultFocus();
+                            px::SetItemDefaultFocus();
                     }
-                    ImGui::EndCombo();
+                    px::EndCombo();
                 }
                 const auto spawnMonster = [&](int count) {
                     result.monsterSpawnCatalogIndex = selectedMonster;
                     result.monsterSpawnCount = count;
                 };
-                if (ImGui::Button("Spawn", ImVec2(95.0f, 0.0f)))    spawnMonster(1);
-                ImGui::SameLine();
-                if (ImGui::Button("Clear", ImVec2(95.0f, 0.0f)))    result.clearMonsters = true;
-                if (ImGui::Button("Spawn 10", ImVec2(95.0f, 0.0f))) spawnMonster(10);
-                ImGui::SameLine();
-                if (ImGui::Button("Spawn 50", ImVec2(95.0f, 0.0f))) spawnMonster(50);
-                if (ImGui::Button("Spawn 50 random", ImVec2(195.0f, 0.0f)))
+                if (px::Button("Spawn", px::Vec2(95.0f, 0.0f)))    spawnMonster(1);
+                px::SameLine();
+                if (px::Button("Clear", px::Vec2(95.0f, 0.0f)))    result.clearMonsters = true;
+                if (px::Button("Spawn 10", px::Vec2(95.0f, 0.0f))) spawnMonster(10);
+                px::SameLine();
+                if (px::Button("Spawn 50", px::Vec2(95.0f, 0.0f))) spawnMonster(50);
+                if (px::Button("Spawn 50 random", px::Vec2(195.0f, 0.0f)))
                 {
                     result.monsterSpawnRandom = true;
                     result.monsterSpawnCount = 50;
                 }
-                ImGui::SetNextItemWidth(180.0f);
-                ImGui::SliderFloat("Cull dist", &monsterViewDistance, 20.0f, 300.0f, "%.0f m");
+                px::SetNextItemWidth(180.0f);
+                px::SliderFloat("Cull dist", &monsterViewDistance, 20.0f, 300.0f, "%.0f m");
             }
         }
         else if (activeSection == Section::Animations)
@@ -1111,97 +1111,97 @@ namespace phoenix::ui
             static int selectedAnimation = 0;
             if (choices.empty())
             {
-                ImGui::TextDisabled("No mapped animations loaded.");
+                px::TextDisabled("No mapped animations loaded.");
             }
             else
             {
                 selectedAnimation = std::clamp(selectedAnimation, 0, static_cast<int>(choices.size()) - 1);
-                ImGui::SetNextItemWidth(240.0f);
-                if (ImGui::BeginCombo("Animation", choices[static_cast<std::size_t>(selectedAnimation)].label.c_str()))
+                px::SetNextItemWidth(240.0f);
+                if (px::BeginCombo("Animation", choices[static_cast<std::size_t>(selectedAnimation)].label.c_str()))
                 {
                     for (int i = 0; i < static_cast<int>(choices.size()); ++i)
                     {
                         const bool selected = selectedAnimation == i;
-                        if (ImGui::Selectable(choices[static_cast<std::size_t>(i)].label.c_str(), selected))
+                        if (px::Selectable(choices[static_cast<std::size_t>(i)].label.c_str(), selected))
                             selectedAnimation = i;
                         if (selected)
-                            ImGui::SetItemDefaultFocus();
+                            px::SetItemDefaultFocus();
                     }
-                    ImGui::EndCombo();
+                    px::EndCombo();
                 }
-                if (ImGui::Button("Play"))
+                if (px::Button("Play"))
                     result.animationTriggered = choices[static_cast<std::size_t>(selectedAnimation)].index;
             }
         }
         else if (activeSection == Section::Effects)
         {
-            ImGui::Text("Active: %d", static_cast<int>(effectActiveCount));
+            px::Text("Active: %d", static_cast<int>(effectActiveCount));
             if (effectFileNames.empty())
             {
-                ImGui::TextDisabled("No .eft/.ef2/.ef3 files found under data/effects.");
+                px::TextDisabled("No .eft/.ef2/.ef3 files found under data/effects.");
             }
             else
             {
                 selectedEffectFileIndex = std::clamp(selectedEffectFileIndex, 0, static_cast<int>(effectFileNames.size()) - 1);
-                ImGui::SetNextItemWidth(240.0f);
-                if (ImGui::BeginCombo("File", effectFileNames[static_cast<std::size_t>(selectedEffectFileIndex)].c_str()))
+                px::SetNextItemWidth(240.0f);
+                if (px::BeginCombo("File", effectFileNames[static_cast<std::size_t>(selectedEffectFileIndex)].c_str()))
                 {
                     for (int i = 0; i < static_cast<int>(effectFileNames.size()); ++i)
                     {
                         const bool selected = selectedEffectFileIndex == i;
-                        if (ImGui::Selectable(effectFileNames[static_cast<std::size_t>(i)].c_str(), selected))
+                        if (px::Selectable(effectFileNames[static_cast<std::size_t>(i)].c_str(), selected))
                             selectedEffectFileIndex = i;
                         if (selected)
-                            ImGui::SetItemDefaultFocus();
+                            px::SetItemDefaultFocus();
                     }
-                    ImGui::EndCombo();
+                    px::EndCombo();
                 }
 
                 if (effectSequenceNames.empty())
                 {
-                    ImGui::TextDisabled("This file has no effect sequences.");
+                    px::TextDisabled("This file has no effect sequences.");
                 }
                 else
                 {
                     selectedEffectSequenceIndex = std::clamp(
                         selectedEffectSequenceIndex, 0, static_cast<int>(effectSequenceNames.size()) - 1);
-                    ImGui::SetNextItemWidth(240.0f);
-                    if (ImGui::BeginCombo("Effect", effectSequenceNames[static_cast<std::size_t>(selectedEffectSequenceIndex)].c_str()))
+                    px::SetNextItemWidth(240.0f);
+                    if (px::BeginCombo("Effect", effectSequenceNames[static_cast<std::size_t>(selectedEffectSequenceIndex)].c_str()))
                     {
                         for (int i = 0; i < static_cast<int>(effectSequenceNames.size()); ++i)
                         {
                             const bool selected = selectedEffectSequenceIndex == i;
-                            if (ImGui::Selectable(effectSequenceNames[static_cast<std::size_t>(i)].c_str(), selected))
+                            if (px::Selectable(effectSequenceNames[static_cast<std::size_t>(i)].c_str(), selected))
                                 selectedEffectSequenceIndex = i;
                             if (selected)
-                                ImGui::SetItemDefaultFocus();
+                                px::SetItemDefaultFocus();
                         }
-                        ImGui::EndCombo();
+                        px::EndCombo();
                     }
-                    ImGui::SetNextItemWidth(150.0f);
-                    ImGui::SliderFloat("Y offset", &effectSpawnYOffset, -50.0f, 300.0f, "%.0f");
-                    ImGui::TextDisabled("Spawns at the character's position, offset on Y.");
-                    if (ImGui::Button("Spawn (stays)", ImVec2(140.0f, 0.0f)))
+                    px::SetNextItemWidth(150.0f);
+                    px::SliderFloat("Y offset", &effectSpawnYOffset, -50.0f, 300.0f, "%.0f");
+                    px::TextDisabled("Spawns at the character's position, offset on Y.");
+                    if (px::Button("Spawn (stays)", px::Vec2(140.0f, 0.0f)))
                     {
                         result.effectSpawnRequested = true;
                         result.effectSpawnOneShot = false;
                     }
-                    ImGui::SameLine();
-                    if (ImGui::Button("Spawn (one-shot)", ImVec2(150.0f, 0.0f)))
+                    px::SameLine();
+                    if (px::Button("Spawn (one-shot)", px::Vec2(150.0f, 0.0f)))
                     {
                         result.effectSpawnRequested = true;
                         result.effectSpawnOneShot = true;
                     }
                 }
-                if (ImGui::Button("Clear All", ImVec2(295.0f, 0.0f)))
+                if (px::Button("Clear All", px::Vec2(295.0f, 0.0f)))
                     result.clearEffects = true;
 
-                ImGui::Separator();
-                ImGui::TextDisabled("Diagnostic: spawn one raw component directly");
-                ImGui::SetNextItemWidth(100.0f);
-                ImGui::InputInt("Component #", &effectComponentIndex);
+                px::Separator();
+                px::TextDisabled("Diagnostic: spawn one raw component directly");
+                px::SetNextItemWidth(100.0f);
+                px::InputInt("Component #", &effectComponentIndex);
                 effectComponentIndex = std::max(0, effectComponentIndex);
-                if (ImGui::Button("Spawn component", ImVec2(295.0f, 0.0f)))
+                if (px::Button("Spawn component", px::Vec2(295.0f, 0.0f)))
                     result.effectComponentSpawnRequested = true;
             }
         }
@@ -1225,7 +1225,7 @@ namespace phoenix::ui
             || appearance.mountClass != prevAppearance.mountClass
             || appearance.mountIndex != prevAppearance.mountIndex;
 
-        ImGui::End();
+        px::End();
         return result;
     }
 }
