@@ -123,8 +123,7 @@ namespace phoenix::audio
                 float volume{};
             };
 
-            static std::vector<Candidate> candidates;
-            candidates.clear();
+            std::vector<Candidate> candidates;
             for (const auto& emitter : scene.soundEmitters)
             {
                 const auto dx = listenerX - emitter.x;

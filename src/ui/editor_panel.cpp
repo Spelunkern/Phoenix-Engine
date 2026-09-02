@@ -291,6 +291,17 @@ namespace phoenix::ui
         }
         if (dungeon)
         {
+            // Weather presets are an outdoor-only concern. Some of them
+            // overwrite weatherFog and the procedural-sky colours above;
+            // force the dungeon environment back to an unlit pure-black
+            // background after all preset processing.
+            weatherFog = { 0.0f, 0.0f, 0.0f };
+            set4(environment.horizonCurve, 0.0f, 0.0f, 0.0f, 0.0f);
+            set4(environment.zenithMidWeight, 0.0f, 0.0f, 0.0f, 0.0f);
+            set4(environment.midHeight, 0.0f, 0.0f, 0.0f, 0.0f);
+            set4(environment.groundCloudCover, 0.0f, 0.0f, 0.0f, 0.0f);
+            set4(environment.cloudColorOpacity, 0.0f, 0.0f, 0.0f, 0.0f);
+            set4(environment.cloudShadeSpeed, 0.0f, 0.0f, 0.0f, 0.0f);
             set4(environment.lightDirectionEnergy, 0.0f, 1.0f, 0.0f, 0.0f);
             set4(environment.ambientColorEnergy, 1.0f, 1.0f, 1.0f, 1.0f);
             set4(environment.astroDirectionGlow, 0.0f, 1.0f, 0.0f, 0.0f);
@@ -376,6 +387,7 @@ namespace phoenix::ui
         phoenix::renderer::OpenGLRenderer& renderer,
         bool& fogEnabled,
         bool& worldShadows,
+        bool& terrainCompatibility,
         bool& vsyncEnabled,
         int& fpsCapIndex,
         bool& antialiasingEnabled,
@@ -519,6 +531,14 @@ namespace phoenix::ui
         }
         else if (activeSection == Section::Graphics)
         {
+            if (px::Checkbox("Terrain compatibility", &terrainCompatibility))
+            {
+                renderer.set_terrain_compatibility(terrainCompatibility);
+                result.terrainCompatibilityChanged = true;
+                flush_app_settings();
+            }
+            px::TextDisabled("Simpler terrain shading and more aggressive LOD");
+
             if (px::Checkbox("World shadows", &worldShadows))
             {
                 renderer.set_shadows_enabled(worldShadows);

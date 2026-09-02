@@ -154,6 +154,10 @@ namespace phoenix::renderer
         bool native_ui_available() const;
         bool set_preview_image(std::uint32_t width, std::uint32_t height, const std::vector<std::uint8_t>& bgraPixels);
         void enter_loading_mode();
+        void leave_loading_mode();
+        // Frees buffers and textures owned by the active world before loading
+        // its replacement. Player, bots and debug-effect resources persist.
+        void release_world_resources();
         bool set_terrain_mesh(const std::vector<TerrainVertex>& vertices, const std::vector<std::uint32_t>& indices);
         bool set_water_mesh(const std::vector<TerrainVertex>& vertices, const std::vector<std::uint32_t>& indices);
         bool update_terrain_vertices(const std::vector<TerrainVertex>& vertices);
@@ -234,6 +238,19 @@ namespace phoenix::renderer
             std::uint32_t assetFirstLayer = 0,
             std::uint32_t assetLayerCount = 0);
         bool upload_terrain_texture_layers(std::uint32_t firstLayer, const std::vector<DdsTexture>& textures);
+        // Field props use an independent, fixed-residency array. Their source
+        // DDS files are canonically 256x256; keeping this pool separate avoids
+        // forcing the terrain/character array to the same (larger) resolution.
+        bool configure_streamed_asset_texture_pool(std::uint32_t firstLayer,
+            std::uint32_t layerCount, std::uint32_t width,
+            std::uint32_t height, std::uint32_t mipLevels);
+        bool upload_streamed_asset_texture_layer(std::uint32_t layer, const DdsTexture& texture);
+        std::uint32_t terrain_texture_width() const;
+        std::uint32_t terrain_texture_height() const;
+        std::uint32_t terrain_texture_mip_levels() const;
+        std::uint32_t asset_texture_width() const;
+        std::uint32_t asset_texture_height() const;
+        std::uint32_t asset_texture_mip_levels() const;
         // Dedicated array for the "Effects" debug panel (see effect_particle
         // .frag's high-bit texture-layer convention). Recreates the array
         // wholesale from the full accumulated texture list each call — the
@@ -245,6 +262,9 @@ namespace phoenix::renderer
         void set_sky_settings(const float* fogColor, float fogStartDistance, float fogEndDistance, bool hasWorldSky);
         void set_sky_texture_layers(std::uint32_t skyLayer, std::uint32_t primaryCloudLayer, std::uint32_t secondaryCloudLayer);
         void set_environment_style(const EnvironmentStyle& style);
+        // Switches the field terrain to its one-layer inexpensive shader path.
+        // This is a uniform-only change, so it takes effect without a map reload.
+        void set_terrain_compatibility(bool enabled);
         void set_shadows_enabled(bool enabled);
         bool set_vsync_enabled(bool enabled);
         // Live toggle for MSAA + alpha-to-coverage — safe to call every

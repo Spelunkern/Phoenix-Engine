@@ -13,6 +13,7 @@ namespace phoenix::ui
     namespace
     {
         bool* g_worldShadows = nullptr;
+        bool* g_terrainCompatibility = nullptr;
         bool* g_vsyncEnabled = nullptr;
         int* g_fpsCapIndex = nullptr;
         bool* g_antialiasingEnabled = nullptr;
@@ -35,11 +36,13 @@ namespace phoenix::ui
 
     void register_app_settings(
         bool& worldShadows,
+        bool& terrainCompatibility,
         bool& vsyncEnabled,
         int& fpsCapIndex,
         bool& antialiasingEnabled)
     {
         g_worldShadows = &worldShadows;
+        g_terrainCompatibility = &terrainCompatibility;
         g_vsyncEnabled = &vsyncEnabled;
         g_fpsCapIndex = &fpsCapIndex;
         g_antialiasingEnabled = &antialiasingEnabled;
@@ -51,6 +54,7 @@ namespace phoenix::ui
         {
             int value = 0;
             if (read_int_field(line, "WorldShadows", value)) worldShadows = value != 0;
+            else if (read_int_field(line, "TerrainCompatibility", value)) terrainCompatibility = value != 0;
             else if (read_int_field(line, "VsyncEnabled", value)) vsyncEnabled = value != 0;
             else if (read_int_field(line, "FpsCapIndex", value)) fpsCapIndex = std::clamp(value, 0, 9);
             else if (read_int_field(line, "AntialiasingEnabled", value)) antialiasingEnabled = value != 0;
@@ -66,6 +70,7 @@ namespace phoenix::ui
         if (!output) return;
         const auto windowPosition = px::window_position();
         output << "WorldShadows=" << ((g_worldShadows && *g_worldShadows) ? 1 : 0) << '\n'
+               << "TerrainCompatibility=" << ((g_terrainCompatibility && *g_terrainCompatibility) ? 1 : 0) << '\n'
                << "VsyncEnabled=" << ((g_vsyncEnabled && *g_vsyncEnabled) ? 1 : 0) << '\n'
                << "FpsCapIndex=" << (g_fpsCapIndex ? *g_fpsCapIndex : 0) << '\n'
                << "AntialiasingEnabled=" << ((g_antialiasingEnabled && *g_antialiasingEnabled) ? 1 : 0) << '\n'

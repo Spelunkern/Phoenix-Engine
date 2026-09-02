@@ -88,7 +88,8 @@ namespace phoenix::renderer
         std::vector<TerrainDrawRange>& ranges,
         const phoenix::runtime::PhoenixRuntime& runtime,
         const CameraView& view,
-        const phoenix::runtime::PhoenixRuntime::TerrainLodInfo& lod)
+        const phoenix::runtime::PhoenixRuntime::TerrainLodInfo& lod,
+        bool compatibilityTerrain)
     {
         ranges.clear();
         if (lod.chunks.empty() || runtime.state().world.isDungeon)
@@ -98,8 +99,11 @@ namespace phoenix::renderer
         const float cullDist = view.distance;
 
         struct SortEntry { float distSq{}; TerrainDrawRange range; };
-        static std::vector<SortEntry> sorted;
-        sorted.clear();
+        std::vector<SortEntry> sorted;
+        // Remember the exact LOD submitted for every visible chunk so the
+        // matching prebuilt transition bridge can be submitted afterwards.
+        std::vector<std::int8_t> selectedLods(lod.chunks.size(), -1);
+        std::vector<float> chunkDistances(lod.chunks.size(), 0.0f);
 
         for (std::uint32_t cz = 0; cz < lod.chunkCountZ; ++cz)
         {
@@ -123,16 +127,56 @@ namespace phoenix::renderer
                 if (std::sqrt(distSq) - radius > cullDist)
                     continue;
 
+                const float distance = std::sqrt(distSq);
+                int lodLevel = 0;
+                if (compatibilityTerrain)
+                {
+                    // Compatibility never submits the full-density mesh. Keep a
+                    // small high-detail ring out of the path entirely and step
+                    // down quickly, matching the private client's cheap terrain.
+                    lodLevel = distance < 150.0f ? 1 : distance < 360.0f ? 2 : 3;
+                }
+                else
+                {
+                    lodLevel = distance < 260.0f ? 0 : distance < 600.0f ? 1
+                        : distance < 1100.0f ? 2 : 3;
+                }
+
                 const auto chunkIdx = static_cast<std::size_t>(cz) * lod.chunkCountX + cx;
-                const auto& cl = lod.chunks[chunkIdx][0];
+                const auto& cl = lod.chunks[chunkIdx][static_cast<std::size_t>(lodLevel)];
                 if (cl.indexCount > 0)
                 {
+                    selectedLods[chunkIdx] = static_cast<std::int8_t>(lodLevel);
+                    chunkDistances[chunkIdx] = distSq;
                     TerrainDrawRange range{};
                     range.firstIndex = cl.firstIndex;
                     range.indexCount = cl.indexCount;
                     sorted.push_back({ distSq, range });
                 }
             }
+        }
+
+        // Adjacent chunks at equal LOD share identical boundary samples. If
+        // their LOD differs, the coarse edge is a linear chord while the dense
+        // edge follows every height sample; draw the same narrow bridge used by
+        // Phoenix Godot so no background/water can show through that gap.
+        for (const auto& transition : lod.transitions)
+        {
+            if (transition.chunkA >= selectedLods.size()
+                || transition.chunkB >= selectedLods.size())
+                continue;
+            const auto lodA = selectedLods[transition.chunkA];
+            const auto lodB = selectedLods[transition.chunkB];
+            if (lodA < 0 || lodB < 0 || lodA == lodB)
+                continue;
+            const auto& bridge = transition.ranges[static_cast<std::size_t>(lodA)]
+                [static_cast<std::size_t>(lodB)];
+            if (bridge.indexCount == 0)
+                continue;
+            sorted.push_back({
+                (chunkDistances[transition.chunkA] + chunkDistances[transition.chunkB]) * 0.5f,
+                TerrainDrawRange{ bridge.firstIndex, bridge.indexCount },
+            });
         }
 
         std::sort(sorted.begin(), sorted.end(),
@@ -153,8 +197,8 @@ namespace phoenix::renderer
             return;
 
         const auto n = scene.batches.size();
-        static std::vector<std::uint32_t> order;
-        static std::vector<float> dists;
+        std::vector<std::uint32_t> order;
+        std::vector<float> dists;
         order.resize(n);
         dists.resize(n);
         for (std::uint32_t i = 0; i < n; ++i)
@@ -168,10 +212,10 @@ namespace phoenix::renderer
         }
 
         std::sort(order.begin(), order.end(),
-            [](std::uint32_t a, std::uint32_t b) { return dists[a] < dists[b]; });
+            [&dists](std::uint32_t a, std::uint32_t b) { return dists[a] < dists[b]; });
 
-        static std::vector<ObjectBatch> tmpBatches;
-        static std::vector<phoenix::runtime::StaticObjectScene::BatchBounds> tmpBounds;
+        std::vector<ObjectBatch> tmpBatches;
+        std::vector<phoenix::runtime::StaticObjectScene::BatchBounds> tmpBounds;
         tmpBatches.resize(n);
         tmpBounds.resize(n);
         for (std::uint32_t i = 0; i < n; ++i)
@@ -193,8 +237,7 @@ namespace phoenix::renderer
             return;
 
         struct SortEntry { float distSq; std::size_t index; };
-        static std::vector<SortEntry> sorted;
-        sorted.clear();
+        std::vector<SortEntry> sorted;
 
         for (std::size_t i = 0; i < scene.batches.size(); ++i)
         {
@@ -226,8 +269,7 @@ namespace phoenix::renderer
             return;
 
         struct SortEntry { float distSq; std::size_t index; };
-        static std::vector<SortEntry> sorted;
-        sorted.clear();
+        std::vector<SortEntry> sorted;
 
         for (std::size_t i = 0; i < scene.batches.size(); ++i)
         {

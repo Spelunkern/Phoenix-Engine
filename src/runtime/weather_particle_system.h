@@ -27,6 +27,8 @@ namespace phoenix::runtime
     class WeatherParticleSystem
     {
     public:
+        // Weather buffers are map-owned and must not survive a transition.
+        void release_map_resources();
         // kind: 0 = none, 1 = rain, 2 = snow.
         void set_weather(int kind, WeatherIntensity intensity);
 

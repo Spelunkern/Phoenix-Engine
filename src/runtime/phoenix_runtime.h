@@ -1,7 +1,9 @@
 #pragma once
 
+#include "app/loading_scheduler.h"
 #include "assets/data_index.h"
 #include "renderer/opengl_renderer.h"
+#include "renderer/dds_loader.h"
 #include "world/eft_loader.h"
 #include "world/eft_mesh_loader.h"
 #include "world/wld_loader.h"
@@ -34,6 +36,7 @@ namespace phoenix::runtime
     struct LoadedWorldAsset
     {
         std::string name;
+        std::string section;
         std::filesystem::path path;
         float radius{ 16.0f };
         std::uint32_t vertices{};
@@ -295,6 +298,8 @@ namespace phoenix::runtime
     public:
         bool initialize(const std::filesystem::path& executableDir, bool loadDefaultMap = true);
         bool load_world_map(std::size_t mapIndex);
+        // Releases parsed and derived data belonging to the active map only.
+        void release_world_map_resources();
         PreviewImage create_3d_preview_image(std::uint32_t width, std::uint32_t height) const;
         // LOD info for terrain chunks — returned alongside the mesh so the
         // visibility builder can pick the right index range per distance.
@@ -305,6 +310,15 @@ namespace phoenix::runtime
             std::uint32_t firstIndex{};
             std::uint32_t indexCount{};
         };
+        struct TerrainLodTransition
+        {
+            std::uint32_t chunkA{};
+            std::uint32_t chunkB{};
+            // Prebuilt bridge for the LOD selected on each side. Equal LODs
+            // deliberately remain empty because their boundary samples match.
+            std::array<std::array<TerrainChunkLod, kTerrainLodLevels>,
+                kTerrainLodLevels> ranges{};
+        };
         struct TerrainLodInfo
         {
             std::uint32_t chunkCountX{};
@@ -314,14 +328,49 @@ namespace phoenix::runtime
             float halfMap{};
             // [chunkZ * chunkCountX + chunkX][lod]
             std::vector<std::array<TerrainChunkLod, kTerrainLodLevels>> chunks;
+            std::vector<TerrainLodTransition> transitions;
         };
         void build_terrain_mesh(std::vector<phoenix::renderer::TerrainVertex>& vertices, std::vector<std::uint32_t>& indices, TerrainLodInfo& lodInfo) const;
+        void build_streamed_terrain_mesh(
+            std::vector<phoenix::renderer::TerrainVertex>& vertices,
+            std::vector<std::uint32_t>& indices,
+            TerrainLodInfo& lodInfo,
+            float centerX, float centerZ, float residentDistance) const;
         StaticObjectScene build_static_object_scene() const;
         AnimatedObjectScene build_animated_object_scene() const;
         void update_animated_object_scene(AnimatedObjectScene& scene, float totalTime,
             float cameraX, float cameraY, float cameraZ, float viewDistance) const;
         std::vector<std::filesystem::path> terrain_texture_paths() const;
         const std::vector<std::filesystem::path>& asset_texture_paths() const;
+
+        // Open-field props are catalogued during WLD load and decoded only
+        // when their placements enter the streaming radius. The payload is
+        // self-contained and can therefore be produced by a loading worker;
+        // installation and texture-layer remapping happen on the main thread.
+        struct WorldAssetPayload
+        {
+            std::size_t slot{ std::numeric_limits<std::size_t>::max() };
+            LoadedWorldAsset asset;
+            std::vector<std::filesystem::path> texturePaths;
+            std::vector<phoenix::renderer::DdsTexture> textures;
+            bool valid{};
+        };
+        struct WorldStreamingDemand
+        {
+            struct Request { std::size_t slot{}; float distanceSquared{}; };
+            std::vector<Request> requests;
+            std::vector<std::size_t> evictions;
+            bool instancesChanged{};
+        };
+        bool uses_world_asset_streaming() const { return state_.world.parsed && !state_.world.isDungeon; }
+        WorldAssetPayload load_world_asset_payload(std::size_t slot,
+            std::uint32_t textureWidth, std::uint32_t textureHeight,
+            std::uint32_t textureMipLevels) const;
+        bool install_world_asset_payload(WorldAssetPayload&& payload,
+            const std::vector<std::uint32_t>& textureLayers);
+        void evict_world_asset(std::size_t slot);
+        WorldStreamingDemand update_world_streaming_demand(float cameraX, float cameraZ,
+            float loadDistance, float unloadDistance);
 
         // Field lightmap/alpha layer paths (Data/World/field/<mapId>/).
         // Returns up to 4 lightmap paths (one per section, 2x2 for big maps, 1x1 for small).
@@ -411,6 +460,10 @@ namespace phoenix::runtime
         std::uint32_t resolve_asset_texture_layer(std::string_view textureName);
         void update_status();
         float terrain_height(float worldX, float worldZ) const;
+        void append_terrain_lod_transitions(
+            std::vector<phoenix::renderer::TerrainVertex>& vertices,
+            std::vector<std::uint32_t>& indices,
+            TerrainLodInfo& lodInfo) const;
 
         PhoenixRuntimeState state_;
         std::uint32_t maxAssetTextureLayers_{ 960 };
@@ -423,5 +476,8 @@ namespace phoenix::runtime
         // alpha" (decided by alpha content, never by name). Persists across
         // map loads — texture content doesn't change at runtime.
         std::unordered_map<std::string, bool> textureCutoutCache_;
+        // Reused for every map load. Creating hardware-sized thread groups on
+        // each transition leaves allocator arenas cached by libc.
+        std::unique_ptr<phoenix::app::LoadingScheduler> mapLoadScheduler_;
     };
 }

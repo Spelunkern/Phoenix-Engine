@@ -83,6 +83,7 @@ namespace phoenix::audio
                 }
             }
             voices.clear();
+            voices.rehash(0);
 
             for (auto& os : oneShots)
             {
@@ -93,6 +94,7 @@ namespace phoenix::audio
                 }
             }
             oneShots.clear();
+            oneShots.shrink_to_fit();
         }
 
         void shutdown()

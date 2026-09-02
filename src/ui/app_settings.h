@@ -6,6 +6,7 @@ namespace phoenix::ui
     // sequence consumes graphics options.
     void register_app_settings(
         bool& worldShadows,
+        bool& terrainCompatibility,
         bool& vsyncEnabled,
         int& fpsCapIndex,
         bool& antialiasingEnabled);

@@ -44,7 +44,8 @@ namespace phoenix::renderer
         std::vector<TerrainDrawRange>& ranges,
         const phoenix::runtime::PhoenixRuntime& runtime,
         const CameraView& view,
-        const phoenix::runtime::PhoenixRuntime::TerrainLodInfo& lod);
+        const phoenix::runtime::PhoenixRuntime::TerrainLodInfo& lod,
+        bool compatibilityTerrain);
 
     void sort_scene_front_to_back(
         phoenix::runtime::StaticObjectScene& scene,

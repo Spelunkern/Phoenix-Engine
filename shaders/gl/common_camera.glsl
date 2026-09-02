@@ -35,7 +35,7 @@ layout(std140, binding = 0) uniform CameraConstants
     vec4 groundWeather;
     vec4 snowColor;
     mat4 shadowMatrix;
-    vec4 shadowInfo; // enabled, inverse resolution, base bias, reserved
+    vec4 shadowInfo; // enabled, inverse resolution, base bias, terrain compatibility
 } camera;
 
 layout(binding = 5) uniform sampler2D directionalShadowMap;

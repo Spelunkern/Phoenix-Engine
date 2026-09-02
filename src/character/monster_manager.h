@@ -187,6 +187,12 @@ namespace phoenix::character
         {
             std::uint32_t modelIndex{};
             std::uint32_t textureBaseSlot{};
+            // Dynamic DDS uploads must match the already-created terrain array.
+            // Keep these in the immutable worker plan so resize/BC3 conversion
+            // happens off the render thread.
+            std::uint32_t targetTextureWidth{};
+            std::uint32_t targetTextureHeight{};
+            std::uint32_t targetTextureMipLevels{};
             std::vector<VisualPartLoad> parts;
             std::filesystem::path animationRoot;
             std::string walkAni;

@@ -538,6 +538,8 @@ namespace phoenix::character
         std::uint32_t textureSlotReserve,
         phoenix::renderer::OpenGLRenderer& renderer)
     {
+        for (auto& [_, load] : visualLoads_)
+            if (load.valid()) load.wait();
         placements_.clear();
         streamedPlacements_ = 0;
         mapDataRoot_ = dataRoot;
@@ -678,6 +680,9 @@ namespace phoenix::character
                         ++streamedPlacements_;
                         continue;
                     }
+                    plan.targetTextureWidth = renderer.terrain_texture_width();
+                    plan.targetTextureHeight = renderer.terrain_texture_height();
+                    plan.targetTextureMipLevels = renderer.terrain_texture_mip_levels();
                     if (workerPool)
                     {
                         visualLoads_.emplace(model,
@@ -758,15 +763,24 @@ namespace phoenix::character
 
     void NpcManager::clear(phoenix::renderer::OpenGLRenderer& renderer)
     {
+        // A dropped future does not cancel its LoadingScheduler task. Drain
+        // every map-owned parse so decoded meshes/textures die at this boundary.
+        for (auto& [_, load] : visualLoads_)
+            if (load.valid()) load.wait();
+        visualLoads_.clear();
+        visualLoads_.rehash(0);
+
         placements_.clear();
         placements_.shrink_to_fit();
         streamedPlacements_ = 0;
-        // In-flight worker parses (if any) complete harmlessly; their results are
-        // self-contained and simply discarded when the futures are dropped.
-        visualLoads_.clear();
-        failedModels_.clear();
         active_.clear();
         active_.shrink_to_fit();
+        visuals_.clear();
+        visuals_.rehash(0);
+        failedModels_.clear();
+        failedModels_.rehash(0);
+        labels_.clear();
+        labels_.shrink_to_fit();
         renderVertices_.clear();
         renderVertices_.shrink_to_fit();
         renderIndices_.clear();
@@ -775,6 +789,25 @@ namespace phoenix::character
         instances_.shrink_to_fit();
         instanceBatches_.clear();
         instanceBatches_.shrink_to_fit();
+        paletteFloats_.clear();
+        paletteFloats_.shrink_to_fit();
+        modelIndexOffset_.clear();
+        modelIndexOffset_.rehash(0);
+        textureSlotByPath_.clear();
+        textureSlotByPath_.rehash(0);
+        slotRefcount_.clear();
+        slotRefcount_.rehash(0);
+        textureKeyBySlot_.clear();
+        textureKeyBySlot_.rehash(0);
+        freeTextureSlots_.clear();
+        freeTextureSlots_.shrink_to_fit();
+        modelLastUsedFrame_.clear();
+        modelLastUsedFrame_.rehash(0);
+        mapDataRoot_.clear();
+        mapTextureBaseSlot_ = 0;
+        mapTextureReserve_ = 0;
+        nextTextureSlot_ = 0;
+        frameCounter_ = 0;
         visibleCount_ = 0;
         renderer.update_npc_skinned_instances(instances_, instanceBatches_);
         renderer.set_npc_skinned_visible(false);
@@ -981,6 +1014,9 @@ namespace phoenix::character
         VisualLoadPlan plan;
         if (!plan_visual(dataRoot, entry, textureBaseSlot, textureSlotReserve, plan))
             return nullptr;
+        plan.targetTextureWidth = renderer.terrain_texture_width();
+        plan.targetTextureHeight = renderer.terrain_texture_height();
+        plan.targetTextureMipLevels = renderer.terrain_texture_mip_levels();
         auto parsed = parse_visual(plan);
         if (!parsed)
         {
@@ -1017,8 +1053,22 @@ namespace phoenix::character
             const std::uint32_t textureSlot = part.textureSlot;
             const bool alphaCutout = phoenix::renderer::dds_file_has_alpha_cutout(part.texturePath);
             if (part.decodeTexture)
-                next.pendingTextureUploads.push_back(
-                    { textureSlot, phoenix::renderer::load_dds(part.texturePath) });
+            {
+                auto texture = phoenix::renderer::load_dds(part.texturePath);
+                const bool canonical = texture.valid && texture.compressed
+                    && texture.vkFormat == phoenix::renderer::kDdsFormatBc3UnormBlock
+                    && texture.width == plan.targetTextureWidth
+                    && texture.height == plan.targetTextureHeight
+                    && texture.mipData.size() >= plan.targetTextureMipLevels;
+                if (!canonical && plan.targetTextureWidth > 0
+                    && plan.targetTextureHeight > 0 && plan.targetTextureMipLevels > 0)
+                {
+                    phoenix::renderer::convert_texture_to_bc3(texture,
+                        plan.targetTextureWidth, plan.targetTextureHeight,
+                        plan.targetTextureMipLevels);
+                }
+                next.pendingTextureUploads.push_back({ textureSlot, std::move(texture) });
+            }
             next.textureSlots.push_back(textureSlot);
 
             const auto baseVertex = static_cast<std::uint32_t>(next.skinnedBind.size());

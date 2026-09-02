@@ -5,6 +5,20 @@
 
 namespace phoenix::runtime
 {
+    void WeatherParticleSystem::release_map_resources()
+    {
+        kind_ = 0;
+        rainActiveCount_ = 0;
+        snowActiveCount_ = 0;
+        seedCounter_ = 0;
+        std::vector<Particle>().swap(rainParticles_);
+        std::vector<Particle>().swap(snowParticles_);
+        std::vector<phoenix::renderer::TerrainVertex>().swap(vertices_);
+        std::vector<std::uint32_t>().swap(indices_);
+        std::vector<phoenix::renderer::EffectParticleInstance>().swap(instances_);
+        std::vector<phoenix::renderer::EffectParticleBatch>().swap(batches_);
+    }
+
     namespace
     {
         using phoenix::renderer::TerrainVertex;

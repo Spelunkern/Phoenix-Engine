@@ -33,6 +33,7 @@ set(CLIENT_SOURCES
     src/renderer/gl/gl_loader.cpp
     src/runtime/playable_spawn.cpp
     src/runtime/phoenix_runtime.cpp
+    src/runtime/world_streamer.cpp
     src/runtime/effect_particle_system.cpp
     src/runtime/weather_particle_system.cpp
     src/runtime/celestial_system.cpp

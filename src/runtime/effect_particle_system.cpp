@@ -373,57 +373,66 @@ namespace phoenix::runtime
 
     void EffectParticleSystem::build(const PhoenixRuntimeState& state)
     {
+        release_map_resources();
         library_ = &state.effectLibrary;
         textureLayers_ = &state.effectTextureLayers;
         meshes_ = &state.effectMeshes;
-        emitters_.clear();
-        // Debug-panel spawns reference indices into the library being
-        // replaced above; a map (re)load invalidates them.
-        debugSpawns_.clear();
-        vertices_.clear();
-        indices_.clear();
-        instances_.clear();
-        batches_.clear();
+        placements_ = &state.effectPlacements;
 
         if (!library_->parsed)
             return;
+        activePlacements_.assign(state.effectPlacements.size(), 0u);
+    }
 
-        emitters_.reserve(state.effectPlacements.size() * 2);
-        for (std::size_t i = 0; i < state.effectPlacements.size(); ++i)
+    void EffectParticleSystem::activate_map_placement(std::size_t i)
+    {
+        if (!library_ || !placements_ || i >= placements_->size())
+            return;
+        const auto& placement = (*placements_)[i];
+        if (placement.sequenceIndex < 0
+            || static_cast<std::size_t>(placement.sequenceIndex) >= library_->sequences.size())
+            return;
+
+        const auto& sequence = library_->sequences[static_cast<std::size_t>(placement.sequenceIndex)];
+        emitters_.reserve(emitters_.size() + sequence.records.size());
+        for (std::size_t r = 0; r < sequence.records.size(); ++r)
         {
-            const auto& placement = state.effectPlacements[i];
-            if (placement.sequenceIndex < 0
-                || static_cast<std::size_t>(placement.sequenceIndex) >= library_->sequences.size())
+            const auto& record = sequence.records[r];
+            if (record.effectId < 0 || static_cast<std::size_t>(record.effectId) >= library_->effects.size())
                 continue;
+            const auto& effect = library_->effects[static_cast<std::size_t>(record.effectId)];
 
-            // A world-placed "effect" is a named sequence, not a single raw
-            // component: expand it into one emitter per record, each
-            // starting after that record's authored delay.
-            const auto& sequence = library_->sequences[static_cast<std::size_t>(placement.sequenceIndex)];
-            for (std::size_t r = 0; r < sequence.records.size(); ++r)
-            {
-                const auto& record = sequence.records[r];
-                if (record.effectId < 0 || static_cast<std::size_t>(record.effectId) >= library_->effects.size())
-                    continue;
-
-                const auto& effect = library_->effects[static_cast<std::size_t>(record.effectId)];
-
-                Emitter emitter{};
-                emitter.effectIndex = record.effectId;
-                std::copy(std::begin(placement.position), std::end(placement.position), std::begin(emitter.origin));
-                std::copy(std::begin(placement.right), std::end(placement.right), std::begin(emitter.right));
-                std::copy(std::begin(placement.up), std::end(placement.up), std::begin(emitter.up));
-                std::copy(std::begin(placement.forward), std::end(placement.forward), std::begin(emitter.forward));
-                emitter.seed = static_cast<float>(i) * 977.0f + static_cast<float>(r) * 131.0f + 1.0f;
-                emitter.ambientMap = true;
-                // Negative until the record's start delay has elapsed (see step_emitter).
-                emitter.elapsed = -std::max(0.0f, record.time);
-                emitter.remainingDuration = effect.emitterDuration;
-                emitter.particles.resize(static_cast<std::size_t>(std::min(effect_particle_count(effect), 300)));
-
-                emitters_.push_back(std::move(emitter));
-            }
+            Emitter emitter{};
+            emitter.effectIndex = record.effectId;
+            emitter.placementIndex = i;
+            std::copy(std::begin(placement.position), std::end(placement.position), std::begin(emitter.origin));
+            std::copy(std::begin(placement.right), std::end(placement.right), std::begin(emitter.right));
+            std::copy(std::begin(placement.up), std::end(placement.up), std::begin(emitter.up));
+            std::copy(std::begin(placement.forward), std::end(placement.forward), std::begin(emitter.forward));
+            emitter.seed = static_cast<float>(i) * 977.0f + static_cast<float>(r) * 131.0f + 1.0f;
+            emitter.ambientMap = true;
+            emitter.elapsed = -std::max(0.0f, record.time);
+            emitter.remainingDuration = effect.emitterDuration;
+            emitter.particles.resize(static_cast<std::size_t>(std::min(effect_particle_count(effect), 300)));
+            emitters_.push_back(std::move(emitter));
         }
+    }
+
+    void EffectParticleSystem::release_map_resources()
+    {
+        library_ = nullptr;
+        textureLayers_ = nullptr;
+        meshes_ = nullptr;
+        placements_ = nullptr;
+        std::vector<std::uint8_t>().swap(activePlacements_);
+        std::vector<Emitter>().swap(emitters_);
+        // Debug spawns reference the map library and are invalid across maps.
+        std::vector<DebugSpawn>().swap(debugSpawns_);
+        nextDebugSpawnId_ = 1;
+        std::vector<phoenix::renderer::TerrainVertex>().swap(vertices_);
+        std::vector<std::uint32_t>().swap(indices_);
+        std::vector<phoenix::renderer::EffectParticleInstance>().swap(instances_);
+        std::vector<phoenix::renderer::EffectParticleBatch>().swap(batches_);
     }
 
     std::uint32_t EffectParticleSystem::spawn_debug_effect(
@@ -729,6 +738,48 @@ namespace phoenix::runtime
 
         if (!library_ || !library_->parsed)
             return;
+
+        // Placement metadata stays cheap and resident; emitter/particle state
+        // exists only in a preload ring around the camera and is destroyed
+        // outside a wider hysteresis ring.
+        if (placements_)
+        {
+            const float loadDistance = std::max(96.0f, cullDistance + 48.0f);
+            const float unloadDistance = std::max(loadDistance + 96.0f, loadDistance * 1.3f);
+            const float loadSq = loadDistance * loadDistance;
+            const float unloadSq = unloadDistance * unloadDistance;
+            std::vector<std::pair<float, std::size_t>> activationQueue;
+            for (std::size_t i = 0; i < placements_->size(); ++i)
+            {
+                const auto& placement = (*placements_)[i];
+                const float dx = placement.position[0] - cameraPosition[0];
+                const float dy = placement.position[1] - cameraPosition[1];
+                const float dz = placement.position[2] - cameraPosition[2];
+                const float distanceSq = dx * dx + dy * dy + dz * dz;
+                if (!activePlacements_[i] && distanceSq <= loadSq)
+                {
+                    activationQueue.emplace_back(distanceSq, i);
+                }
+                else if (activePlacements_[i] && distanceSq > unloadSq)
+                {
+                    activePlacements_[i] = 0u;
+                }
+            }
+            std::ranges::sort(activationQueue, {}, &std::pair<float, std::size_t>::first);
+            constexpr std::size_t kPlacementIntegrationsPerFrame = 4;
+            const auto activationCount = std::min(
+                activationQueue.size(), kPlacementIntegrationsPerFrame);
+            for (std::size_t i = 0; i < activationCount; ++i)
+            {
+                const auto placementIndex = activationQueue[i].second;
+                activePlacements_[placementIndex] = 1u;
+                activate_map_placement(placementIndex);
+            }
+            std::erase_if(emitters_, [&](const Emitter& emitter) {
+                return emitter.placementIndex >= activePlacements_.size()
+                    || !activePlacements_[emitter.placementIndex];
+            });
+        }
 
         const float dt = clampf(deltaSeconds, 0.0f, 0.1f);
         const float cullDistanceSq = cullDistance * cullDistance;

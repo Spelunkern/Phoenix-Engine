@@ -144,6 +144,12 @@ namespace phoenix::renderer
         bool skyReady{};
         bool shadowReady{};
         bool shadowsEnabled{ true };
+        bool terrainCompatibility{};
+        // Uploading a world progressively flips terrainReady/objectsReady as
+        // individual GPU resources arrive. Keep presentation gated by a
+        // separate state so those partial resources can never replace the
+        // loading screen before the whole initial scene is ready.
+        bool loadingMode{};
         // Tracks the last value passed to set_antialiasing_enabled so the
         // effect-particle draw (which deliberately disables MSAA/alpha-to-
         // coverage around itself — see render_frame) knows what to restore
@@ -265,6 +271,12 @@ namespace phoenix::renderer
         bool terrainTextureCompressed{};
         bool terrainTexturesReady{};
         bool assetTexturesReady{};
+        std::uint32_t assetTextureFirstLayer{};
+        std::uint32_t assetTextureEndLayer{};
+        std::uint32_t assetTextureWidth{};
+        std::uint32_t assetTextureHeight{};
+        std::uint32_t assetTextureMipLevels{};
+        std::uint32_t assetTextureFormat{};
         std::uint32_t maxImageArrayLayers{ 2048 };
 
         GlBuffer terrainMapBuffer;

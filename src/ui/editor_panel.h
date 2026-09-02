@@ -46,6 +46,7 @@ namespace phoenix::ui
     {
         bool loadRequested{};
         bool viewDistanceChanged{};
+        bool terrainCompatibilityChanged{};
         bool characterChanged{};
         bool weatherChanged{};
         int emoteTriggered{};   // 0=none, 1-10=emote number (one-shot)
@@ -88,6 +89,7 @@ namespace phoenix::ui
     {
         bool worldShadows{ true };
         bool vsyncEnabled{ true };
+        bool terrainCompatibility{};
     };
 
     // The native control panel (world map, weather, character).
@@ -96,6 +98,7 @@ namespace phoenix::ui
         phoenix::renderer::OpenGLRenderer& renderer,
         bool& fogEnabled,
         bool& worldShadows,
+        bool& terrainCompatibility,
         bool& vsyncEnabled,
         int& fpsCapIndex,
         bool& antialiasingEnabled,

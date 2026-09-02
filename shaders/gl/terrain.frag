@@ -172,8 +172,16 @@ void main()
         uint mapWordsPadded = (mapBytes + 3u) >> 2u;
         uint maskFlags = terrainMap.words[mapWordsPadded + 16u];
         uint splatLayerCount = min(terrainMap.words[mapWordsPadded + 17u], 8u);
+        bool compatibilityTerrain = camera.shadowInfo.w > 0.5;
 
-        if (maskFlags != 0u && camera.fogDistances.w > 0.5)
+        if (compatibilityTerrain)
+        {
+            vec2 ddxWp = dFdx(vWorldPos.xz);
+            vec2 ddyWp = dFdy(vWorldPos.xz);
+            uint centerLayer = terrainMapLookup(vWorldPos, mapSize, mapSide);
+            color = sampleTerrainLayerGrad(centerLayer, vWorldPos, ddxWp, ddyWp, mapSize, mapSide);
+        }
+        else if (maskFlags != 0u && camera.fogDistances.w > 0.5)
         {
             vec2 ddxWp = dFdx(vWorldPos.xz);
             vec2 ddyWp = dFdy(vWorldPos.xz);
@@ -210,7 +218,8 @@ void main()
         if (centerLayer == waterLayer)
             color = mix(vec3(0.01, 0.08, 0.34), color * vec3(0.42, 0.70, 1.22), 0.45);
 
-        color = applyGroundWeather(color, vWorldPos, vNormal);
+        if (!compatibilityTerrain)
+            color = applyGroundWeather(color, vWorldPos, vNormal);
         color *= environmentMaterialLighting(vNormal, vWorldPos);
     }
     else if (vTextureLayer != 0xFFFFFFFFu)
