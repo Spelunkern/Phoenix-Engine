@@ -12,7 +12,7 @@ defined scope and is not planned to receive further feature updates.
 The canonical runtime data set intentionally prepared and recommended for use
 with Phoenix Client is available as an external download:
 
-- [Download the Phoenix Client canonical data set](https://drive.google.com/file/d/1EH4SxGLyBoGTmdiXIbpz9jfYmRiF8oWR/view?usp=sharing)
+- [Download the Phoenix Client canonical data set](https://drive.google.com/file/d/1mN8kgfXI6Pfn3yjLND-3ZXK_YGDxJb04/view?usp=sharing)
 
 This package is hosted and distributed separately for convenience. It is not
 part of this repository, an embedded dependency, a submodule, or a release
